@@ -1,0 +1,26 @@
+# Airflow and workflow orchestration
+apache-airflow
+apache-airflow-providers-celery
+apache-airflow-providers-fab
+
+# Database
+psycopg2-binary
+sqlalchemy>=1.0,<2.0
+
+# Time utilities
+pendulum
+pytz
+
+# Data analysis
+pandas
+pydantic
+
+# HTTP requests
+requests
+
+# CLI tools
+fire
+
+# Garmin data processing
+garminconnect
+fitdecode

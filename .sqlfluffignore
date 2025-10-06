@@ -1,0 +1,7 @@
+.venv/*
+*_tsdb.ddl
+dags/database.ddl
+dags/iam.sql
+dags/lib/sql/*
+dags/schemas.ddl
+iac/airflow/airflow_db.ddl

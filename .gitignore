@@ -1,0 +1,25 @@
+*.DS_Store*
+*.idea*
+*__pycache__*
+.coverage
+.pytest_cache
+.venv
+.vscode
+
+# Data pipeline storage directories if running Astronomer
+data/
+
+# Astronomer files
+.astro*
+.dockerignore
+.env
+!iac/airflow/.env
+/Dockerfile
+airflow_settings.y*ml
+dags/.airflowignore
+dags/exampledag.py
+docker-compose.override.yml
+include
+packages.txt
+plugins
+tests/dags/test_dag_example.py

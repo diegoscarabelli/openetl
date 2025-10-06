@@ -1,0 +1,53 @@
+{
+  "userProfilePK": 12345678,
+  "calendarDate": "2025-08-07",
+  "startTimestampGMT": "2025-08-07T07:00:00.0",
+  "endTimestampGMT": "2025-08-08T07:00:00.0",
+  "startTimestampLocal": "2025-08-07T00:00:00.0",
+  "endTimestampLocal": "2025-08-08T00:00:00.0",
+  "weeklyModerate": 81,
+  "weeklyVigorous": 142,
+  "weeklyTotal": 365,
+  "weekGoal": 500,
+  "dayOfGoalMet": null,
+  "startDayMinutes": 250,
+  "endDayMinutes": 365,
+  "moderateMinutes": 21,
+  "vigorousMinutes": 47,
+  "imValueDescriptorsDTOList": [
+    {
+      "index": 0,
+      "key": "timestamp"
+    },
+    {
+      "index": 1,
+      "key": "value"
+    }
+  ],
+  "imValuesArray": [
+    [
+      1754576100000,
+      3
+    ],
+    [
+      1754577000000,
+      28
+    ],
+    [
+      1754577900000,
+      25
+    ],
+    [
+      1754578800000,
+      29
+    ],
+    [
+      1754579700000,
+      19
+    ],
+    [
+      1754580600000,
+      11
+    ]
+  ]
+}

@@ -1,0 +1,20 @@
+# ==============================================================================
+# Astronomer Configuration Template
+# ==============================================================================
+# This file configures Astronomer CLI local deployment settings.
+#
+# Setup Instructions:
+# 1. Initialize Astronomer project in repository root:
+#    astro dev init
+# 2. Copy this file to the .astro directory:
+#    cp iac/astro_cli_docker/config.yaml.template .astro/config.yaml
+# 3. Start Astronomer:
+#    astro dev start
+# ==============================================================================
+
+postgres:
+    # Port for Airflow metadata database (PostgreSQL container).
+    # Uses 5433 to avoid conflict with analytics database on default port 5432.
+    port: "5433"
+project:
+    name: openetl

@@ -1,0 +1,16 @@
+# Main requirements
+-r requirements.txt
+
+# Linting and formatting
+autoflake
+black
+docformatter
+sqlfluff
+
+# Testing
+pytest
+pytest-cov
+pytest-env
+python-dotenv
+
+pre-commit

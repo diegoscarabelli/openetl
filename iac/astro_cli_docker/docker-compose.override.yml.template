@@ -1,0 +1,31 @@
+# ==============================================================================
+# Docker Compose Override Template for Astronomer Airflow Deployment
+# ==============================================================================
+# This file configures Docker environment variables and volume mounts for
+# running Airflow with Astronomer CLI.
+#
+# Setup Instructions:
+# 1. Copy this file to the root of your Astronomer project:
+#    cp iac/astro_cli_docker/docker-compose.override.yml.template docker-compose.override.yml
+# 2. Ensure your .env file is configured with SQL_CREDENTIALS_DIR
+# 3. Export .env variables to your shell (required before each astro dev start):
+#    export $(cat .env | grep -v "^#" | grep -v "^$" | xargs)
+# 4. Start Astronomer:
+#    astro dev start
+# ==============================================================================
+
+services:
+  scheduler:
+    environment:
+      - SQL_DB_HOST=${SQL_DB_HOST:-}
+      - SQL_CREDENTIALS_DIR=/usr/local/airflow/sql_credentials
+      - DATA_DIR=/usr/local/airflow/data
+      - AIRFLOW__LOGGING__ENABLE_TASK_CONTEXT_LOGGER=False
+    volumes:
+      - ~/.garminconnect:/home/astro/.garminconnect:ro
+      - ${SQL_CREDENTIALS_DIR}:/usr/local/airflow/sql_credentials:ro
+      - ${DATA_DIR:-./data}:/usr/local/airflow/data
+
+  dag-processor:
+    environment:
+      - DATA_DIR=/usr/local/airflow/data

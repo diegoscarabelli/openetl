@@ -1,0 +1,55 @@
+[tool.autoflake]
+expand-star-imports = true
+in-place = true
+quiet = true
+recursive = true
+remove-all-unused-imports = true
+remove-duplicate-keys = true
+
+[tool.black]
+line-length = 88
+
+[tool.coverage.report]
+exclude_also = [
+    'if __name__ == "__main__":'
+]
+show_missing = true
+skip_covered = true
+
+[tool.docformatter]
+add-blank-after-docstring = true
+black = true
+close-quotes-on-newline = true
+in-place = true
+make-summary-multi-line = true
+pre-summary-newline = true
+recursive = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.sqlfluff.core]
+dialect = "postgres"
+large_file_skip_byte_limit = 0
+max_line_length = 88
+runaway_limit = 100
+
+[tool.sqlfluff.indentation]
+allow_implicit_indents = true
+ignore_comment_lines = true
+indented_ctes = true
+indented_joins = true
+indented_on_contents = true
+indented_using_on = true
+
+[tool.sqlfluff.layout.type.comma]
+line_position = "leading"
+
+[tool.sqlfluff.rules.layout.long_lines]
+ignore_comment_clauses = true
+ignore_comment_lines = true
+
+[tool.pylint.messages_control]
+disable = [
+    "logging-fstring-interpolation",
+]

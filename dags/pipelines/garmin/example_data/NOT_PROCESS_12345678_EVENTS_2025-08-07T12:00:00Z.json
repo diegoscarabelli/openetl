@@ -1,0 +1,16 @@
+[
+  {
+    "userProfilePk": 12345678,
+    "deviceId": 1111111111,
+    "calendarDate": "2025-08-07",
+    "startTimestampGMT": "2025-08-07T14:13:00.0",
+    "endTimestampGMT": "2025-08-07T15:21:00.0",
+    "duration": 68,
+    "activityType": "running",
+    "activitySubType": null,
+    "startTimestampLocal": "2025-08-07T07:13:00.0",
+    "endTimestampLocal": "2025-08-07T08:21:00.0",
+    "moderateIntensityMinutes": 16,
+    "vigorousIntensityMinutes": 47
+  }
+]
