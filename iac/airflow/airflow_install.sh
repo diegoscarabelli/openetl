@@ -15,7 +15,7 @@
 #
 # Configuration:
 #   - Before running, edit iac/airflow/.env and set:
-#     * DAGS_DIR - Path to dags directory (e.g., ~/repos/data_pipelines/dags)
+#     * DAGS_DIR - Path to dags directory
 #     * SQL_CREDENTIALS_DIR - Path to SQL credentials directory
 #     * Optionally: SQL_DB_HOST, DATA_DIR
 #   - Update admin user credentials in this script (lines 79-83):

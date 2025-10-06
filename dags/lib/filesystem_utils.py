@@ -34,8 +34,8 @@ class DataState(Enum):
 @dataclass
 class ETLDataDirectories:
     """
-    Provides standardized directory paths within the local filesystem under
-    data_pipelines/data/ for different data states associated with the pipeline.
+    Provides standardized directory paths within the local filesystem under DATA_DIR for
+    different data states associated with the pipeline.
     """
 
     ingest: Optional[Path] = None
