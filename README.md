@@ -7,6 +7,11 @@ Contents:
   - [Airflow Installation and Initialization](#airflow-installation-and-initialization)
     - [File Storage Directory](#file-storage-directory)
     - [Updating Airflow Deployments](#updating-airflow-deployments)
+  - [Development Environment Setup](#development-environment-setup)
+    - [Install Development Dependencies](#install-development-dependencies)
+    - [Install Pre-commit Hooks](#install-pre-commit-hooks)
+    - [Configure Test Environment](#configure-test-environment)
+    - [Verify Your Setup](#verify-your-setup)
 - [Repository Structure](#repository-structure)
   - [dags/lib/](#dagslib)
   - [dags/pipelines/](#dagspipelines)
@@ -18,20 +23,11 @@ Contents:
   - [CLAUDE.md](#claudemd)
 - [Standard DAG](#standard-dag)
   - [Example Standard DAG](#example-standard-dag)
-- [Formatting](#formatting)
-  - [Running Formatters](#running-formatters)
-  - [Automating Formatting](#automating-formatting)
-    - [Installing Pre-commit Hooks](#installing-pre-commit-hooks)
-  - [Formatting Standards](#formatting-standards)
-    - [Code Style Rules](#code-style-rules)
-    - [Import Organization](#import-organization)
-    - [Spacing Rules](#spacing-rules)
-    - [File Structure Example](#file-structure-example)
-    - [Quality Checklist](#quality-checklist)
+- [Contributing](#contributing)
 
 # Introduction
 
-This open-source repository provides a robust framework for building [ETL](https://en.wikipedia.org/wiki/Extract,_transform,_load) data pipelines using leading open-source tools: [Apache Airflow](https://airflow.apache.org/) for orchestration and [PostgreSQL](https://www.postgresql.org/) or its advanced extension [TimescaleDB](https://docs.tigerdata.com/self-hosted/latest/install/) for analytics and time-series data. Break your data free from SaaS silos and return the keys to insights where they belong: with you.
+OpenETL is an open-source repository that provides a robust framework for building [ETL](https://en.wikipedia.org/wiki/Extract,_transform,_load) data pipelines using leading open-source tools: [Apache Airflow](https://airflow.apache.org/) for orchestration and [PostgreSQL](https://www.postgresql.org/) or its advanced extension [TimescaleDB](https://docs.tigerdata.com/self-hosted/latest/install/) for analytics and time-series data. Break your data free from SaaS silos and return the keys to insights where they belong: with you.
 
 These pipelines are designed to automate the extraction, transformation, validation, analysis and storage of data, ensuring that highly curated datasets are readily available for analysis, reporting and machine learning applications.
 
@@ -95,8 +91,7 @@ psql -U postgres -d lens -f dags/pipelines/garmin/tables_tsdb.ddl
 > **Tip:** If your PostgreSQL `pg_hba.conf` is set to require password authentication, connect using `psql -h localhost` to ensure password prompts are triggered.
 
 ### Database Credentials
-
-To enable Airflow tasks to connect to the database, store credentials as individual JSON files in the directory specified by the `SQL_CREDENTIALS_DIR` environment variable. Each file should be named after the database user (`<username>.json`) and contain the following structure:
+To allow Airflow tasks to connect securely to the database, store credentials as individual JSON files within the directory specified by the `SQL_CREDENTIALS_DIR` environment variable. Each file must be named after the corresponding database user (`<username>.json`) and follow this structure:
 
 ```json
 {
@@ -184,6 +179,75 @@ astro dev start
 #### Docker Compose Updates
 
 For Docker Compose deployments on Ubuntu/Linux, see the [Deployment Updates](iac/airflow/README.md#deployment-updates) section in the Airflow infrastructure documentation for detailed procedures on when to rebuild images versus when to use `--force-recreate` for configuration-only changes.
+
+## Development Environment Setup
+
+If you plan to contribute to OpenETL or run tests locally, follow these additional setup steps after completing the database and Airflow installation above.
+
+### Install Development Dependencies
+
+Install the Python packages required for development, testing, and code formatting:
+
+```bash
+pip install -r requirements_dev.txt
+```
+
+This installs pytest, coverage tools, pre-commit, and all formatting tools (Black, Autoflake, Docformatter, SQLFluff).
+
+### Install Pre-commit Hooks
+
+Set up pre-commit hooks to automatically format code before each commit:
+
+```bash
+pre-commit install
+```
+
+The hooks are configured in `.pre-commit-config.yaml` and will run formatters automatically, preventing improperly formatted code from being committed.
+
+### Configure Test Environment
+
+Tests require a PostgreSQL database running on `localhost:5432`.
+
+**Default Configuration (No setup required)**
+
+By default, tests connect to:
+- Host: `localhost:5432`
+- Database: `postgres`
+- User: `postgres`
+- Password: `postgres`
+
+If you have PostgreSQL installed with these default credentials, tests will work immediately with no configuration.
+
+**Override Password (Using credentials file)**
+
+If your `postgres` user has a different password, create a credentials file `$SQL_CREDENTIALS_DIR/postgres.json`:
+
+   ```json
+   {
+     "user": "postgres",
+     "password": "your_actual_password"
+   }
+   ```
+
+The test configuration ([`tests/dags/lib/conftest.py`](tests/dags/lib/conftest.py)) reads the `SQL_CREDENTIALS_DIR` environment variable from your `.env` file, looks for `postgres.json` in that directory, and uses the password to construct the database connection URL. If the file doesn't exist, it falls back to the default password `postgres`.
+
+**Override Database URL (Complete customization)**
+
+To use a completely different database (different host, port, database name, or user), add to your `.env` file:
+
+```
+TEST_DB_URL=postgresql+psycopg2://user:password@host:port/database
+```
+
+### Verify Your Setup
+
+Run the test suite to ensure everything is configured correctly:
+
+```bash
+make test
+```
+
+If all tests pass, your development environment is ready! See [Contributing](#contributing) for detailed contribution guidelines.
 
 # Repository Structure
 
@@ -327,169 +391,38 @@ task_ingest >> task_batch >> task_process >> task_store
 
 The `create_dag()` function returns the DAG object, allowing you to customize it further by adding additional tasks, modifying the task order, or overriding default behaviors through the configuration parameters.
 
-# Formatting
+# Contributing
 
-Python code formatting is handled using the following tools:
+We welcome contributions from the community! Whether you're fixing bugs, adding features, improving documentation, or suggesting enhancements, your contributions help make OpenETL better for everyone.
 
-- **[Black](https://github.com/psf/black)**: Formats Python code with a focus on readability and consistency. The default settings are used, and it can be [integrated](https://black.readthedocs.io/en/stable/integrations/editors.html) with most editors and IDEs.
-- **[Autoflake](https://github.com/myint/autoflake)**: Removes unused imports and variables to keep the code clean.
-- **[Docformatter](https://github.com/PyCQA/docformatter)**: Formats docstrings to ensure compliance with `black` and maintain a consistent style.
+## How to Contribute
 
-For SQL files, **[SQLFluff](https://docs.sqlfluff.com/en/stable/)** is used to enforce consistent formatting. Some files are ignored by SQLFluff as specified in the [`.sqlfluffignore`](.sqlfluffignore) file.
+For detailed information on contributing to this project, please see our [CONTRIBUTING.md](CONTRIBUTING.md) guide, which includes:
 
-The configuration for all these formatting tools is defined in the [`pyproject.toml`](pyproject.toml) file, ensuring a centralized and consistent setup across the repository. This file is automatically read by the formatting tools, eliminating the need for additional configuration steps.
+- **External Contributors Workflow**: Step-by-step fork-based workflow for contributing
+- **Reporting Bugs and Suggesting Features**: Templates and guidelines for issues
+- **Code Standards**: Formatting rules, testing requirements, and documentation guidelines
+- **Pull Request Process**: Pre-submission checklist and code review expectations
 
-## Running Formatters
+## Quick Start for Contributors
 
-The `make` command is configured using a [`Makefile`](Makefile) located in the root of the repository. This file defines the `format` and `check-format` targets, which encapsulate the commands for running the formatting tools. The `format` target applies the formatting tools to all Python and SQL files, while the `check-format` target verifies compliance without making changes. These targets ensure a consistent and automated approach to code formatting across the repository.
+1. Complete the [Getting Started](#getting-started) setup (Database, Airflow, and Development Environment)
+2. Fork the repository on GitHub and clone your fork
+3. Create a feature branch: `git checkout -b feature/your-feature`
+4. Make your changes following our [code standards](CONTRIBUTING.md#formatting)
+5. Run tests: `make test`
+6. Format code: `make format && make check-format`
+7. Commit and push your changes to your fork
+8. Open a Pull Request
 
-To format all Python and SQL files in this repository, execute the following command:
-```bash
-make format
-```
+For detailed contribution guidelines, see [CONTRIBUTING.md](CONTRIBUTING.md).
 
-To verify that the files adhere to the formatting standards, run:
-```bash
-make check-format
-```
+## Code of Conduct
 
-If any files are not properly formatted, the `make check-format` command will return a non-zero exit code, allowing you to identify and address formatting issues.
+This project adheres to a [Code of Conduct](CODE_OF_CONDUCT.md). By participating, you are expected to uphold this code.
 
-## Automating Formatting
+## Questions?
 
-To ensure consistent code quality throughout the development process, you can install **[pre-commit](https://pre-commit.com/)** hooks. These hooks automatically run the formatters before each commit, preventing improperly formatted code from being committed to the repository.
-
-The hooks are configured in the [`.pre-commit-config.yaml`](.pre-commit-config.yaml) file located in the root of the repository. This file specifies the tools and rules that will be executed by `pre-commit`. The hooks are set up to use the `make` commands defined in the [`Makefile`](Makefile), ensuring that the same formatting rules are applied consistently across the repository.
-
-### Installing Pre-commit Hooks
-
-1. Install the `pre-commit` package using `pip`:
-  ```bash
-  pip install pre-commit
-  ```
-
-3. Install the pre-commit hooks:
-  ```bash
-  pre-commit install
-  ```
-
-4. (Optional) Run the hooks on all files to ensure the repository is compliant:
-  ```bash
-  pre-commit run --all-files
-  ```
-
-## Formatting Standards
-
-### Code Style Rules
-
-- **Use Black formatting** with a maximum of 88 characters per line.
-- **Apply docformatter style** per [pyproject.toml](pyproject.toml) configuration:
-  - Add a blank line after each docstring.
-  - Ensure Black-compatible formatting.
-  - Use multi-line summary format.
-  - Add a pre-summary newline for improved readability.
-- **Include type hints** for all function parameters and return values.
-- **Use `:param` and `:return`** tags in docstrings (not Google or NumPy style).
-- **Automatically remove unused imports** using autoflake.
-- **Use f-strings for string interpolation** instead of other formatting methods.
-- **Print full tracebacks for exceptions** rather than only the exception message.
-
-### Import Organization
-
-1. **Standard library imports** (alphabetically sorted)
-   - `import` statements first.
-   - `from` imports second.
-2. **Blank line**
-3. **Third-party imports** (alphabetically sorted)
-   - `import` statements first.
-   - `from` imports second.
-4. **Blank line**
-5. **Local application imports** (alphabetically sorted)
-   - `import` statements first.
-   - `from` imports second.
-6. **Two blank lines** before first class/function.
-
-### Spacing Rules
-
-- **Module docstring**: Immediately at the top.
-- **Two blank lines**: After module docstring, before imports.
-- **Two blank lines**: After imports, before first class/function.
-- **Two blank lines**: Between classes and top-level functions.
-- **One blank line**: Between methods within a class.
-- **One blank line**: After docstrings, before code.
-
-### File Structure Example
-
-```python
-"""
-Module description goes here.
-Explain the purpose and main functionality of this module.
-"""
-
-
-import os
-import sys
-from pprint import pformat
-from typing import Union
-
-import pendulum
-import sqlalchemy
-from requests import Session
-from sqlalchemy import create_engine
-
-from .local_module import LocalClass
-from .utils import helper_function
-
-
-class ExampleClass:
-    """
-    Class description that demonstrates the multi-line format with pre-summary
-    newline as configured in pyproject.toml.
-
-    :param param1: Description of param1
-    :return: Description of return value if applicable
-    """
-
-    def __init__(self, param1: int) -> None:
-        """
-        Initialize the class with the provided parameter following docformatter
-        configuration.
-
-        :param param1: Description of param1
-        """
-
-        self.param1 = param1
-
-
-def example_function(arg1: int, arg2: str) -> bool:
-    """
-    Function description that follows the project's docformatter settings for
-    multi-line summaries.
-
-    :param arg1: Description of arg1
-    :param arg2: Description of arg2
-    :return: True if successful, False otherwise
-    """
-
-    return True
-```
-
-### Quality Checklist
-
-Before pushing any changes to Github, verify:
-
-**Manual Checks (REQUIRED before automated tools):**
-- [ ] Module docstring present (see [File Structure Example](#file-structure-example)).
-- [ ] Proper spacing and blank lines throughout file (see [Spacing Rules](#spacing-rules)).
-- [ ] No trailing whitespace.
-- [ ] Periods at the end of sentences such as comments, docstrings, bullet lists, log messages (not the header of the file).
-- [ ] No line in python and SQL files longer than 88 characters. (see [Code Style Rules](#code-style-rules)).
-
-**Automated Checks:**
-- [ ] Imports properly organized and sorted, no unused imports (see [Import Organization](#import-organization)).
-- [ ] All functions have type hints (see [Code Style Rules](#code-style-rules)).
-- [ ] All docstrings use `:param` and `:return` format (see [Code Style Rules](#code-style-rules)).
-- [ ] Black-compliant format (see [Code Style Rules](#code-style-rules)).
-- [ ] Consistent indentation (4 spaces).
-- [ ] **Run `make format` to apply project formatting** (see [Running Formatters](#running-formatters)).
-- [ ] **Run `make check-format` to validate compliance** (see [Running Formatters](#running-formatters)).
+- Check the [documentation](README.md)
+- Open a [Discussion](https://github.com/diegoscarabelli/openetl/discussions)
+- Submit an [Issue](https://github.com/diegoscarabelli/openetl/issues)

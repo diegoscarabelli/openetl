@@ -72,6 +72,36 @@ When triggering manually with custom configuration:
 ```
 The Jinja templates will use these custom values instead of the scheduled intervals, allowing for historical data processing or custom date ranges.
 
+**Historical Data Backfill:**
+
+To load historical data when first setting up the pipeline (or to fill gaps), follow these steps:
+
+1. **Comment out the schedule interval** in [`dag.py`](dag.py) to prevent scheduled runs from triggering during backfill:
+   ```python
+   # dag_schedule_interval=timedelta(days=1),
+   ```
+
+2. Trigger a manual DAG run via the Airflow UI:
+   - Click the "Trigger DAG" button for the garmin DAG
+   - Select **"Single Run"** (NOT "Backfill")
+     - **Single Run**: One DAG run processes the entire date range in a single execution
+     - **Backfill**: Creates multiple DAG runs (one per schedule interval) - avoid this as it would create thousands of runs for a large date range
+   - In the "Configuration JSON" field, specify your desired date range:
+     ```json
+     {
+       "data_interval_start": "2015-01-01T00:00:00Z",
+       "data_interval_end": "2025-01-01T00:00:00Z"
+     }
+     ```
+   - Click "Trigger" to start processing
+
+3. **Uncomment the schedule interval** in [`dag.py`](dag.py) after backfill completes to resume normal daily scheduled runs:
+   ```python
+   dag_schedule_interval=timedelta(days=1),
+   ```
+
+The single DAG run will extract and process all Garmin data within the specified period. Note that processing years of historical data may take considerable time, and Garmin API rate limits may apply for very large date ranges.
+
 ### Extract task
 
 [Code](extract.py)
