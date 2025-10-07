@@ -13,7 +13,6 @@ data/
 .astro*
 .dockerignore
 .env
-!iac/airflow/.env
 /Dockerfile
 airflow_settings.y*ml
 dags/.airflowignore
@@ -23,3 +22,7 @@ include
 packages.txt
 plugins
 tests/dags/test_dag_example.py
+
+# Docker Compose configuration files
+iac/airflow/.env
+iac/airflow/airflow_install.sh
