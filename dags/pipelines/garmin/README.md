@@ -1,9 +1,5 @@
 # Data Pipeline: Garmin Connect
 
-*Date created: 2025/01/01*
-
-*Date last revised: 2025/08/26*
-
 ## Context
 
 This document describes the ETL data pipeline which processes data sourced from Garmin Connect. The pipeline collects comprehensive health, fitness, and activity data using the [python-garminconnect](https://github.com/cyberjunky/python-garminconnect) library, a robust Python SDK that provides comprehensive access to Garmin's ecosystem. The library leverages the [Garth library](https://github.com/matin/garth) underneath to handle complex OAuth 1.0/2.0 authentication flows, multi-factor authentication (MFA) challenges, intelligent session management, and efficient HTTP request pooling to Garmin's servers.
