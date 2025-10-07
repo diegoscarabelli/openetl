@@ -50,11 +50,12 @@ with dag:
         op_kwargs={
             "ingest_dir": config.data_dirs.ingest,
             "data_interval_start": (
-                "{{ dag_run.conf.get('data_interval_start', "
-                "prev_data_interval_end_success) }}"
+                "{{ dag_run.conf.get('data_interval_start') or "
+                "prev_data_interval_end_success or "
+                "(data_interval_end - macros.timedelta(days=1)) }}"
             ),
             "data_interval_end": (
-                "{{ dag_run.conf.get('data_interval_end', " "data_interval_end) }}"
+                "{{ dag_run.conf.get('data_interval_end') or " "data_interval_end }}"
             ),
         },
         doc_md=(
