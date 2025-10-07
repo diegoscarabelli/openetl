@@ -26,10 +26,23 @@ Review the [changelog](https://airflow.apache.org/docs/apache-airflow/stable/rel
 
 Before running the automated installation script, complete the following configuration steps in order:
 
-1. **Environment variables**: Configure `.env` with paths and connection settings.
-2. **Database setup**: Initialize the Airflow metadata database using the provided DDL scripts.
-3. **Resource allocation**: Adjust compute resources in `docker-compose.yaml` based on your hardware.
-4. **Admin credentials**: Customize the admin user details in `airflow_install.sh`.
+1. **Copy template files**: Create local configuration files from templates.
+2. **Environment variables**: Configure `.env` with paths and connection settings.
+3. **Database setup**: Initialize the Airflow metadata database using the provided DDL scripts.
+4. **Resource allocation**: Adjust compute resources in `docker-compose.yaml` based on your hardware.
+5. **Admin credentials**: Customize the admin user details in `airflow_install.sh`.
+
+### Template Files
+
+Configuration files with sensitive information (credentials, paths) are provided as `.template` files. Create your local copies:
+
+```bash
+cd iac/airflow
+cp .env.template .env
+cp airflow_install.sh.template airflow_install.sh
+```
+
+> **Important:** The local copies (`.env` and `airflow_install.sh`) are gitignored and will NOT be committed to version control. The template files serve as documentation and starting points for configuration.
 
 ### Environment Configuration
 
@@ -131,9 +144,9 @@ AIRFLOW__CELERY__WORKER_AUTOSCALE: '10,1'
 
 Adjust these settings based on your hardware specifications, expected workload, and task memory requirements.
 
-### Airflow Admin User 
+### Airflow Admin User
 
-Before running the installation script, customize the admin user credentials in `airflow_install.sh`:
+Before running the installation script, customize the admin user credentials in your local `airflow_install.sh` (not the `.template` file):
 
 ```bash
 docker compose exec airflow-scheduler airflow users create \
@@ -145,7 +158,7 @@ docker compose exec airflow-scheduler airflow users create \
     --password <REDACTED_PASSWORD>
 ```
 
-Replace `YourFirstName`, `YourLastName`, `your.email@example.com`, and `<REDACTED_PASSWORD>` with your actual admin user details.
+Replace the placeholder values with your actual admin user details. These changes will remain local and will not be committed to git.
 
 ## Installation
 

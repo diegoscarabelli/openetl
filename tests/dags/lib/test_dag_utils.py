@@ -448,7 +448,8 @@ class TestProcessWrapper:
     Tests for process_wrapper logic.
     """
 
-    def test_process_wrapper_runs(self) -> None:
+    @patch("dags.lib.dag_utils.get_lens_engine", return_value=MagicMock())
+    def test_process_wrapper_runs(self, mock_engine: MagicMock) -> None:
         file1 = DummyFile("file1.csv")
         # Create serialized data instead of FileSet objects.
         serialized_file_sets = [{"DATA": ["file1.csv"]}]

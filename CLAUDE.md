@@ -7,7 +7,12 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 The most important source of truth is the [`/README.md`](README.md) file, which contains the latest information about the project. You MUST read and understand the `README.md` file in order to provide accurate and relevant responses and coding assistance.
 The `README.md` file includes:
 - **Introduction**: Project overview, objectives, and Apache Airflow integration for end-to-end data analytics workflows.
-- **Directories**: Comprehensive documentation of each component:
+- **Getting Started**: Database and Airflow installation instructions, plus Development Environment Setup subsection covering:
+  - Installing Python development dependencies (`requirements_dev.txt`)
+  - Setting up pre-commit hooks
+  - Configuring test environment (TEST_DB_URL or SQL_CREDENTIALS_DIR)
+  - Verifying setup by running tests
+- **Repository Structure**: Comprehensive documentation of each component:
   - `dags/lib/`: Utility modules for DAG development (dag_utils, etl_config, sql_utils, filesystem_utils, etc.).
   - `dags/pipelines/`: Individual DAG implementations with DDL files and documentation.
   - `dags/database.ddl`: Creates the lens database for all pipeline outputs.
@@ -19,11 +24,25 @@ The `README.md` file includes:
 - **Standard DAG**: Framework for creating ETL pipelines using ETLConfig and standard task patterns.
   - Four-step pipeline: ingest → batch → process → store.
   - Example implementation with custom processors and file type definitions.
+- **Contributing**: Guide for external contributors that references CONTRIBUTING.md for detailed guidelines and provides quick start instructions.
+
+## CONTRIBUTING.md
+
+The [`/CONTRIBUTING.md`](CONTRIBUTING.md) file contains comprehensive development guidelines and code quality standards. You MUST follow these guidelines when writing or modifying code.
+The `CONTRIBUTING.md` file includes:
+- **How to Contribute**: References `README.md` Getting Started section for setup, then provides:
+  - External Contributors Workflow: Step-by-step fork-based workflow for contributing to the project.
+  - Reporting Bugs: Bug report template and required information.
+  - Suggesting Features: Feature request template and guidelines.
+  - Submitting Pull Requests: Pre-submission checklist and requirements.
 - **Formatting**: Comprehensive code quality standards and automation.
   - Python formatting with Black, Autoflake, and Docformatter.
   - SQL formatting with SQLFluff.
   - Pre-commit hooks and make targets for consistency.
   - Detailed style rules, import organization, and quality checklists.
+- **Testing**: Requirements for tests, coverage expectations, and how to run tests. References `README.md` for test environment configuration.
+- **Documentation**: Guidelines for updating documentation when making changes.
+- **Code Review Process**: How PRs are reviewed and merged.
 
 ## Code Execution Environment
 
@@ -38,7 +57,7 @@ When running code in this repo, you can use the `airflow` conda environment, whi
 When ANY formatting request is made (explicit or implicit), you MUST:
 
 ### Step 1: Manual Quality Review (BEFORE make format)
-Execute EVERY item from README.md Quality Checklist (lines 334-347):
+Execute EVERY item from CONTRIBUTING.md Quality Checklist:
 
 - [ ] Module docstring present  
 - [ ] Imports properly organized and sorted, no unused imports
@@ -71,10 +90,10 @@ The following items are NOT caught by automated tools and MUST be manually verif
 When you encounter ANY of these words/phrases, immediately execute the complete formatting protocol:
 - "formatting"
 - "format"
-- "quality check" 
+- "quality check"
 - "style"
 - "apply formatting guidelines"
-- "according to guidelines in README.md"
+- "according to guidelines in CONTRIBUTING.md"
 - "quality checklist"
 - When completing ANY code file creation/modification
 
