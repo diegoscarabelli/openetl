@@ -112,9 +112,9 @@ Apache Airflow supports multiple deployment methods, providing flexibility for v
 
 This repository provides comprehensive templates and step-by-step instructions for two recommended deployment approaches, streamlining the setup of core infrastructure components. Detailed resources for both methods are available in the [Infrastructure as Code](#iac) section.
 
-1. **[Astro CLI](https://www.astronomer.io/docs/astro/cli/install-cli)** (Astronomer distribution): Recommended for local development on macOS or Windows. Install PostgreSQL/TimescaleDB locally for the analytics database (`lens`), then use Astro CLI and Docker Desktop to run Airflow. Astro CLI includes a containerized PostgreSQL instance for Airflow's metadata database, configured to use port 5433 to avoid conflicts with the analytics database on port 5432. Configuration templates are available in [iac/astro_cli_docker/](iac/astro_cli_docker/), including `.env.template`, `config.yaml.template`, and `docker-compose.override.yml.template`.
+1. **[Astro CLI](https://www.astronomer.io/docs/astro/cli/install-cli)** (Astronomer distribution): Recommended for local development on macOS or Windows. Install PostgreSQL/TimescaleDB locally for the analytics database (`lens`), then use Astro CLI and Docker Desktop to run Airflow. Astro CLI includes a containerized PostgreSQL instance for Airflow's metadata database, configured to use port 5433 to avoid conflicts with the analytics database on port 5432. A comprehensive setup guide is provided in [iac/astro_cli_docker/README.md](iac/astro_cli_docker/README.md), covering initialization, configuration, and deployment.
 
-   > **Note:** Before starting Astro, ensure your `.env` file is configured with required variables. Then export .env variables to your shell with `export $(cat .env | grep -v "^#" | grep -v "^$" | xargs)`. This is required before each `astro dev start` to enable Docker Compose variable substitution in volume mounts.
+   > **Note:** Before starting Astro, export `.env` variables to your shell with `export $(cat .env | grep -v "^#" | grep -v "^$" | xargs)`. This is required before each `astro dev start` to enable Docker Compose variable substitution in volume mounts.
 
 2. **[Docker Compose](https://airflow.apache.org/docs/apache-airflow/stable/installation/index.html#using-production-docker-images)**: Recommended for production or non-development deployments on Ubuntu/Linux servers. Install PostgreSQL/TimescaleDB to host both the analytics database (`lens`) and Airflow's metadata database (`airflow_db`) on the same PostgreSQL instance. Deploy Airflow using Docker Compose, which connects to the colocated databases via the Docker bridge network. A comprehensive installation guide is provided in [iac/airflow/README.md](iac/airflow/README.md), covering environment setup, database initialization, and deployment automation.
 
@@ -149,34 +149,7 @@ Each DAG has its own subdirectory (named after the DAG ID as defined in [`dags.l
 
 Both Astro CLI and Docker Compose deployments require different procedures depending on the type of change being applied.
 
-#### Astro CLI Updates
-
-For Astro CLI deployments on macOS/Windows, the update procedure varies based on what changed:
-
-**When to restart Astro:**
-- Changes to `.env` file (environment variables)
-- Changes to `config.yaml` (Airflow configuration)
-- Changes to `docker-compose.override.yml` (volume mounts, container settings)
-
-**When to rebuild Astro:**
-- Changes to `requirements.txt` (new Python packages)
-- Changes to `packages.txt` (new system packages)
-- Changes to DAG code or Python modules
-
-To apply environment or configuration changes:
-```bash
-astro dev restart
-```
-
-To rebuild and apply code or dependency changes:
-```bash
-astro dev stop
-astro dev start
-```
-
-> **Note:** Astro CLI automatically detects changes to `requirements.txt` and rebuilds the Docker image during `astro dev start`.
-
-#### Docker Compose Updates
+For Astro CLI deployments on macOS/Windows, see the [Updating Deployments](iac/astro_cli_docker/README.md#updating-deployments) section in the Astro CLI documentation for detailed procedures on when to restart versus rebuild.
 
 For Docker Compose deployments on Ubuntu/Linux, see the [Deployment Updates](iac/airflow/README.md#deployment-updates) section in the Airflow infrastructure documentation for detailed procedures on when to rebuild images versus when to use `--force-recreate` for configuration-only changes.
 
@@ -319,7 +292,7 @@ The Infrastructure as Code (IaC) directory contains deployment configuration, in
 
 - **[airflow/](iac/airflow/)**: Docker Compose deployment configuration for Apache Airflow on Ubuntu/Linux production servers. Includes installation scripts (`docker_install.sh`, `airflow_install.sh`), environment configuration (`.env`), Docker Compose files, and database initialization scripts (`airflow_db.ddl`, `airflow_db_grants.ddl`). See [iac/airflow/README.md](iac/airflow/README.md) for detailed installation instructions.
 
-- **[astro_cli_docker/](iac/astro_cli_docker/)**: Configuration templates for local development using the Astronomer CLI. Contains `.env.template`, `config.yaml.template` for Astro CLI settings, and `docker-compose.override.yml.template` for custom volume mounts and environment variables.
+- **[astro_cli_docker/](iac/astro_cli_docker/)**: Astro CLI deployment configuration for local development on macOS/Windows. Includes setup guide, configuration templates (`.env.template`, `config.yaml.template`), and deployment instructions. See [iac/astro_cli_docker/README.md](iac/astro_cli_docker/README.md) for comprehensive setup and troubleshooting documentation.
 
 - **[timescaledb/](iac/timescaledb/)**: PostgreSQL and TimescaleDB installation and configuration for Ubuntu/Linux servers. Includes installation scripts, configuration files (`postgresql.conf`, `pg_hba.conf`), and database setup scripts. See [iac/timescaledb/README.md](iac/timescaledb/README.md) for comprehensive installation and maintenance documentation.
 
