@@ -21,38 +21,47 @@ def get_postgres_password() -> str:
     """
     Load the Postgres password from the credentials JSON file.
 
+    Falls back to 'postgres' if SQL_CREDENTIALS_DIR is not set or the credentials file
+    doesn't exist. This allows tests to run without requiring the credentials directory
+    to be configured.
+
     :return: The password value, or 'postgres' if not found.
     """
 
     sql_credentials_dir = os.getenv("SQL_CREDENTIALS_DIR")
     if not sql_credentials_dir:
-        raise RuntimeError(
-            "SQL_CREDENTIALS_DIR environment variable is not set. "
-            "Please set it in your .env file."
-        )
+        # Return default for test environments without credentials configured.
+        return "postgres"
 
     # Expand user home directory (~) in the path.
     sql_credentials_dir = os.path.expanduser(sql_credentials_dir)
     cred_path = os.path.join(sql_credentials_dir, "postgres.json")
+
+    if not os.path.exists(cred_path):
+        # Credentials file doesn't exist, return default.
+        return "postgres"
+
     with open(cred_path, "r", encoding="utf-8") as f:
         creds = json.load(f)
     return creds.get("password", "postgres")
 
 
-POSTGRES_PASSWORD = get_postgres_password()
-
 # Test database URL configuration.
-# Default behavior assumes the test database is a PostgreSQL database running
-# locally (accessible via localhost), which is the standard setup for software
-# development and testing environments. The default connects to the `postgres`
-# database on `localhost:5432` using the `postgres` user credentials.
-# This assumption can be overridden by setting the `TEST_DB_URL` environment
-# variable to point to a database on a different host (e.g., a remote test
-# database server). The `TEST_DB_URL` should be a complete SQLAlchemy connection
-# string (e.g., postgresql+psycopg2://user:password@host:port/database).
-TEST_DB_URL = os.getenv("TEST_DB_URL") or (
-    f"postgresql+psycopg2://postgres:{POSTGRES_PASSWORD}@localhost:5432/postgres"
-)
+# Priority order:
+# 1. TEST_DB_URL environment variable (if set, uses this directly)
+# 2. Construct from credentials file (if SQL_CREDENTIALS_DIR is configured)
+# 3. Default to postgres:postgres@localhost:5432/postgres
+#
+# This allows tests to run in multiple environments:
+# - CI: Set TEST_DB_URL directly (no credentials file needed)
+# - Local dev with credentials: Uses SQL_CREDENTIALS_DIR/postgres.json
+# - Local dev without credentials: Falls back to default postgres password
+TEST_DB_URL = os.getenv("TEST_DB_URL")
+if not TEST_DB_URL:
+    POSTGRES_PASSWORD = get_postgres_password()
+    TEST_DB_URL = (
+        f"postgresql+psycopg2://postgres:{POSTGRES_PASSWORD}@localhost:5432/postgres"
+    )
 
 Base = declarative_base()
 
