@@ -33,7 +33,7 @@ def dummy_etl_result() -> ETLResult:
     return etl_result
 
 
-def test_etl_result_record_fields(etl_result_session: object) -> None:
+def test_etl_result_record_fields() -> None:
     """
     Test ETLResultRecord field assignment.
     """
@@ -50,9 +50,7 @@ def test_etl_result_record_fields(etl_result_session: object) -> None:
     assert record.traceback is None
 
 
-def test_set_result_record(
-    dummy_etl_result: ETLResult, etl_result_session: object
-) -> None:
+def test_set_result_record(dummy_etl_result: ETLResult) -> None:
     """
     Test setting a result record in ETLResult.
     """
@@ -63,9 +61,7 @@ def test_set_result_record(
     assert etl_result.result_records["file.csv"].success is True
 
 
-def test_successes_and_errors(
-    dummy_etl_result: ETLResult, etl_result_session: object
-) -> None:
+def test_successes_and_errors(dummy_etl_result: ETLResult) -> None:
     """
     Test successes and errors properties of ETLResult.
     """
@@ -88,8 +84,9 @@ def test_successes_and_errors(
     assert errors[0].traceback == "trace"
 
 
+@patch("dags.lib.etl_monitor_utils.get_lens_engine", return_value=MagicMock())
 def test_etl_result_equality(
-    dummy_etl_result: ETLResult, etl_result_session: object
+    mock_engine: MagicMock, dummy_etl_result: ETLResult
 ) -> None:
     """
     Test ETLResult equality comparison.
@@ -108,20 +105,52 @@ def test_etl_result_equality(
     assert etl_result1 != etl_result2
 
 
-def test_submit_calls_upsert_model_instances(
-    dummy_etl_result: ETLResult, etl_result_session: object
-) -> None:
+def test_submit_writes_to_database(etl_result_session: object) -> None:
     """
-    Test that submit calls upsert_model_instances and commits.
+    Test that submit() writes ETL results to the database.
     """
 
-    etl_result = dummy_etl_result
-    etl_result.set_result_record("file.csv", True)
+    from dags.lib.etl_monitor_utils import ETLResultSqla
+
+    config = DummyConfig()
+    dag_start_date = datetime(2025, 8, 1, 12, 0, 0)
+    dag_run_id = "run_123"
+
+    # Create ETLResult with real database engine.
     with patch(
-        "dags.lib.etl_monitor_utils.upsert_model_instances"
-    ) as upsert_mock, patch("dags.lib.etl_monitor_utils.Session") as session_mock:
-        sess_instance = MagicMock()
-        session_mock.return_value.__enter__.return_value = sess_instance
+        "dags.lib.etl_monitor_utils.get_lens_engine",
+        return_value=etl_result_session.get_bind(),
+    ):
+        etl_result = ETLResult(config, dag_start_date, dag_run_id)
+        etl_result.set_result_record("file.csv", True)
+        etl_result.set_result_record(
+            "file2.csv", False, error_type="ERR", traceback="stack trace"
+        )
+
+        # Submit to database.
         etl_result.submit()
-        upsert_mock.assert_called_once()
-        sess_instance.commit.assert_called_once()
+
+    # Query database to verify records were written.
+    results = (
+        etl_result_session.query(ETLResultSqla)
+        .filter(
+            ETLResultSqla.dag_id == config.dag_id,
+            ETLResultSqla.dag_run_id == dag_run_id,
+        )
+        .all()
+    )
+
+    assert len(results) == 2
+    file_names = {r.file_name for r in results}
+    assert file_names == {"file.csv", "file2.csv"}
+
+    # Verify success record.
+    success_record = next(r for r in results if r.file_name == "file.csv")
+    assert success_record.success is True
+    assert success_record.error_type is None
+
+    # Verify error record.
+    error_record = next(r for r in results if r.file_name == "file2.csv")
+    assert error_record.success is False
+    assert error_record.error_type == "ERR"
+    assert error_record.traceback == "stack trace"
