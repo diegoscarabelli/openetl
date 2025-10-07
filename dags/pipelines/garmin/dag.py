@@ -55,7 +55,7 @@ with dag:
                 "(data_interval_end - macros.timedelta(days=1)) }}"
             ),
             "data_interval_end": (
-                "{{ dag_run.conf.get('data_interval_end') or " "data_interval_end }}"
+                "{{ dag_run.conf.get('data_interval_end') or data_interval_end }}"
             ),
         },
         doc_md=(
