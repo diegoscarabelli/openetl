@@ -8,7 +8,6 @@ The goal of this pipeline is to support downstream data consumers in generating 
 
 The data includes:
 
-
 | Dataset | Content | API Endpoint | Example |
 |-------------|--------|-------------|---------------|
 | **Sleep** | Sleep stage duration, movement, levels, restless moments, heart rate (redundant with Heart Rate dataset), stress levels (redundant with Stress dataset), body battery (redundant with Stress dataset), HRV (5 mins interval time series), breathing disruptions count (event time-series), detailed scores, and sleep need. | `/wellness-service/wellness/dailySleepData/{display_name}?date={date}&nonSleepBufferMinutes=60` | [15007510_SLEEP_2025-08-07T12:00:00Z.json](./example_data/15007510_SLEEP_2025-08-07T12:00:00Z.json) |
@@ -149,9 +148,71 @@ The batch task uses the standard `batch()` function from the [Standard DAG](../.
 The custom process task uses the [`GarminProcessor`](process.py) class that inherits from the base [`Processor`](../../lib/dag_utils.py#Processor) class. It provides specialized processing logic for different Garmin data types including user profiles, activities, and health metrics.
 
 **Database Schema Integration:**
+
 * Database tables defined in [`tables.ddl`](tables.ddl)
 * TimescaleDB hypertables defined in [`tables_tsdb.ddl`](tables_tsdb.ddl) for time-series data storage and efficient querying
 * SQLAlchemy ORM models in [`sqla_models.py`](sqla_models.py) extending base class defined in [`sql_utils.make_base()`](../../lib/sql_utils.py#make_base)
+
+The database schema contains 29 tables organized by category:
+
+**User & Profile (2 tables)**
+```
+user (root table)
+└── user_profile (fitness profile, physical characteristics)
+```
+*Foreign keys: `user_profile` → `user.user_id`*
+
+**Activities (8 tables)**
+```
+activity (main activity records)
+├── activity_lap_metric (lap-by-lap metrics)
+├── activity_split_metric (split data)
+├── activity_ts_metric (time-series sensor data)
+├── cycling_agg_metrics (cycling-specific aggregates)
+├── running_agg_metrics (running-specific aggregates)
+├── swimming_agg_metrics (swimming-specific aggregates)
+└── supplemental_activity_metric (additional activity metrics)
+```
+*Foreign keys: `activity` → `user.user_id`; all child tables → `activity.activity_id`*
+
+**Sleep Metrics (6 tables)**
+```
+sleep (main sleep sessions)
+├── sleep_movement (movement during sleep)
+├── sleep_restless_moment (restless periods)
+├── spo2 (blood oxygen saturation)
+├── hrv (heart rate variability)
+└── breathing_disruption (breathing events)
+```
+*Foreign keys: `sleep` → `user.user_id`; all child tables → `sleep.sleep_id`*
+
+**Health Time-Series (7 tables)**
+```
+heart_rate (continuous heart rate measurements)
+stress (stress level readings)
+body_battery (energy level tracking)
+respiration (breathing rate data)
+steps (step counts and activity levels)
+floors (floors climbed/descended)
+intensity_minutes (activity intensity tracking)
+```
+*Foreign keys: all tables → `user.user_id`*
+
+**Training Metrics (4 tables)**
+```
+vo2_max (VO2 max estimates)
+├── acclimation (heat/altitude acclimation)
+├── training_load (training load metrics)
+└── training_readiness (daily readiness scores)
+```
+*Foreign keys: all tables → `user.user_id`*
+
+**Records & Predictions (2 tables)**
+```
+personal_record (personal bests)
+race_predictions (predicted race times)
+```
+*Foreign keys: all tables → `user.user_id`; `personal_record` → `activity.activity_id` (optional)*
 
 **Processing Flow:**
 
@@ -275,7 +336,6 @@ FIT file processing occurs after JSON wellness data processing and handles detai
 * **Database method**: `session.bulk_save_objects()` for time-series efficiency, updates `activity` table `ts_data_available=True` flag. When reprocessing, checks `ts_data_available` flag and skips processing if `True`. No database conflicts occur as already-processed files are detected and skipped entirely.
 * **Data processing**: Uses [`fitdecode`](https://pypi.org/project/fitdecode/) library for binary FIT file parsing with frame-based processing. Processes three frame types: Record frames (time-series sensor data with two-pass timestamp processing → `activity_ts_metric`), Lap frames (device-triggered segments with metric extraction → `activity_lap_metric`), Split frames (algorithmic intervals with type classification: rwd_run, rwd_walk, rwd_stand, interval_active → `activity_split_metric`). Handles array fields using suffix indexing (`_1`, `_2`, etc.) for multiple values per timestamp with field name validation (`field.name is not None`), "unknown" field filtering, and null value checking. Includes binary format validation, type conversion error handling (ValueError, TypeError), and graceful degradation for corrupt data.
 * **Data excluded**: "Unknown" field names, null values, fields with invalid field names (`field.name is None`), and corrupted binary data that fails parsing.
-
 
 ## Utility Scripts
 
