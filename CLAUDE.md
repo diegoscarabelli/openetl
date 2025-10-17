@@ -46,11 +46,11 @@ The `CONTRIBUTING.md` file includes:
 
 ## Code Execution Environment
 
-When running code in this repo, you can use the `airflow` conda environment, which is setup based on the [`requirements_dev.txt`](requirements_dev.txt). This environment includes all necessary dependencies for running the Airflow DAGs and tests.
+When running code in this repo, you can use the `openetl` conda environment, which is setup based on the [`requirements_dev.txt`](requirements_dev.txt). This environment includes all necessary dependencies for running the Airflow DAGs and tests.
 
 ### Command Reference
 
-- **Conda activation**: `source ~/.zshrc && conda activate airflow`
+- **Conda activation**: `source ~/.zshrc && conda activate openetl`
 
 ## MANDATORY Formatting Protocol
 
