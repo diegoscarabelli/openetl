@@ -153,9 +153,9 @@ The custom process task uses the [`GarminProcessor`](process.py) class that inhe
 
 **Database Schema Integration:**
 
-* Database tables defined in [`tables.ddl`](tables.ddl)
-* TimescaleDB hypertables defined in [`tables_tsdb.ddl`](tables_tsdb.ddl) for time-series data storage and efficient querying
-* SQLAlchemy ORM models in [`sqla_models.py`](sqla_models.py) extending base class defined in [`sql_utils.make_base()`](../../lib/sql_utils.py#make_base)
+* Database tables defined in [`tables.ddl`](tables.ddl).
+* TimescaleDB hypertables defined in [`tables_tsdb.ddl`](tables_tsdb.ddl) for time-series data storage and efficient querying.
+* SQLAlchemy ORM models in [`sqla_models.py`](sqla_models.py) extending base class defined in [`sql_utils.make_base()`](../../lib/sql_utils.py#make_base).
 
 The database schema contains 29 tables organized by category:
 
@@ -218,16 +218,57 @@ race_predictions (predicted race times)
 ```
 *Foreign keys: all tables → `user.user_id`; `personal_record` → `activity.activity_id` (optional)*
 
+**Database Upsert Methods:**
+
+The ETL pipeline uses four complementary methods to populate the Garmin schema tables, each optimized for different data patterns and performance requirements.
+
+**1. Bulk Upsert (`upsert_model_instances`). Used for 21 unique tables (25 operations).**
+- **Purpose**: Efficiently handle both inserts and updates using PostgreSQL's `INSERT ... ON CONFLICT DO UPDATE` syntax.
+- **When used**: Standard tables where records may already exist (activities, daily summaries, body metrics, sleep data).
+- **Why**: Provides optimal performance for batch operations while gracefully handling both new records and updates to existing data.
+- **Key feature**: Automatically updates `update_ts` timestamp on modifications while preserving `create_ts` on the original insert.
+
+**2. ORM Merge (`session.merge`). Used for 3 sport-specific metrics tables.**
+- **Purpose**: Upsert individual records using SQLAlchemy's ORM with primary key-based lookups.
+- **When used**: Sport-specific metrics (swimming laps, cycling dynamics, running dynamics) with complex relationships.
+- **Why**: Simplifies logic for low-volume tables where SQLAlchemy's relationship management provides value.
+- **Tradeoff**: Lower performance than bulk upsert, but cleaner code for relationship-heavy single-record operations.
+
+**3. Direct Insert (`session.add`). Used for 1 state-managed table.**
+- **Purpose**: Insert new records after explicit state transitions on existing data.
+- **When used**: Tables requiring pre-insert updates (e.g., `user_profile` where previous `latest=True` must become `latest=False`).
+- **Why**: Provides explicit control over insertion order when state management is critical.
+- **Pattern**: Typically follows `session.query().update()` to modify existing records before inserting new ones.
+
+**4. Bulk Insert (`session.bulk_save_objects`). Used for 3 high-volume time-series tables.**
+- **Purpose**: Maximum insert performance by bypassing ORM overhead and conflict detection.
+- **When used**: FIT file time-series data (activity records, heart rate samples, speed/power data) with 10,000+ records per activity.
+- **Why**: Data integrity guaranteed by upstream processing; duplicates are structurally impossible.
+- **Performance**: 10-50x faster than ORM methods for large time-series datasets.
+- **Tradeoff**: No conflict handling or updates. Suitable only for insert-only workflows.
+
+The method selection balances three factors: **performance** (bulk operations preferred), **data integrity** (conflict handling when needed), and **code clarity** (ORM methods for complex relationships).
+
+**Why 33 Operations for 29 Tables:**
+
+The pipeline executes 33 database operations to populate 29 tables because some tables aggregate data from multiple sources:
+
+- `vo2_max` receives 2 upsert operations both merging into the same daily record using different `update_columns`.
+- `training_load` receives 3 upsert operations all contributing different columns to the same daily record.
+- `user` table is created via raw SQL `INSERT ... ON CONFLICT DO NOTHING` for initial user record creation.
+
+This multi-source aggregation pattern (25 upserts + 3 merges + 1 add + 3 bulk + 1 raw SQL = 33 operations) allows comprehensive daily records to be built incrementally from different data sources while maintaining data integrity through conflict-aware upserts with column-specific updates.
+
 **Processing Flow:**
 
 The `process_file_set` method of the custom `GarminProcessor` class orchestrates the processing of all files in a `FileSet`, following a specific sequence to ensure data consistency and referential integrity.
 
 #### 1. User Profile Information ([`_process_user_profile`](process.py#_process_user_profile))
 
-User profile processing is executed first within `process_file_set` to establish the foundational user context required for all subsequent data processing. The method extracts the user ID from filenames and processes any USER_PROFILE files (under normal circumstances only one) to create or update the user's profile record. It ensures a minimal user record exists in the [`garmin.user`](tables.ddl) table before proceeding with USER_PROFILE data processing.
+User profile processing is executed first within `process_file_set` to establish the foundational user context required for all subsequent data processing. The method extracts the user ID from filenames and processes any USER_PROFILE files (under normal circumstances only one) to create or update the user's profile record. It ensures a minimal user record exists in the `garmin.user` table before proceeding with USER_PROFILE data processing.
 
 * **JSON file structure**: Root object containing `userData` section with user demographics (gender, weight, height, birth date), preferences (time/measurement formats), and fitness metrics (VO2 max, lactate threshold, HR zones).
-* **Target tables**: [`garmin.user`](tables.ddl) for basic user identity and [`garmin.user_profile`](tables.ddl) for detailed fitness metrics.
+* **Target tables**: `garmin.user` for basic user identity and `garmin.user_profile` for detailed fitness metrics.
 * **Database method**: Direct SQLAlchemy `session.add()` for `user_profile` table with manual `latest` flag management. User creation uses PostgreSQL `ON CONFLICT` SQL statements. When reprocessing, uses manual `latest` flag management: sets existing `latest=True` records to `latest=False`, then inserts new record with `latest=True`. All profile data updated except user identity.
 * **User creation**: Uses `INSERT ... ON CONFLICT (user_id) DO NOTHING` to ensure user record exists in the `garmin.user` table.
 * **Latest flag management**: Sets any existing `latest=True` record for same `user_id` to `latest=False`, then inserts new record with `latest=True`.
@@ -243,7 +284,7 @@ The system processes 13 different JSON data types from [`GARMIN_DATA_REGISTRY`](
 
 **Activities List Processing** ([`_process_activities`](process.py#_process_activities))
 * **JSON file structure**: Array of activity objects containing `activityId`, `activityName`, timestamps (`startTimeLocal`, `startTimeGMT`, `endTimeGMT`), nested objects (`activityType`, `eventType`, `privacy`), activity metrics (distance, duration, calories, heart rate), sport-specific fields (running cadence, power metrics, swimming metrics), and arrays (`userRoles`, `splitSummaries`).
-* **Target tables**: [`garmin.activity`](tables.ddl) (main), [`running_agg_metrics`](tables.ddl), [`cycling_agg_metrics`](tables.ddl), [`swimming_agg_metrics`](tables.ddl), [`supplemental_activity_metric`](tables.ddl).
+* **Target tables**: `garmin.activity` (main), `running_agg_metrics`, `cycling_agg_metrics`, `swimming_agg_metrics`, `supplemental_activity_metric`.
 * **Database method**: [`upsert_model_instances`](../../lib/sql_utils.py#upsert_model_instances) for main activity with `["activity_id"]` with `on_conflict_update=True` (update logic); `session.merge()` for sport-specific tables, which uses primary keys for conflict resolution with update logic. When reprocessing, updates all activity data except `activity_id` and `ts_data_available` flag (preserved to maintain FIT file processing state).
 * **Data processing**: Uses cascading `pop()` method to remove processed fields, enabling automatic supplemental metrics extraction from remaining fields with sport-specific metrics only processed if sport type matches. Separate processing functions for running, cycling, and swimming metrics with specialized field handling. Supplemental metrics capture all remaining fields not processed by other functions. Calculates `timezone_offset_hours` from local vs GMT time difference, creates timezone-aware `start_ts` and `end_ts` datetime objects, and adds `user_id` foreign key reference.
 * **Data excluded**:
@@ -257,76 +298,76 @@ The system processes 13 different JSON data types from [`GARMIN_DATA_REGISTRY`](
 
 **Sleep Data Processing** ([`_process_sleep`](process.py#_process_sleep))
 * **JSON file structure**: Root object containing `dailySleepDTO` with sleep session metadata (sleep duration, window confirmation, timestamps) and five time-series arrays: `sleepMovement`, `restlessEndTimestampGMT`, `spo2Values`, `hrv`, `breathingDisruptions`.
-* **Target tables**: [`garmin.sleep`](tables.ddl) (main), [`sleep_movement`](tables.ddl) (hypertable), [`sleep_restless_moment`](tables.ddl) (hypertable), [`spo2`](tables.ddl) (hypertable), [`hrv`](tables.ddl) (hypertable), [`breathing_disruption`](tables.ddl) (hypertable).
+* **Target tables**: `garmin.sleep` (main), `sleep_movement` (hypertable), `sleep_restless_moment` (hypertable), `spo2` (hypertable), `hrv` (hypertable), `breathing_disruption` (hypertable).
 * **Database method**: [`upsert_model_instances`](../../lib/sql_utils.py#upsert_model_instances) with dual conflict strategies: main `sleep` table uses `["user_id", "start_ts"]` with `on_conflict_update=True` for session metadata updates, five time-series tables use `["sleep_id", "timestamp"]` with `on_conflict_update=False` for insert-only data.
 * **Data processing**: Extracts main sleep record from `dailySleepDTO` and processes 5 time-series arrays using cascading `pop()` operations. Movement (activity_level), restless moments (events), SpO2 (oxygen saturation), HRV (heart rate variability), breathing disruptions, with timestamp validation required (`if timestamp_str`) and empty arrays (`[]`) returning early without processing. Calculates `timezone_offset_hours` from local vs GMT time difference, creates timezone-aware `start_ts` and `end_ts` datetime objects, and adds `user_id` and `sleep_id` foreign key references.
 * **Data excluded**: `sleepEndTimestampLocal` explicitly removed, any fields outside the 5 time-series arrays ignored.
 
 **Training Status Processing** ([`_process_training_status`](process.py#_process_training_status))
 * **JSON file structure**: Root object containing `mostRecentVO2Max` with nested `generic` and `cycling` VO2 max data including acclimation information, `mostRecentTrainingLoadBalance` with load balance metrics, and `mostRecentTrainingStatus` with ACWR and feedback data.
-* **Target tables**: [`garmin.vo2_max`](tables.ddl), [`acclimation`](tables.ddl), [`training_load`](tables.ddl).
+* **Target tables**: `garmin.vo2_max`, `acclimation`, `training_load`.
 * **Database method**: [`upsert_model_instances`](../../lib/sql_utils.py#upsert_model_instances) with `on_conflict_update=True` across three interconnected tables using date-based conflict resolution. `vo2_max` uses `["user_id", "date"]` merging generic/cycling values per record, `acclimation` uses `["user_id", "date", "acclimation_type"]` for heat/altitude differentiation, `training_load` uses `["user_id", "date"]` aggregating balance/ACWR data from this function with intensity minutes data from cross-function processing, requiring `on_conflict_update=True` to merge complementary data fields.
 * **Data excluded**: Fields outside the three main sections ignored; missing acclimation data handled gracefully.
 
 **Training Readiness Processing** ([`_process_training_readiness`](process.py#_process_training_readiness))
 * **JSON file structure**: Array of readiness objects containing `userProfilePK`, `calendarDate`, `timestamp`, `level` (MODERATE/HIGH/LOW), feedback messages (`feedbackLong`, `feedbackShort`), and associated feature scores.
-* **Target table**: [`garmin.training_readiness`](tables.ddl).
+* **Target table**: `garmin.training_readiness`.
 * **Database method**: [`upsert_model_instances`](../../lib/sql_utils.py#upsert_model_instances) with `on_conflict_update=True` (update logic) and `["user_id", "timestamp"]` conflict columns. When reprocessing, updates all readiness data except `user_id`, `timestamp`.
 * **Data processing**: Extracts daily readiness scores and associated features from JSON array with timestamp parsing and readiness score validation required. Calculates `timezone_offset_hours` from local vs UTC time difference, creates timezone-aware timestamp objects, and adds `user_id` foreign key reference.
 * **Data excluded**: Fields outside readiness array ignored.
 
 **Stress and Body Battery Processing** ([`_process_stress_body_battery`](process.py#_process_stress_body_battery))
 * **JSON file structure**: Root object containing metadata (user profile, dates, min/max values) and two time-series arrays: `stressValuesArray` with timestamp-stress level pairs and `bodyBatteryValuesArray` with timestamp-battery level pairs.
-* **Target tables**: [`garmin.stress`](tables.ddl) (hypertable), [`body_battery`](tables.ddl) (hypertable).
+* **Target tables**: `garmin.stress` (hypertable), `body_battery` (hypertable).
 * **Database method**: [`upsert_model_instances`](../../lib/sql_utils.py#upsert_model_instances) with `on_conflict_update=False` (insert-only logic) and `["user_id", "timestamp"]` conflict columns for both tables. When reprocessing, duplicates are ignored, existing data unchanged.
 * **Data processing**: Extracts from `stressValuesArray` and `bodyBatteryValuesArray` time-series with timestamp/value tuples. Adds `user_id` foreign key reference to all records.
 * **Data excluded**: All fields outside the two time-series arrays ignored.
 
 **Heart Rate Processing** ([`_process_heart_rate`](process.py#_process_heart_rate))
 * **JSON file structure**: Root object containing metadata (user profile, dates, resting/min/max heart rates) and `heartRateValues` array with timestamp-heart rate pairs in 2-minute intervals.
-* **Target table**: [`garmin.heart_rate`](tables.ddl) (hypertable).
+* **Target table**: `garmin.heart_rate` (hypertable).
 * **Database method**: [`upsert_model_instances`](../../lib/sql_utils.py#upsert_model_instances) with `on_conflict_update=False` (insert-only logic) and `["user_id", "timestamp"]` conflict columns. When reprocessing, duplicates are ignored, existing data unchanged.
 * **Data processing**: Extracts from `heartRateValues` array, processes tuples of `[timestamp_ms, heart_rate_value]` requiring both `timestamp_ms` and `heart_rate_value` to be non-null (`if timestamp_ms and heart_rate_value is not None`). Adds `user_id` foreign key reference to all records.
 * **Data excluded**: All fields outside `heartRateValues` array ignored.
 
 **Steps Processing** ([`_process_steps`](process.py#_process_steps))
 * **JSON file structure**: Array of step interval objects containing `startGMT`, `endGMT`, `steps` count, `pushes` count, and activity level classification (`primaryActivityLevel`).
-* **Target table**: [`garmin.steps`](tables.ddl) (hypertable).
+* **Target table**: `garmin.steps` (hypertable).
 * **Database method**: [`upsert_model_instances`](../../lib/sql_utils.py#upsert_model_instances) with `on_conflict_update=False` (insert-only logic) and `["user_id", "timestamp"]` conflict columns. When reprocessing, duplicates are ignored, existing data unchanged.
 * **Data processing**: Extracts from `summaryDTO` section, processes 15-minute intervals with step counts and activity levels. Creates timezone-aware timestamp objects from `endGMT` and adds `user_id` foreign key reference.
 * **Data excluded**: All fields outside `summaryDTO` section ignored.
 
 **Respiration Processing** ([`_process_respiration`](process.py#_process_respiration))
 * **JSON file structure**: Root object containing metadata (user profile, dates, sleep periods) and `respirationValues` array with breathing rate measurements in 2-minute intervals.
-* **Target table**: [`garmin.respiration`](tables.ddl) (hypertable).
+* **Target table**: `garmin.respiration` (hypertable).
 * **Database method**: [`upsert_model_instances`](../../lib/sql_utils.py#upsert_model_instances) with `on_conflict_update=False` (insert-only logic) and `["user_id", "timestamp"]` conflict columns. When reprocessing, duplicates are ignored, existing data unchanged.
 * **Data processing**: Extracts from `respirationValues` time-series array with 2-minute interval measurements. Adds `user_id` foreign key reference to all records.
 * **Data excluded**: Aggregated statistics and fields outside time-series array ignored.
 
 **Intensity Minutes Processing** ([`_process_intensity_minutes`](process.py#_process_intensity_minutes))
 * **JSON file structure**: Root object containing weekly/daily aggregate metrics (moderate/vigorous minutes, goals) and `wellnessIntensityDtoList` array with time-series intensity data.
-* **Target tables**: [`garmin.intensity_minutes`](tables.ddl) (hypertable), [`training_load`](tables.ddl).
+* **Target tables**: `garmin.intensity_minutes` (hypertable), `training_load`.
 * **Database method**: [`upsert_model_instances`](../../lib/sql_utils.py#upsert_model_instances) with `on_conflict_update=False` (insert-only logic) for `intensity_minutes` using `["user_id", "timestamp"]` conflict columns, `on_conflict_update=True` (update logic) for `training_load` using `["user_id", "date"]` conflict columns. Multiple functions contribute to `training_load` records (this function contributes intensity minutes data, Training Status processing contributes balance and ACWR data). When reprocessing, intensity minutes duplicates ignored, training load data updated except `user_id`, `date`.
 * **Data processing**: Extracts from `wellnessIntensityDtoList` time-series and aggregate intensity data.
 * **Dual processing**: Time-series data to intensity_minutes table, aggregate data to training_load table. Adds `user_id` foreign key reference and parses calendar date for training_load records.
 
 **Floors Processing** ([`_process_floors`](process.py#_process_floors))
 * **JSON file structure**: Root object containing metadata (timestamps) with `floorsValueDescriptorDTOList` describing array structure and `floorsValuesList` containing 15-minute interval floor ascent/descent data.
-* **Target table**: [`garmin.floors`](tables.ddl) (hypertable).
+* **Target table**: `garmin.floors` (hypertable).
 * **Database method**: [`upsert_model_instances`](../../lib/sql_utils.py#upsert_model_instances) with `on_conflict_update=False` (insert-only logic) and `["user_id", "timestamp"]` conflict columns. When reprocessing, duplicates are ignored, existing data unchanged.
 * **Data processing**: Extracts floors ascended/descended from 15-minute interval time-series arrays. Creates timezone-aware timestamp objects from `endTimeGMT` and adds `user_id` foreign key reference.
 * **Data excluded**: Aggregate floor counts and non time-series fields ignored.
 
 **Personal Records Processing** ([`_process_personal_records`](process.py#_process_personal_records))
 * **JSON file structure**: Array of personal record objects containing `typeId`, `value`, activity information (`activityId`, `activityName`, `activityType`), and timestamps for achievement dates.
-* **Target table**: [`garmin.personal_record`](tables.ddl).
+* **Target table**: `garmin.personal_record`.
 * **Database method**: Manual `latest` flag management followed by [`upsert_model_instances`](../../lib/sql_utils.py#upsert_model_instances) with `on_conflict_update=True` and `["user_id", "type_id", "timestamp"]` conflict columns. Sets existing `latest=True` records to `latest=False` for same `user_id` and `type_id`, then upserts new records with `latest=True`. When reprocessing, duplicate `user_id`, `type_id`, `timestamp` combinations are updated, ensuring `latest=True` flag is properly maintained.
 * **Data processing**: Extracts personal achievement records using [`PR_TYPE_LABELS`](constants.py#PR_TYPE_LABELS) mapping for record validation. Creates timezone-aware timestamp objects from `prStartTimeGmt` milliseconds and adds `user_id` foreign key reference. Type IDs 12-16 (steps-based records) use `activity_id=NULL` as they represent daily/weekly/monthly aggregates not tied to specific activities. Activity-based records validate `activity_id` existence to prevent foreign key violations, skipping records for missing activities during backfilling.
 * **Data excluded**: Records with `typeId` not in PR_TYPE_LABELS mapping, records referencing non-existent activities (with warning logged for backfilling scenarios).
 
 **Race Predictions Processing** ([`_process_race_predictions`](process.py#_process_race_predictions))
 * **JSON file structure**: Root object containing `userId`, `calendarDate`, and predicted race times in seconds (`time5K`, `time10K`, `timeHalfMarathon`, `timeMarathon`).
-* **Target table**: [`garmin.race_predictions`](tables.ddl).
+* **Target table**: `garmin.race_predictions`.
 * **Database method**: [`upsert_model_instances`](../../lib/sql_utils.py#upsert_model_instances) with `on_conflict_update=False` (insert-only logic) and `["user_id", "date"]` conflict columns. When reprocessing, duplicates are ignored, existing predictions unchanged.
 * **Data processing**: Extracts predicted race times (5K, 10K, half marathon, marathon) based on current fitness level. Parses calendar date and adds `user_id` foreign key reference.
 * **Latest flag management**: Sets previous predictions for same user to `latest=False` before inserting new predictions.
@@ -336,7 +377,7 @@ The system processes 13 different JSON data types from [`GARMIN_DATA_REGISTRY`](
 
 FIT file processing occurs after JSON wellness data processing and handles detailed time-series activity data. Each activity present in the Activities List JSON file should have a corresponding FIT file containing granular sensor measurements, lap metrics, and split data. FIT files provide the detailed temporal data that complements the aggregate metrics already stored from the Activities List processing.
 
-* **Target tables**: [`garmin.activity_ts_metric`](tables.ddl) (hypertable), [`activity_lap_metric`](tables.ddl), [`activity_split_metric`](tables.ddl).
+* **Target tables**: `garmin.activity_ts_metric` (hypertable), `activity_lap_metric`, `activity_split_metric`.
 * **Database method**: `session.bulk_save_objects()` for time-series efficiency, updates `activity` table `ts_data_available=True` flag. When reprocessing, checks `ts_data_available` flag and skips processing if `True`. No database conflicts occur as already-processed files are detected and skipped entirely.
 * **Data processing**: Uses [`fitdecode`](https://pypi.org/project/fitdecode/) library for binary FIT file parsing with frame-based processing. Processes three frame types: Record frames (time-series sensor data with two-pass timestamp processing → `activity_ts_metric`), Lap frames (device-triggered segments with metric extraction → `activity_lap_metric`), Split frames (algorithmic intervals with type classification: rwd_run, rwd_walk, rwd_stand, interval_active → `activity_split_metric`). Handles array fields using suffix indexing (`_1`, `_2`, etc.) for multiple values per timestamp with field name validation (`field.name is not None`), "unknown" field filtering, and null value checking. Includes binary format validation, type conversion error handling (ValueError, TypeError), and graceful degradation for corrupt data.
 * **Data excluded**: "Unknown" field names, null values, fields with invalid field names (`field.name is None`), and corrupted binary data that fails parsing.

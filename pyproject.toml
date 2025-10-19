@@ -33,6 +33,7 @@ dialect = "postgres"
 large_file_skip_byte_limit = 0
 max_line_length = 88
 runaway_limit = 100
+exclude_rules = "RF04"
 
 [tool.sqlfluff.indentation]
 allow_implicit_indents = true
@@ -48,6 +49,15 @@ line_position = "leading"
 [tool.sqlfluff.rules.layout.long_lines]
 ignore_comment_clauses = true
 ignore_comment_lines = true
+
+[tool.sqlfluff.rules.references.keywords]
+# Allow common column names that are SQL keywords
+unquoted_identifiers_policy = "column_aliases"
+quoted_identifiers_policy = "none"
+
+[tool.sqlfluff.rules.capitalisation.keywords]
+# Allow lowercase keywords for REFERENCES in foreign key constraints
+capitalisation_policy = "consistent"
 
 [tool.pylint.messages_control]
 disable = [

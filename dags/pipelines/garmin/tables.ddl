@@ -737,8 +737,7 @@ COMMENT ON COLUMN garmin.running_agg_metrics.update_ts IS
 
 -- Long table for storing miscellaneous activity metrics.
 CREATE TABLE IF NOT EXISTS garmin.supplemental_activity_metric (
-    activity_id BIGINT
-    REFERENCES garmin.activity (activity_id) ON DELETE CASCADE
+    activity_id BIGINT REFERENCES garmin.activity (activity_id) ON DELETE CASCADE
     , metric TEXT
     , value FLOAT
 
