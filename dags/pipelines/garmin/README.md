@@ -222,25 +222,25 @@ race_predictions (predicted race times)
 
 The ETL pipeline uses four complementary methods to populate the Garmin schema tables, each optimized for different data patterns and performance requirements.
 
-**1. Bulk Upsert (upsert_model_instances). Used for 24 tables.**
+**1. Bulk Upsert (`upsert_model_instances`). Used for 24 tables.**
 - **Purpose**: Efficiently handle both inserts and updates using PostgreSQL's `INSERT ... ON CONFLICT DO UPDATE` syntax.
 - **When used**: Standard tables where records may already exist (activities, daily summaries, body metrics, sleep data).
 - **Why**: Provides optimal performance for batch operations while gracefully handling both new records and updates to existing data.
 - **Key feature**: Automatically updates `update_ts` timestamp on modifications while preserving `create_ts` on the original insert.
 
-**2. ORM Merge (session.merge). Used for 3 sport-specific metrics tables.**
+**2. ORM Merge (`session.merge`). Used for 3 sport-specific metrics tables.**
 - **Purpose**: Upsert individual records using SQLAlchemy's ORM with primary key-based lookups.
 - **When used**: Sport-specific metrics (swimming laps, cycling dynamics, running dynamics) with complex relationships.
 - **Why**: Simplifies logic for low-volume tables where SQLAlchemy's relationship management provides value.
 - **Tradeoff**: Lower performance than bulk upsert, but cleaner code for relationship-heavy single-record operations.
 
-**3. Direct Insert (session.add). Used for 2 state-managed tables.**
+**3. Direct Insert (`session.add`). Used for 2 state-managed tables.**
 - **Purpose**: Insert new records after explicit state transitions on existing data.
 - **When used**: Tables requiring pre-insert updates (e.g., `user_profile` where previous `latest=True` must become `latest=False`).
 - **Why**: Provides explicit control over insertion order when state management is critical.
 - **Pattern**: Typically follows `session.query().update()` to modify existing records before inserting new ones.
 
-**4. Bulk Insert (session.bulk_save_objects). Used for 4 high-volume time-series tables.**
+**4. Bulk Insert (`session.bulk_save_objects`). Used for 4 high-volume time-series tables.**
 - **Purpose**: Maximum insert performance by bypassing ORM overhead and conflict detection.
 - **When used**: FIT file time-series data (activity records, heart rate samples, speed/power data) with 10,000+ records per activity.
 - **Why**: Data integrity guaranteed by upstream processing; duplicates are structurally impossible.
