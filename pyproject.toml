@@ -49,6 +49,11 @@ line_position = "leading"
 ignore_comment_clauses = true
 ignore_comment_lines = true
 
+[tool.sqlfluff.rules.references.keywords]
+# Allow common column names that are SQL keywords
+unquoted_identifiers_policy = "column_aliases"
+quoted_identifiers_policy = "none"
+
 [tool.pylint.messages_control]
 disable = [
     "logging-fstring-interpolation",
