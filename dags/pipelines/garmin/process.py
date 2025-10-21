@@ -961,7 +961,7 @@ class GarminProcessor(Processor):
             "retro",
             "sleepFromDevice",
             "deviceRemCapable",
-            # Stress and HRV.
+            # Stress and breathing disruption.
             "avgSleepStress",
             "breathingDisruptionSeverity",
             # Sleep insights.
