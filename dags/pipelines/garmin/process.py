@@ -961,14 +961,9 @@ class GarminProcessor(Processor):
             "retro",
             "sleepFromDevice",
             "deviceRemCapable",
-            "skinTempDataExists",
-            # Stress and HRV.
+            # Stress and breathing disruption.
             "avgSleepStress",
             "breathingDisruptionSeverity",
-            "avgOvernightHrv",
-            "hrvStatus",
-            "bodyBatteryChange",
-            "restingHeartRate",
             # Sleep insights.
             "sleepScoreFeedback",
             "sleepScoreInsight",
@@ -1061,7 +1056,10 @@ class GarminProcessor(Processor):
         root_level_fields_nullable = [
             "restlessMomentsCount",
             "avgOvernightHrv",
+            "hrvStatus",
             "bodyBatteryChange",
+            "restingHeartRate",
+            "skinTempDataExists",
             "remSleepData",
         ]
         for field_name in root_level_fields_nullable:
