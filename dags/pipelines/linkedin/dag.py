@@ -5,7 +5,6 @@ Orchestrates the processing and storage of LinkedIn connection CSV exports.
 """
 
 import pendulum
-from airflow import DAG  # noqa: F401 - Required for Airflow DAG detection.
 
 from dags.lib.dag_utils import create_dag
 from dags.lib.etl_config import ETLConfig

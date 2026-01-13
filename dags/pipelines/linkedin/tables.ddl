@@ -44,6 +44,7 @@ CREATE TABLE IF NOT EXISTS linkedin.connection (
     , active_connection BOOLEAN NOT NULL DEFAULT TRUE
 
     -- Audit fields.
+    , capture_date DATE NOT NULL
     , create_ts TIMESTAMPTZ NOT NULL DEFAULT NOW()
     , update_ts TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
@@ -83,6 +84,9 @@ COMMENT ON COLUMN linkedin.connection.connected_on IS
 COMMENT ON COLUMN linkedin.connection.active_connection IS
 'Boolean flag indicating if this is an active connection. Set to FALSE '
 'when connection is removed (present in DB but not in latest CSV export).';
+COMMENT ON COLUMN linkedin.connection.capture_date IS
+'Date when the data was captured/exported from LinkedIn (extracted from filename). '
+'Used to ensure older exports do not overwrite newer data during out-of-order processing.';
 COMMENT ON COLUMN linkedin.connection.create_ts IS
 'Timestamp when the record was first created in the database.';
 COMMENT ON COLUMN linkedin.connection.update_ts IS

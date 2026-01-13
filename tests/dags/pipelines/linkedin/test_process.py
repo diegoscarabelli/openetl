@@ -156,6 +156,59 @@ Bob,Wilson,https://www.linkedin.com/in/bobwilson,bob@test.com,Startup LLC,Develo
         assert result is None
 
     # ==========================================================================
+    # Capture Date Extraction Tests
+    # ==========================================================================
+
+    def test_extract_capture_date_valid(self, processor: LinkedInProcessor) -> None:
+        """
+        Test extracting capture date from valid filename.
+        """
+
+        file_path = Path("/some/path/Connections_20240115.csv")
+        result = processor._extract_capture_date(file_path)
+        assert result == date(2024, 1, 15)
+
+    def test_extract_capture_date_various_dates(
+        self, processor: LinkedInProcessor
+    ) -> None:
+        """
+        Test extracting capture dates from various filenames.
+        """
+
+        test_cases = [
+            (Path("Connections_20230101.csv"), date(2023, 1, 1)),
+            (Path("Connections_20241231.csv"), date(2024, 12, 31)),
+            (Path("Connections_20260110.csv"), date(2026, 1, 10)),
+        ]
+
+        for file_path, expected in test_cases:
+            result = processor._extract_capture_date(file_path)
+            assert result == expected, f"Failed for {file_path}."
+
+    def test_extract_capture_date_no_date_in_filename(
+        self, processor: LinkedInProcessor
+    ) -> None:
+        """
+        Test extracting capture date from filename without date returns None.
+        """
+
+        file_path = Path("Connections.csv")
+        result = processor._extract_capture_date(file_path)
+        assert result is None
+
+    def test_extract_capture_date_invalid_date(
+        self, processor: LinkedInProcessor
+    ) -> None:
+        """
+        Test extracting capture date from filename with invalid date returns None.
+        """
+
+        # Invalid month (13).
+        file_path = Path("Connections_20241301.csv")
+        result = processor._extract_capture_date(file_path)
+        assert result is None
+
+    # ==========================================================================
     # CSV Parsing Tests
     # ==========================================================================
 
@@ -253,7 +306,7 @@ Test,User,https://www.linkedin.com/in/testuser,test@test.com,Test Co,Tester,01 J
         Test that processing a CSV file creates Connection instances.
         """
 
-        csv_file = temp_dir / "Connections.csv"
+        csv_file = temp_dir / "Connections_20240115.csv"
         csv_file.write_text(sample_csv_content)
 
         with patch(
@@ -280,7 +333,7 @@ Test,User,https://www.linkedin.com/in/testuser,test@test.com,Test Co,Tester,01 J
         Test that all processed connections have active_connection=True.
         """
 
-        csv_file = temp_dir / "Connections.csv"
+        csv_file = temp_dir / "Connections_20240115.csv"
         csv_file.write_text(sample_csv_content)
 
         with patch(
@@ -302,7 +355,7 @@ Test,User,https://www.linkedin.com/in/testuser,test@test.com,Test Co,Tester,01 J
         Test that dates are correctly parsed into date objects.
         """
 
-        csv_file = temp_dir / "Connections.csv"
+        csv_file = temp_dir / "Connections_20240115.csv"
         csv_file.write_text(sample_csv_content)
 
         with patch(
@@ -330,7 +383,7 @@ Test,User,https://www.linkedin.com/in/testuser,test@test.com,Test Co,Tester,01 J
         Test that empty optional fields are converted to None.
         """
 
-        csv_file = temp_dir / "Connections.csv"
+        csv_file = temp_dir / "Connections_20240115.csv"
         csv_file.write_text(sample_csv_content)
 
         with patch(
@@ -342,6 +395,54 @@ Test,User,https://www.linkedin.com/in/testuser,test@test.com,Test Co,Tester,01 J
 
             # Jane Smith has no email.
             assert instances[1].email_address is None
+
+    def test_process_connections_file_sets_capture_date(
+        self,
+        processor: LinkedInProcessor,
+        mock_session: MagicMock,
+        temp_dir: Path,
+        sample_csv_content: str,
+    ) -> None:
+        """
+        Test that capture_date is extracted from filename and set on all connections.
+        """
+
+        csv_file = temp_dir / "Connections_20240115.csv"
+        csv_file.write_text(sample_csv_content)
+
+        with patch(
+            "dags.pipelines.linkedin.process.upsert_model_instances"
+        ) as mock_upsert:
+            processor._process_connections_file(csv_file, mock_session)
+
+            instances = mock_upsert.call_args[1]["model_instances"]
+
+            # All connections should have capture_date from filename.
+            expected_date = date(2024, 1, 15)
+            assert all(inst.capture_date == expected_date for inst in instances)
+
+    def test_process_connections_file_uses_latest_check_column(
+        self,
+        processor: LinkedInProcessor,
+        mock_session: MagicMock,
+        temp_dir: Path,
+        sample_csv_content: str,
+    ) -> None:
+        """
+        Test that upsert is called with latest_check_column for capture_date.
+        """
+
+        csv_file = temp_dir / "Connections_20240115.csv"
+        csv_file.write_text(sample_csv_content)
+
+        with patch(
+            "dags.pipelines.linkedin.process.upsert_model_instances"
+        ) as mock_upsert:
+            processor._process_connections_file(csv_file, mock_session)
+
+            call_kwargs = mock_upsert.call_args[1]
+            assert call_kwargs["latest_check_column"] == "capture_date"
+            assert call_kwargs["latest_check_inclusive"] is True
 
     def test_process_connections_file_skips_empty_url(
         self,
@@ -361,7 +462,7 @@ John,Doe,,john@example.com,Acme Corp,Engineer,09 Jan 2024
 Jane,Smith,https://www.linkedin.com/in/janesmith,,Tech Inc,Manager,15 Feb 2024
 """
 
-        csv_file = temp_dir / "Connections.csv"
+        csv_file = temp_dir / "Connections_20240115.csv"
         csv_file.write_text(csv_content)
 
         with patch(
@@ -390,7 +491,7 @@ Header notes here.
 First Name,Last Name,URL,Email Address,Company,Position,Connected On
 """
 
-        csv_file = temp_dir / "Connections.csv"
+        csv_file = temp_dir / "Connections_20240115.csv"
         csv_file.write_text(csv_content)
 
         with patch(
@@ -409,55 +510,65 @@ First Name,Last Name,URL,Email Address,Company,Position,Connected On
         self, processor: LinkedInProcessor, mock_session: MagicMock
     ) -> None:
         """
-        Test that connections not in file are marked as inactive.
+        Test that connections not in file are marked as inactive via bulk UPDATE.
         """
 
-        # Mock existing active connections in database.
-        existing_conn_1 = MagicMock(spec=Connection)
-        existing_conn_1.url = "https://www.linkedin.com/in/existing1"
-        existing_conn_1.active_connection = True
+        # Track query calls to distinguish URL query from update query.
+        query_call_count = [0]
+        url_query_mock = MagicMock()
+        update_query_mock = MagicMock()
 
-        existing_conn_2 = MagicMock(spec=Connection)
-        existing_conn_2.url = "https://www.linkedin.com/in/existing2"
-        existing_conn_2.active_connection = True
+        def query_side_effect(arg):
+            query_call_count[0] += 1
+            if query_call_count[0] == 1:
+                # First query is for URLs.
+                return url_query_mock
+            else:
+                # Second query is for bulk update.
+                return update_query_mock
 
-        mock_session.query.return_value.filter.return_value.all.return_value = [
-            existing_conn_1,
-            existing_conn_2,
+        mock_session.query.side_effect = query_side_effect
+
+        # Mock the URL query result (returns tuples with URL).
+        url_query_mock.filter.return_value.filter.return_value.all.return_value = [
+            ("https://www.linkedin.com/in/existing1",),
+            ("https://www.linkedin.com/in/existing2",),
         ]
 
         # Only existing1 is in the current file.
         active_urls: Set[str] = {"https://www.linkedin.com/in/existing1"}
+        capture_date = date(2024, 1, 15)
 
-        processor._mark_inactive_connections(mock_session, active_urls)
+        processor._mark_inactive_connections(mock_session, active_urls, capture_date)
 
-        # existing1 should remain active, existing2 should be deactivated.
-        assert existing_conn_1.active_connection is True
-        assert existing_conn_2.active_connection is False
-        mock_session.flush.assert_called_once()
+        # Verify update was called (existing2 should be deactivated).
+        update_query_mock.filter.return_value.update.assert_called_once()
+        update_call_args = update_query_mock.filter.return_value.update.call_args
+        update_dict = update_call_args[0][0]
+        assert update_dict[Connection.active_connection] is False
+        assert update_dict[Connection.capture_date] == capture_date
+        assert Connection.update_ts in update_dict
 
     def test_mark_inactive_connections_all_active(
         self, processor: LinkedInProcessor, mock_session: MagicMock
     ) -> None:
         """
-        Test that no changes when all DB connections are in file.
+        Test that no update when all DB connections are in file.
         """
 
-        existing_conn = MagicMock(spec=Connection)
-        existing_conn.url = "https://www.linkedin.com/in/existing"
-        existing_conn.active_connection = True
-
-        mock_session.query.return_value.filter.return_value.all.return_value = [
-            existing_conn
+        # Mock the URL query result (returns tuples with URL).
+        mock_session.query.return_value.filter.return_value.filter.return_value.all.return_value = [
+            ("https://www.linkedin.com/in/existing",),
         ]
 
         active_urls: Set[str] = {"https://www.linkedin.com/in/existing"}
+        capture_date = date(2024, 1, 15)
 
-        processor._mark_inactive_connections(mock_session, active_urls)
+        processor._mark_inactive_connections(mock_session, active_urls, capture_date)
 
-        # No changes should be made.
-        assert existing_conn.active_connection is True
-        mock_session.flush.assert_not_called()
+        # Only one query() call should happen (for getting URLs).
+        # No second query() call for update since all URLs are in file.
+        assert mock_session.query.call_count == 1
 
     def test_mark_inactive_connections_empty_database(
         self, processor: LinkedInProcessor, mock_session: MagicMock
@@ -466,14 +577,19 @@ First Name,Last Name,URL,Email Address,Company,Position,Connected On
         Test handling when database has no active connections.
         """
 
-        mock_session.query.return_value.filter.return_value.all.return_value = []
+        # Mock the URL query result (returns empty list).
+        mock_session.query.return_value.filter.return_value.filter.return_value.all.return_value = (
+            []
+        )
 
         active_urls: Set[str] = {"https://www.linkedin.com/in/newuser"}
+        capture_date = date(2024, 1, 15)
 
-        processor._mark_inactive_connections(mock_session, active_urls)
+        processor._mark_inactive_connections(mock_session, active_urls, capture_date)
 
-        # No flush needed when nothing to deactivate.
-        mock_session.flush.assert_not_called()
+        # Only one query() call should happen (for getting URLs).
+        # No second query() call for update since DB is empty.
+        assert mock_session.query.call_count == 1
 
     # ==========================================================================
     # Process File Set Tests
@@ -490,7 +606,7 @@ First Name,Last Name,URL,Email Address,Company,Position,Connected On
         Test that process_file_set processes all files in the file set.
         """
 
-        csv_file = temp_dir / "Connections.csv"
+        csv_file = temp_dir / "Connections_20240115.csv"
         csv_file.write_text(sample_csv_content)
 
         file_set = FileSet(files={LinkedInFileTypes.CONNECTIONS: [csv_file]})
@@ -511,10 +627,10 @@ First Name,Last Name,URL,Email Address,Company,Position,Connected On
         Test that process_file_set handles multiple files.
         """
 
-        csv_file_1 = temp_dir / "Connections_1.csv"
+        csv_file_1 = temp_dir / "Connections_20240115.csv"
         csv_file_1.write_text(sample_csv_content)
 
-        csv_file_2 = temp_dir / "Connections_2.csv"
+        csv_file_2 = temp_dir / "Connections_20240116.csv"
         csv_file_2.write_text(sample_csv_content)
 
         file_set = FileSet(

@@ -87,21 +87,25 @@ The `process_file_set` method of [`LinkedInProcessor`](process.py) orchestrates 
 
 2. **Date Parsing** ([`_parse_date`](process.py)): Converts LinkedIn date format "DD Mon YYYY" (e.g., "09 Jan 2026") to Python `date` objects.
 
-3. **Connection Processing** ([`_process_connections_file`](process.py)):
-   - Creates `Connection` model instances for each row with valid URL
-   - Sets `active_connection=True` for all connections in the current file
-   - Uses [`upsert_model_instances`](../../lib/sql_utils.py#upsert_model_instances) to insert or update the `linkedin.connection` table (defined in [`tables.ddl`](tables.ddl)) with `["url"]` as the conflict column
-   - Updates: `first_name`, `last_name`, `email_address`, `company`, `position`, `connected_on`, `active_connection`
+3. **Capture Date Extraction** ([`_extract_capture_date`](process.py)): Extracts the export date from the filename (e.g., `Connections_20260110.csv` → `2026-01-10`). This date is stored with each record to prevent stale data from older exports overwriting newer data.
 
-4. **Inactive Marking** ([`_mark_inactive_connections`](process.py)):
-   - Queries all currently active connections from the database
+4. **Connection Processing** ([`_process_connections_file`](process.py)):
+   - Creates `Connection` model instances for each row with valid URL
+   - Sets `active_connection=True` and `capture_date` for all connections
+   - Uses [`upsert_model_instances`](../../lib/sql_utils.py#upsert_model_instances) to insert or update the `linkedin.connection` table (defined in [`tables.ddl`](tables.ddl)) with `["url"]` as the conflict column
+   - Updates: `first_name`, `last_name`, `email_address`, `company`, `position`, `connected_on`, `active_connection`, `capture_date`
+   - Uses `latest_check_column="capture_date"` with `latest_check_inclusive=True` to only update records when the file's capture date is newer than or equal to the existing record
+
+5. **Inactive Marking** ([`_mark_inactive_connections`](process.py)):
+   - Queries active connections with `capture_date` older than or equal to the current file
    - Sets `active_connection=False` for connections in DB but not in current file
    - Enables tracking of removed connections over time
 
 **Database Upsert Method:**
 
 * [`upsert_model_instances`](../../lib/sql_utils.py#upsert_model_instances) with `on_conflict_update=True` using `["url"]` as the conflict column
-* When reprocessing, updates all connection data except `url` (the unique identifier)
+* Uses `latest_check_column="capture_date"` with `latest_check_inclusive=True` to prevent older exports from overwriting newer data
+* When reprocessing, updates all connection data except `url` (the unique identifier) only if the file's `capture_date` is newer than or equal to the existing record
 
 ### Store task
 

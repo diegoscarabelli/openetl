@@ -44,3 +44,6 @@ class Connection(UpsertBase):
     # Connection metadata.
     connected_on = Column(Date)
     active_connection = Column(Boolean, nullable=False, default=True)
+
+    # Audit fields.
+    capture_date = Column(Date, nullable=False)

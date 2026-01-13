@@ -6,7 +6,8 @@ class to handle processing of LinkedIn connection CSV files.
 """
 
 import csv
-from datetime import date, datetime
+import re
+from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import List, Optional, Set
 
@@ -60,6 +61,14 @@ class LinkedInProcessor(Processor):
         :param session: SQLAlchemy Session object.
         """
 
+        # Extract capture date from filename (e.g., "Connections_20260110.csv").
+        capture_date = self._extract_capture_date(file_path)
+        if not capture_date:
+            LOGGER.error(f"Could not extract capture date from {file_path.name}.")
+            return
+
+        LOGGER.info(f"Processing file with capture_date: {capture_date}.")
+
         # Parse the CSV file and extract connections.
         connections_data = self._parse_csv_file(file_path)
 
@@ -93,12 +102,15 @@ class LinkedInProcessor(Processor):
                 position=row.get("Position", "").strip() or None,
                 connected_on=connected_on,
                 active_connection=True,
+                capture_date=capture_date,
             )
             connection_instances.append(connection)
 
         LOGGER.info(f"Parsed {len(connection_instances)} connections from CSV.")
 
         # Upsert connections with active_connection=True.
+        # Only update if capture_date in file >= capture_date in DB (prevents stale data
+        # from older exports overwriting newer data during out-of-order processing).
         if connection_instances:
             upsert_model_instances(
                 session=session,
@@ -113,12 +125,15 @@ class LinkedInProcessor(Processor):
                     "position",
                     "connected_on",
                     "active_connection",
+                    "capture_date",
                 ],
+                latest_check_column="capture_date",
+                latest_check_inclusive=True,
             )
             LOGGER.info(f"Upserted {len(connection_instances)} connections.")
 
-        # Mark connections not in file as inactive.
-        self._mark_inactive_connections(session, file_urls)
+        # Mark connections not in file as inactive (only if this file is newer).
+        self._mark_inactive_connections(session, file_urls, capture_date)
 
     def _parse_csv_file(self, file_path: Path) -> List[dict]:
         """
@@ -179,33 +194,65 @@ class LinkedInProcessor(Processor):
             LOGGER.warning(f"Could not parse date '{date_str}': {e}.")
             return None
 
+    def _extract_capture_date(self, file_path: Path) -> Optional[date]:
+        """
+        Extract the capture date from the filename.
+
+        Expected filename format: "Connections_YYYYMMDD.csv" (e.g., "Connections_20260110.csv").
+
+        :param file_path: Path to the CSV file.
+        :return: date object or None if extraction fails.
+        """
+
+        # Match pattern like "20260110" in filename.
+        match = re.search(r"(\d{8})", file_path.name)
+        if not match:
+            return None
+
+        try:
+            date_str = match.group(1)
+            return datetime.strptime(date_str, "%Y%m%d").date()
+        except ValueError as e:
+            LOGGER.warning(
+                f"Could not parse capture date from '{file_path.name}': {e}."
+            )
+            return None
+
     def _mark_inactive_connections(
-        self, session: Session, active_urls: Set[str]
+        self, session: Session, active_urls: Set[str], capture_date: date
     ) -> None:
         """
         Mark connections as inactive if they are in the database but not in the current
-        file export.
+        file export, but only if the current file is newer than the connection's
+        capture_date.
 
         :param session: SQLAlchemy Session object.
         :param active_urls: Set of URLs present in the current CSV file.
+        :param capture_date: Capture date of the current file being processed.
         """
 
-        # Query all currently active connections.
-        active_db_connections = (
-            session.query(Connection)
+        # Query URLs of active connections with capture_date <= current file's date.
+        db_active_urls = set(
+            row[0]
+            for row in session.query(Connection.url)
             .filter(Connection.active_connection == True)  # noqa: E712
+            .filter(Connection.capture_date <= capture_date)
             .all()
         )
 
-        # Find connections to mark as inactive.
-        connections_to_deactivate = []
-        for conn in active_db_connections:
-            if conn.url not in active_urls:
-                conn.active_connection = False
-                connections_to_deactivate.append(conn.url)
+        # Find URLs to deactivate (in DB but not in file).
+        urls_to_deactivate = db_active_urls - active_urls
 
-        if connections_to_deactivate:
-            LOGGER.info(
-                f"Marked {len(connections_to_deactivate)} connections as inactive."
+        if urls_to_deactivate:
+            # Bulk UPDATE with explicit update_ts (matches _upsert_values pattern).
+            session.query(Connection).filter(
+                Connection.url.in_(urls_to_deactivate)
+            ).update(
+                {
+                    Connection.active_connection: False,
+                    Connection.capture_date: capture_date,
+                    Connection.update_ts: datetime.now(timezone.utc),
+                },
+                synchronize_session=False,
             )
-            session.flush()
+            LOGGER.info(f"Marked {len(urls_to_deactivate)} connections as inactive.")

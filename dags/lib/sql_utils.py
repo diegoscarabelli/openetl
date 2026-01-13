@@ -227,6 +227,7 @@ def upsert_model_instances(
     conflict_columns: Optional[List[str]] = None,
     on_conflict_update: bool = False,
     latest_check_column: str = None,
+    latest_check_inclusive: bool = False,
 ) -> List[DeclarativeMeta]:
     """
     Bulk upsert SQLAlchemy ORM model instances into SQL database tables, handling
@@ -245,8 +246,10 @@ def upsert_model_instances(
     :param on_conflict_update: If True, update rows on conflict; if False, ignore
         conflicts and do not update existing rows.
     :param latest_check_column: If specified, only update rows where the value in this
-        column is greater than the existing value. Useful for time/version-based
-        updates.
+        column is greater than (or greater than or equal to, if latest_check_inclusive
+        is True) the existing value. Useful for time/version-based updates.
+    :param latest_check_inclusive: If True, use >= comparison for latest_check_column
+        instead of >. Defaults to False (strict greater than).
     :return: List of SQLAlchemy model instances as persisted in the database after
         upsert.
     """
@@ -275,6 +278,7 @@ def upsert_model_instances(
         conflict_columns=conflict_columns,
         on_conflict_update=on_conflict_update,
         latest_check_column=latest_check_column,
+        latest_check_inclusive=latest_check_inclusive,
         returning_columns=model_columns,
     )
 
@@ -291,6 +295,7 @@ def _upsert_values(
     conflict_columns: Optional[List[str]] = None,
     on_conflict_update: bool = False,
     latest_check_column: str = None,
+    latest_check_inclusive: bool = False,
     returning_columns: Optional[List[str]] = None,
 ) -> Optional[List[Dict[str, Any]]]:
     """
@@ -311,8 +316,10 @@ def _upsert_values(
     :param on_conflict_update: If True, update rows on conflict; if False, ignore
         conflicts and do not update existing rows.
     :param latest_check_column: If specified, only update rows where the value in this
-        column is greater than the existing value. Useful for time/version-based
-        updates.
+        column is greater than (or greater than or equal to, if latest_check_inclusive
+        is True) the existing value. Useful for time/version-based updates.
+    :param latest_check_inclusive: If True, use >= comparison for latest_check_column
+        instead of >. Defaults to False (strict greater than).
     :param returning_columns: List of columns to return after the operation. If
         specified, returns all rows that would have been inserted, including those with
         conflicts.
@@ -351,14 +358,16 @@ def _upsert_values(
         if hasattr(model, "update_ts") and "update_ts" not in update_dict:
             update_dict["update_ts"] = datetime.now(tz=timezone.utc)
 
-        where_clause = (
-            (
-                insert_stmt.excluded[latest_check_column]
-                > getattr(model, latest_check_column)
+        if latest_check_column:
+            excluded_col = insert_stmt.excluded[latest_check_column]
+            existing_col = getattr(model, latest_check_column)
+            where_clause = (
+                excluded_col >= existing_col
+                if latest_check_inclusive
+                else excluded_col > existing_col
             )
-            if latest_check_column
-            else None
-        )
+        else:
+            where_clause = None
 
         upsert_stmt = insert_stmt.on_conflict_do_update(
             index_elements=conflict_columns, set_=update_dict, where=where_clause
