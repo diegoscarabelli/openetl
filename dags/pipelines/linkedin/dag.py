@@ -2,6 +2,8 @@
 LinkedIn connection data pipeline DAG configuration.
 
 Orchestrates the processing and storage of LinkedIn connection CSV exports.
+
+Note: This file must contain 'airflow' for Airflow's safe mode DAG discovery.
 """
 
 import pendulum
