@@ -59,8 +59,13 @@ COMMENT ON EXTENSION timescaledb IS
 
 -- Garmin Connect data schema.
 CREATE SCHEMA IF NOT EXISTS garmin;
-COMMENT ON SCHEMA garmin IS 
+COMMENT ON SCHEMA garmin IS
     'Wellness, health, fitness and activities data from Garmin Connect platform.';
+
+-- LinkedIn data schema.
+CREATE SCHEMA IF NOT EXISTS linkedin;
+COMMENT ON SCHEMA linkedin IS
+    'Professional network connection data from LinkedIn platform.';
 
 -- System monitoring schema.
 CREATE SCHEMA IF NOT EXISTS infra_monitor;
@@ -78,6 +83,7 @@ COMMENT ON SCHEMA superset_uploads IS
 SET search_path TO
     public
     , garmin
+    , linkedin
     , infra_monitor
     , superset_uploads;
 

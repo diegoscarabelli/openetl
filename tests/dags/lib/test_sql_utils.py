@@ -339,3 +339,218 @@ class TestUpsertModelInstances:
         updated_record = db_session.query(TempExplicitModel).filter_by(id=1).first()
         assert updated_record.name == "updated"
         assert updated_record.update_ts == explicit_update_ts
+
+    def test_upsert_values_latest_check_column_strict_greater(self, db_session):
+        """
+        Test latest_check_column with strict > comparison (default behavior).
+        """
+
+        # Create temp table with version column.
+        db_session.execute(
+            text(
+                """
+            CREATE TEMP TABLE test_version_strict_temp (
+                id INTEGER PRIMARY KEY,
+                name TEXT,
+                version INTEGER NOT NULL
+            )
+        """
+            )
+        )
+
+        temp_base = declarative_base()
+
+        class TempVersionModel(temp_base):
+            """
+            Temporary test model with version column.
+            """
+
+            __tablename__ = "test_version_strict_temp"
+            id = Column(Integer, primary_key=True)
+            name = Column(String)
+            version = Column(Integer)
+
+        # Insert initial record with version=5.
+        _upsert_values(
+            TempVersionModel,
+            [{"id": 1, "name": "initial", "version": 5}],
+            db_session,
+            conflict_columns=["id"],
+            on_conflict_update=True,
+            latest_check_column="version",
+            latest_check_inclusive=False,  # Strict > (default).
+        )
+        db_session.commit()
+
+        record = db_session.query(TempVersionModel).filter_by(id=1).first()
+        assert record.name == "initial"
+        assert record.version == 5
+
+        # Try to upsert with version=5 (same) - should NOT update.
+        _upsert_values(
+            TempVersionModel,
+            [{"id": 1, "name": "same_version", "version": 5}],
+            db_session,
+            conflict_columns=["id"],
+            on_conflict_update=True,
+            latest_check_column="version",
+            latest_check_inclusive=False,
+        )
+        db_session.commit()
+
+        record = db_session.query(TempVersionModel).filter_by(id=1).first()
+        assert record.name == "initial"  # Should NOT be updated.
+        assert record.version == 5
+
+        # Try to upsert with version=6 (greater) - should update.
+        _upsert_values(
+            TempVersionModel,
+            [{"id": 1, "name": "newer_version", "version": 6}],
+            db_session,
+            conflict_columns=["id"],
+            on_conflict_update=True,
+            latest_check_column="version",
+            latest_check_inclusive=False,
+        )
+        db_session.commit()
+
+        record = db_session.query(TempVersionModel).filter_by(id=1).first()
+        assert record.name == "newer_version"  # Should be updated.
+        assert record.version == 6
+
+    def test_upsert_values_latest_check_column_inclusive(self, db_session):
+        """
+        Test latest_check_column with >= comparison (inclusive).
+        """
+
+        # Create temp table with version column.
+        db_session.execute(
+            text(
+                """
+            CREATE TEMP TABLE test_version_inclusive_temp (
+                id INTEGER PRIMARY KEY,
+                name TEXT,
+                version INTEGER NOT NULL
+            )
+        """
+            )
+        )
+
+        temp_base = declarative_base()
+
+        class TempVersionInclusiveModel(temp_base):
+            """
+            Temporary test model with version column for inclusive test.
+            """
+
+            __tablename__ = "test_version_inclusive_temp"
+            id = Column(Integer, primary_key=True)
+            name = Column(String)
+            version = Column(Integer)
+
+        # Insert initial record with version=5.
+        _upsert_values(
+            TempVersionInclusiveModel,
+            [{"id": 1, "name": "initial", "version": 5}],
+            db_session,
+            conflict_columns=["id"],
+            on_conflict_update=True,
+            latest_check_column="version",
+            latest_check_inclusive=True,  # >= comparison.
+        )
+        db_session.commit()
+
+        record = db_session.query(TempVersionInclusiveModel).filter_by(id=1).first()
+        assert record.name == "initial"
+        assert record.version == 5
+
+        # Try to upsert with version=5 (same) + inclusive=True - SHOULD update.
+        _upsert_values(
+            TempVersionInclusiveModel,
+            [{"id": 1, "name": "same_version_updated", "version": 5}],
+            db_session,
+            conflict_columns=["id"],
+            on_conflict_update=True,
+            latest_check_column="version",
+            latest_check_inclusive=True,
+        )
+        db_session.commit()
+
+        record = db_session.query(TempVersionInclusiveModel).filter_by(id=1).first()
+        assert (
+            record.name == "same_version_updated"
+        )  # Should be updated with inclusive.
+        assert record.version == 5
+
+    def test_upsert_values_latest_check_column_updates_update_ts(self, db_session):
+        """
+        Test that update_ts is updated when latest_check_column condition passes.
+        """
+
+        import time
+
+        # Create temp table with version and update_ts columns.
+        db_session.execute(
+            text(
+                """
+            CREATE TEMP TABLE test_version_update_ts_temp (
+                id INTEGER PRIMARY KEY,
+                name TEXT,
+                version INTEGER NOT NULL,
+                create_ts TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                update_ts TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            )
+        """
+            )
+        )
+
+        temp_base = declarative_base()
+
+        class TempVersionUpdateTsModel(temp_base):
+            """
+            Temporary test model with version and update_ts columns.
+            """
+
+            __tablename__ = "test_version_update_ts_temp"
+            id = Column(Integer, primary_key=True)
+            name = Column(String)
+            version = Column(Integer)
+            create_ts = Column(DateTime)
+            update_ts = Column(DateTime)
+
+        # Insert initial record.
+        _upsert_values(
+            TempVersionUpdateTsModel,
+            [{"id": 1, "name": "initial", "version": 1}],
+            db_session,
+            conflict_columns=["id"],
+            on_conflict_update=True,
+            latest_check_column="version",
+        )
+        db_session.commit()
+
+        record = db_session.query(TempVersionUpdateTsModel).filter_by(id=1).first()
+        initial_update_ts = record.update_ts
+
+        # Wait briefly to ensure timestamp difference.
+        time.sleep(0.1)
+
+        # Upsert with newer version - should update and change update_ts.
+        _upsert_values(
+            TempVersionUpdateTsModel,
+            [{"id": 1, "name": "updated", "version": 2}],
+            db_session,
+            conflict_columns=["id"],
+            on_conflict_update=True,
+            latest_check_column="version",
+        )
+        db_session.commit()
+
+        updated_record = (
+            db_session.query(TempVersionUpdateTsModel).filter_by(id=1).first()
+        )
+        assert updated_record.name == "updated"
+        assert updated_record.version == 2
+        assert (
+            updated_record.update_ts > initial_update_ts
+        )  # update_ts should be newer.
