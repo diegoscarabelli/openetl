@@ -49,8 +49,6 @@ CREATE TABLE IF NOT EXISTS linkedin.connection (
 );
 
 -- Indexes for connection table.
-CREATE INDEX IF NOT EXISTS connection_url_idx
-ON linkedin.connection (url);
 CREATE INDEX IF NOT EXISTS connection_active_connection_idx
 ON linkedin.connection (active_connection);
 CREATE INDEX IF NOT EXISTS connection_connected_on_idx
