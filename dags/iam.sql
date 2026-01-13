@@ -51,9 +51,16 @@ CREATE USER IF NOT EXISTS airflow_garmin
 COMMENT ON ROLE airflow_garmin IS
     'Service user for Airflow Garmin data pipeline operations.';
 
--- Grant foundational read-only access to airflow user.
+-- Airflow service user for LinkedIn data pipeline operations.
+CREATE USER IF NOT EXISTS airflow_linkedin
+    WITH PASSWORD '<REDACTED>';
+COMMENT ON ROLE airflow_linkedin IS
+    'Service user for Airflow LinkedIn data pipeline operations.';
+
+-- Grant foundational read-only access to airflow users.
 -- This provides base SELECT permissions across all schemas via the readers role.
 GRANT readers TO airflow_garmin;
+GRANT readers TO airflow_linkedin;
 
 ----------------------------------------------------------------------------------------
 -- INFRASTRUCTURE MONITORING ROLE SETUP
@@ -67,6 +74,7 @@ COMMENT ON ROLE infra_monitor_role IS
 
 -- Grant monitoring role to airflow users.
 GRANT infra_monitor_role TO airflow_garmin;
+GRANT infra_monitor_role TO airflow_linkedin;
 
 -- Grant schema access and data manipulation permissions to monitoring role.
 GRANT USAGE ON SCHEMA infra_monitor TO infra_monitor_role;
@@ -87,32 +95,39 @@ ALTER DEFAULT PRIVILEGES IN SCHEMA infra_monitor
 
 -- Grant schema usage permissions to readers role.
 GRANT USAGE ON SCHEMA garmin TO readers;
+GRANT USAGE ON SCHEMA linkedin TO readers;
 GRANT USAGE ON SCHEMA infra_monitor TO readers;
 GRANT USAGE ON SCHEMA superset_uploads TO readers;
 
 -- Grant SELECT permissions on existing tables and views.
 GRANT SELECT ON ALL TABLES IN SCHEMA garmin TO readers;
+GRANT SELECT ON ALL TABLES IN SCHEMA linkedin TO readers;
 GRANT SELECT ON ALL TABLES IN SCHEMA infra_monitor TO readers;
 GRANT SELECT ON ALL TABLES IN SCHEMA superset_uploads TO readers;
 
 -- Grant SELECT permissions on existing sequences.
 GRANT SELECT ON ALL SEQUENCES IN SCHEMA garmin TO readers;
+GRANT SELECT ON ALL SEQUENCES IN SCHEMA linkedin TO readers;
 GRANT SELECT ON ALL SEQUENCES IN SCHEMA infra_monitor TO readers;
 GRANT SELECT ON ALL SEQUENCES IN SCHEMA superset_uploads TO readers;
 
 -- Set default privileges for future objects (ensures new tables are readable).
-ALTER DEFAULT PRIVILEGES IN SCHEMA garmin 
+ALTER DEFAULT PRIVILEGES IN SCHEMA garmin
     GRANT SELECT ON TABLES TO readers;
-ALTER DEFAULT PRIVILEGES IN SCHEMA infra_monitor 
+ALTER DEFAULT PRIVILEGES IN SCHEMA linkedin
     GRANT SELECT ON TABLES TO readers;
-ALTER DEFAULT PRIVILEGES IN SCHEMA superset_uploads 
+ALTER DEFAULT PRIVILEGES IN SCHEMA infra_monitor
+    GRANT SELECT ON TABLES TO readers;
+ALTER DEFAULT PRIVILEGES IN SCHEMA superset_uploads
     GRANT SELECT ON TABLES TO readers;
 
-ALTER DEFAULT PRIVILEGES IN SCHEMA garmin 
+ALTER DEFAULT PRIVILEGES IN SCHEMA garmin
     GRANT SELECT ON SEQUENCES TO readers;
-ALTER DEFAULT PRIVILEGES IN SCHEMA infra_monitor 
+ALTER DEFAULT PRIVILEGES IN SCHEMA linkedin
     GRANT SELECT ON SEQUENCES TO readers;
-ALTER DEFAULT PRIVILEGES IN SCHEMA superset_uploads 
+ALTER DEFAULT PRIVILEGES IN SCHEMA infra_monitor
+    GRANT SELECT ON SEQUENCES TO readers;
+ALTER DEFAULT PRIVILEGES IN SCHEMA superset_uploads
     GRANT SELECT ON SEQUENCES TO readers;
 
 ----------------------------------------------------------------------------------------
@@ -120,14 +135,26 @@ ALTER DEFAULT PRIVILEGES IN SCHEMA superset_uploads
 ----------------------------------------------------------------------------------------
 
 -- Grant data manipulation permissions to airflow_garmin for pipeline operations.
+GRANT USAGE ON SCHEMA garmin TO airflow_garmin;
 GRANT INSERT, UPDATE ON ALL TABLES IN SCHEMA garmin TO airflow_garmin;
 GRANT USAGE, SELECT, UPDATE ON ALL SEQUENCES IN SCHEMA garmin TO airflow_garmin;
 
 -- Set default privileges for future objects in garmin schema.
-ALTER DEFAULT PRIVILEGES IN SCHEMA garmin 
+ALTER DEFAULT PRIVILEGES IN SCHEMA garmin
     GRANT INSERT, UPDATE ON TABLES TO airflow_garmin;
-ALTER DEFAULT PRIVILEGES IN SCHEMA garmin 
+ALTER DEFAULT PRIVILEGES IN SCHEMA garmin
     GRANT USAGE, SELECT, UPDATE ON SEQUENCES TO airflow_garmin;
+
+-- Grant data manipulation permissions to airflow_linkedin for pipeline operations.
+GRANT USAGE ON SCHEMA linkedin TO airflow_linkedin;
+GRANT INSERT, UPDATE ON ALL TABLES IN SCHEMA linkedin TO airflow_linkedin;
+GRANT USAGE, SELECT, UPDATE ON ALL SEQUENCES IN SCHEMA linkedin TO airflow_linkedin;
+
+-- Set default privileges for future objects in linkedin schema.
+ALTER DEFAULT PRIVILEGES IN SCHEMA linkedin
+    GRANT INSERT, UPDATE ON TABLES TO airflow_linkedin;
+ALTER DEFAULT PRIVILEGES IN SCHEMA linkedin
+    GRANT USAGE, SELECT, UPDATE ON SEQUENCES TO airflow_linkedin;
 
 ----------------------------------------------------------------------------------------
 -- SUPERSET ROLES AND PERMISSIONS (OPTIONAL)
