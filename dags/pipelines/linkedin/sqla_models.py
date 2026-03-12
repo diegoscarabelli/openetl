@@ -9,7 +9,6 @@ from sqlalchemy import Boolean, Column, Date, Integer, MetaData, Text
 
 from dags.lib.sql_utils import make_base
 
-
 # Create shared metadata and base class with update_ts for upsert operations.
 _shared_metadata = MetaData()
 

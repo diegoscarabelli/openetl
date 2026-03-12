@@ -13,7 +13,6 @@ from dags.lib.etl_config import ETLConfig
 from dags.pipelines.linkedin.constants import LINKEDIN_FILE_TYPES
 from dags.pipelines.linkedin.process import LinkedInProcessor
 
-
 # Configure the LinkedIn data pipeline.
 config = ETLConfig(
     dag_id="linkedin",

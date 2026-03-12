@@ -86,7 +86,7 @@ x-airflow-common:
     AIRFLOW__LOGGING__LOGGING_LEVEL: INFO
     AIRFLOW__LOGGING__BASE_LOG_FOLDER: '/opt/airflow/logs'
     AIRFLOW__LOGGING__REMOTE_BASE_LOG_FOLDER: '/opt/airflow/logs'
-    AIRFLOW__CELERY__WORKER_ENABLE_REMOTE_CONTROL: 'False'
+    AIRFLOW__CELERY__WORKER_ENABLE_REMOTE_CONTROL: 'True'
 
     # Celery configurations
     # Define the <max>,<min> number of worker instances.

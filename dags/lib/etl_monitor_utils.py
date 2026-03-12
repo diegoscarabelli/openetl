@@ -22,7 +22,6 @@ from dags.lib.etl_config import ETLConfig
 from dags.lib.logging_utils import LOGGER
 from dags.lib.sql_utils import make_base, get_lens_engine, upsert_model_instances
 
-
 # SQLAlchemy ORM base for infra_monitor schema.
 InfraMonitorBase = make_base(schema="infra_monitor", include_update_ts=True)
 
