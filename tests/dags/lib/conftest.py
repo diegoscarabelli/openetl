@@ -12,7 +12,6 @@ from sqlalchemy.orm import sessionmaker, declarative_base, Session
 
 from dags.lib.etl_monitor_utils import InfraMonitorBase, ETLResultSqla
 
-
 # Load environment variables from .env file.
 load_dotenv()
 

@@ -20,7 +20,6 @@ from sqlalchemy import (
 
 from dags.lib.sql_utils import make_base, fkey
 
-
 # Create shared metadata and base classes for different model types.
 # Use the same metadata instance to ensure foreign key relationships work.
 _shared_metadata = MetaData()

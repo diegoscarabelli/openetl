@@ -16,7 +16,6 @@ from dags.pipelines.garmin.constants import GARMIN_FILE_TYPES
 from dags.pipelines.garmin.extract import extract
 from dags.pipelines.garmin.process import GarminProcessor
 
-
 # Configure the Garmin Connect data pipeline.
 config = ETLConfig(
     dag_id="garmin",

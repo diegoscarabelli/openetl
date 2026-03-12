@@ -30,7 +30,6 @@ from dags.lib.dag_utils import (
 from dags.lib.etl_config import ETLConfig
 from dags.lib.etl_monitor_utils import ETLResultRecord
 
-
 # --------------------------------------------------------------------------------------
 # Helpers
 # --------------------------------------------------------------------------------------

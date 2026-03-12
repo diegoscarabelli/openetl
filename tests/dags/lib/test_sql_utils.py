@@ -198,18 +198,14 @@ class TestUpsertModelInstances:
         """
 
         # Use raw SQL to test the functionality directly without table creation.
-        db_session.execute(
-            text(
-                """
+        db_session.execute(text("""
             CREATE TEMP TABLE test_update_ts_temp (
                 id INTEGER PRIMARY KEY,
                 name TEXT,
                 create_ts TIMESTAMPTZ NOT NULL DEFAULT NOW(),
                 update_ts TIMESTAMPTZ NOT NULL DEFAULT NOW()
             )
-        """
-            )
-        )
+        """))
 
         # Create a simple mock model for this test.
         temp_base = declarative_base()
@@ -284,18 +280,14 @@ class TestUpsertModelInstances:
         """
 
         # Use raw SQL to test the functionality directly.
-        db_session.execute(
-            text(
-                """
+        db_session.execute(text("""
             CREATE TEMP TABLE test_explicit_ts_temp (
                 id INTEGER PRIMARY KEY,
                 name TEXT,
                 create_ts TIMESTAMPTZ NOT NULL DEFAULT NOW(),
                 update_ts TIMESTAMPTZ NOT NULL DEFAULT NOW()
             )
-        """
-            )
-        )
+        """))
 
         # Create a simple mock model for this test.
         temp_base = declarative_base()
@@ -346,17 +338,13 @@ class TestUpsertModelInstances:
         """
 
         # Create temp table with version column.
-        db_session.execute(
-            text(
-                """
+        db_session.execute(text("""
             CREATE TEMP TABLE test_version_strict_temp (
                 id INTEGER PRIMARY KEY,
                 name TEXT,
                 version INTEGER NOT NULL
             )
-        """
-            )
-        )
+        """))
 
         temp_base = declarative_base()
 
@@ -424,17 +412,13 @@ class TestUpsertModelInstances:
         """
 
         # Create temp table with version column.
-        db_session.execute(
-            text(
-                """
+        db_session.execute(text("""
             CREATE TEMP TABLE test_version_inclusive_temp (
                 id INTEGER PRIMARY KEY,
                 name TEXT,
                 version INTEGER NOT NULL
             )
-        """
-            )
-        )
+        """))
 
         temp_base = declarative_base()
 
@@ -490,9 +474,7 @@ class TestUpsertModelInstances:
         import time
 
         # Create temp table with version and update_ts columns.
-        db_session.execute(
-            text(
-                """
+        db_session.execute(text("""
             CREATE TEMP TABLE test_version_update_ts_temp (
                 id INTEGER PRIMARY KEY,
                 name TEXT,
@@ -500,9 +482,7 @@ class TestUpsertModelInstances:
                 create_ts TIMESTAMPTZ NOT NULL DEFAULT NOW(),
                 update_ts TIMESTAMPTZ NOT NULL DEFAULT NOW()
             )
-        """
-            )
-        )
+        """))
 
         temp_base = declarative_base()
 
