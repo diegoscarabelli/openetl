@@ -899,7 +899,7 @@ class GarminProcessor(Processor):
             record = StrengthSet(
                 activity_id=activity_id,
                 set_idx=exercise_set.get("messageIndex"),
-                set_type=exercise_set.get("setType", "UNKNOWN"),
+                set_type=exercise_set.get("setType") or "UNKNOWN",
                 start_time=start_time,
                 duration=exercise_set.get("duration"),
                 wkt_step_index=exercise_set.get("wktStepIndex"),
