@@ -5305,5 +5305,6 @@ class TestGarminProcessor:
         # Act.
         processor._process_exercise_sets(file_path, mock_session)
 
-        # Assert - no database operations.
+        # Assert - delete is called to clean stale rows, but no inserts.
+        mock_session.query.return_value.filter_by.return_value.delete.assert_called()
         mock_session.add_all.assert_not_called()

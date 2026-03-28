@@ -852,12 +852,19 @@ class GarminProcessor(Processor):
         activity_id = data.get("activityId")
         exercise_sets = data.get("exerciseSets")
 
-        if not activity_id or not exercise_sets:
-            LOGGER.warning(f"⚠️ No exercise sets data in {file_path.name}.")
+        if not activity_id:
+            LOGGER.warning(f"⚠️ No activityId in {file_path.name}.")
             return
 
-        # Delete existing rows for reprocessing.
+        # Always delete existing rows for reprocessing (cleans stale data even
+        # when the activity no longer has exercise sets).
         session.query(StrengthSet).filter_by(activity_id=activity_id).delete()
+
+        if not exercise_sets:
+            LOGGER.info(
+                f"No exercise sets for activity {activity_id} in {file_path.name}."
+            )
+            return
 
         # Map each set to a StrengthSet record.
         set_records = []

@@ -1063,9 +1063,7 @@ class TestExerciseSetsExtraction:
         mock_garmin_client.get_activity_exercise_sets.return_value = exercise_data
 
         # Act.
-        result = extractor._extract_exercise_sets(
-            22320029355, "2025-01-01T12:00:00+00:00"
-        )
+        result = extractor._extract_exercise_sets(22320029355, "2025-01-01T12:00:00Z")
 
         # Assert.
         assert result is not None
@@ -1096,7 +1094,7 @@ class TestExerciseSetsExtraction:
         }
 
         # Act.
-        result = extractor._extract_exercise_sets(12345, "2025-01-01T12:00:00+00:00")
+        result = extractor._extract_exercise_sets(12345, "2025-01-01T12:00:00Z")
 
         # Assert.
         assert result is None
@@ -1119,7 +1117,7 @@ class TestExerciseSetsExtraction:
         )
 
         # Act.
-        result = extractor._extract_exercise_sets(12345, "2025-01-01T12:00:00+00:00")
+        result = extractor._extract_exercise_sets(12345, "2025-01-01T12:00:00Z")
 
         # Assert.
         assert result is None
