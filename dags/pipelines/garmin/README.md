@@ -23,6 +23,7 @@ The data includes:
 | **Race Predictions** | Predicted running times based on current fitness level. | `/metrics-service/metrics/racepredictions/latest/{display_name}` | [12345678_RACE_PREDICTIONS_2025-08-07T12:00:00Z.json](./example_data/12345678_RACE_PREDICTIONS_2025-08-07T12:00:00Z.json) |
 | **User Profile** | User profile settings including gender, weight, height, birthday, VO2 max (running and cycling), and lactate threshold (speed and heart rate). | `/userprofile-service/userprofile/settings` | [12345678_USER_PROFILE_2025-08-07T12:00:00Z.json](./example_data/12345678_USER_PROFILE_2025-08-07T12:00:00Z.json) |
 | **Activities List** | Numerous aggregated metrics for user-recorded activities. | `/activitylist-service/activities/search/activities` | [12345678_ACTIVITIES_LIST_2025-08-07T12:00:00Z.json](./example_data/12345678_ACTIVITIES_LIST_2025-08-07T12:00:00Z.json) |
+| **Exercise Sets** | Per-exercise aggregates and per-set granular data from strength training activities, including exercise categories, repetition counts, weight, volume, and set-level timing. | `/activity-service/activity/{activity_id}/exerciseSets` | [12345678_EXERCISE_SETS_19983039914_2025-08-07T12:00:00Z.json](./example_data/12345678_EXERCISE_SETS_19983039914_2025-08-07T12:00:00Z.json) |
 | **Activity Data (FIT)** | Detailed time-series metrics from sports activities including lap metrics, split metrics, and record-level data with device information. Proprietary binary format optimized for compactness and interoperability. Follows the [FIT Protocol](https://developer.garmin.com/fit/protocol/).| `/download-service/files/activity/{activity_id}` | [12345678_ACTIVITY_19983039914_2025-08-07T12:00:00Z.fit](./example_data/12345678_ACTIVITY_19983039914_2025-08-07T12:00:00Z.fit) |
 
 ### Standalone Python Package: garmin-health-data
@@ -157,7 +158,7 @@ The custom process task uses the [`GarminProcessor`](process.py) class that inhe
 * TimescaleDB hypertables defined in [`tables_tsdb.ddl`](tables_tsdb.ddl) for time-series data storage and efficient querying.
 * SQLAlchemy ORM models in [`sqla_models.py`](sqla_models.py) extending base class defined in [`sql_utils.make_base()`](../../lib/sql_utils.py#make_base).
 
-The database schema contains 29 tables organized by category:
+The database schema contains 31 tables organized by category:
 
 **User & Profile (2 tables)**
 ```
@@ -211,6 +212,13 @@ vo2_max (VO2 max estimates)
 ```
 *Foreign keys: all tables → `user.user_id`*
 
+**Strength Training (2 tables)**
+```
+strength_exercise (per-exercise aggregates from summarizedExerciseSets)
+strength_set (per-set granular data from exercise sets API)
+```
+*Primary keys: `strength_exercise` uses `(activity_id, exercise_category, exercise_name)`; `strength_set` uses `(activity_id, set_idx)`. Foreign keys: all tables → `activity.activity_id`*
+
 **Records & Predictions (2 tables)**
 ```
 personal_record (personal bests)
@@ -240,6 +248,12 @@ The ETL pipeline uses four complementary methods to populate the Garmin schema t
 - **Why**: Provides explicit control over insertion order when state management is critical.
 - **Pattern**: Typically follows `session.query().update()` to modify existing records before inserting new ones.
 
+**3b. Delete+Insert (`session.query().delete()` + `session.add_all()`). Used for 2 strength training tables.**
+- **Purpose**: Full replacement of records for an activity to handle reprocessing where composite PK components can change.
+- **When used**: Strength training tables (`strength_exercise`, `strength_set`) where exercise names, set counts, or weights may be edited on Garmin Connect after initial processing.
+- **Why**: Standard upsert cannot handle renamed exercises (stale PK rows persist) or removed sets (orphaned index rows persist). Delete+insert ensures a clean slate.
+- **Pattern**: Delete all rows for a given `activity_id`, then insert fresh rows within the same transaction.
+
 **4. Bulk Insert (`session.bulk_save_objects`). Used for 3 high-volume time-series tables.**
 - **Purpose**: Maximum insert performance by bypassing ORM overhead and conflict detection.
 - **When used**: FIT file time-series data (activity records, heart rate samples, speed/power data) with 10,000+ records per activity.
@@ -249,15 +263,16 @@ The ETL pipeline uses four complementary methods to populate the Garmin schema t
 
 The method selection balances three factors: **performance** (bulk operations preferred), **data integrity** (conflict handling when needed), and **code clarity** (ORM methods for complex relationships).
 
-**Why 33 Operations for 29 Tables:**
+**Why 35 Operations for 31 Tables:**
 
-The pipeline executes 33 database operations to populate 29 tables because some tables aggregate data from multiple sources:
+The pipeline executes 35 database operations to populate 31 tables because some tables aggregate data from multiple sources:
 
 - `vo2_max` receives 2 upsert operations both merging into the same daily record using different `update_columns`.
 - `training_load` receives 3 upsert operations all contributing different columns to the same daily record.
 - `user` table is created via raw SQL `INSERT ... ON CONFLICT DO NOTHING` for initial user record creation.
+- `strength_exercise` and `strength_set` each use a delete+insert pair (2 operations per table) for reprocessing safety.
 
-This multi-source aggregation pattern (25 upserts + 3 merges + 1 add + 3 bulk + 1 raw SQL = 33 operations) allows comprehensive daily records to be built incrementally from different data sources while maintaining data integrity through conflict-aware upserts with column-specific updates.
+This multi-source aggregation pattern (25 upserts + 3 merges + 1 add + 2 delete+inserts + 3 bulk + 1 raw SQL = 35 operations) allows comprehensive daily records to be built incrementally from different data sources while maintaining data integrity through conflict-aware upserts with column-specific updates.
 
 **Processing Flow:**
 
