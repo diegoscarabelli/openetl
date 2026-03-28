@@ -139,6 +139,12 @@ GRANT USAGE ON SCHEMA garmin TO airflow_garmin;
 GRANT INSERT, UPDATE ON ALL TABLES IN SCHEMA garmin TO airflow_garmin;
 GRANT USAGE, SELECT, UPDATE ON ALL SEQUENCES IN SCHEMA garmin TO airflow_garmin;
 
+-- Grant DELETE on tables that use delete+insert instead of upsert.
+-- These tables have composite PKs where key components can change on reprocessing,
+-- so stale rows must be removed before reinserting.
+GRANT DELETE ON garmin.strength_exercise TO airflow_garmin;
+GRANT DELETE ON garmin.strength_set TO airflow_garmin;
+
 -- Set default privileges for future objects in garmin schema.
 ALTER DEFAULT PRIVILEGES IN SCHEMA garmin
     GRANT INSERT, UPDATE ON TABLES TO airflow_garmin;

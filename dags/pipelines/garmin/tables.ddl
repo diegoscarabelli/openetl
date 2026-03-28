@@ -2183,3 +2183,132 @@ COMMENT ON COLUMN garmin.activity_lap_metric.create_ts IS
 'Timestamp when the record was created in the database.';
 
 ----------------------------------------------------------------------------------------
+
+-- Strength training per-exercise aggregates from summarizedExerciseSets.
+CREATE TABLE IF NOT EXISTS garmin.strength_exercise (
+    activity_id BIGINT REFERENCES garmin.activity (activity_id) ON DELETE CASCADE
+    , exercise_category TEXT NOT NULL
+    , exercise_name TEXT NOT NULL
+
+    -- Aggregate metrics.
+    , sets INTEGER
+    , reps INTEGER
+    , volume FLOAT
+    , duration_ms FLOAT
+    , max_weight FLOAT
+
+    -- Audit fields.
+    , create_ts TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    , update_ts TIMESTAMPTZ NOT NULL DEFAULT NOW()
+
+    -- Composite primary key.
+    , PRIMARY KEY (activity_id, exercise_category, exercise_name)
+);
+
+-- Indexes (activity_id covered by composite PK).
+CREATE INDEX IF NOT EXISTS strength_exercise_exercise_category_idx
+ON garmin.strength_exercise (exercise_category);
+CREATE INDEX IF NOT EXISTS strength_exercise_exercise_name_idx
+ON garmin.strength_exercise (exercise_name);
+
+-- Table comment.
+COMMENT ON TABLE garmin.strength_exercise IS
+'Strength training per-exercise aggregates from Garmin Connect '
+'summarizedExerciseSets. Each row represents one exercise type within '
+'a strength training activity.';
+
+-- Column comments.
+COMMENT ON COLUMN garmin.strength_exercise.activity_id IS
+'References garmin.activity(activity_id).';
+COMMENT ON COLUMN garmin.strength_exercise.exercise_category IS
+'Exercise category (e.g., BENCH_PRESS, CURL).';
+COMMENT ON COLUMN garmin.strength_exercise.exercise_name IS
+'Exercise sub-category or name (e.g., BARBELL_BENCH_PRESS, DUMBBELL_CURL).';
+COMMENT ON COLUMN garmin.strength_exercise.sets IS
+'Number of sets performed for this exercise.';
+COMMENT ON COLUMN garmin.strength_exercise.reps IS
+'Total number of repetitions across all sets.';
+COMMENT ON COLUMN garmin.strength_exercise.volume IS
+'Total volume (weight x reps) in grams.';
+COMMENT ON COLUMN garmin.strength_exercise.duration_ms IS
+'Total duration of all sets in milliseconds.';
+COMMENT ON COLUMN garmin.strength_exercise.max_weight IS
+'Maximum weight used across all sets in grams.';
+COMMENT ON COLUMN garmin.strength_exercise.create_ts IS
+'Timestamp when the record was created in the database.';
+COMMENT ON COLUMN garmin.strength_exercise.update_ts IS
+'Timestamp when the record was last modified in the database.';
+
+----------------------------------------------------------------------------------------
+
+-- Strength training per-set granular data from exercise sets API.
+CREATE TABLE IF NOT EXISTS garmin.strength_set (
+    activity_id BIGINT REFERENCES garmin.activity (activity_id) ON DELETE CASCADE
+    , set_idx INTEGER NOT NULL
+
+    -- Set metadata.
+    , set_type TEXT NOT NULL
+    , start_time TIMESTAMPTZ
+    , duration FLOAT
+    , wkt_step_index INTEGER
+
+    -- Exercise metrics.
+    , repetition_count INTEGER
+    , weight FLOAT
+
+    -- ML exercise classification (from highest-probability entry).
+    , exercise_category TEXT
+    , exercise_name TEXT
+    , exercise_probability FLOAT
+
+    -- Audit fields.
+    , create_ts TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    , update_ts TIMESTAMPTZ NOT NULL DEFAULT NOW()
+
+    -- Composite primary key.
+    , PRIMARY KEY (activity_id, set_idx)
+);
+
+-- Indexes (activity_id covered by composite PK).
+CREATE INDEX IF NOT EXISTS strength_set_set_type_idx
+ON garmin.strength_set (set_type);
+CREATE INDEX IF NOT EXISTS strength_set_exercise_category_idx
+ON garmin.strength_set (exercise_category);
+CREATE INDEX IF NOT EXISTS strength_set_exercise_name_idx
+ON garmin.strength_set (exercise_name);
+
+-- Table comment.
+COMMENT ON TABLE garmin.strength_set IS
+'Per-set granular strength training data from Garmin Connect exercise '
+'sets API. Stores all set types (ACTIVE, REST, WARMUP, DROP_SET, '
+'FAILURE) for rest-to-work ratio analysis.';
+
+-- Column comments.
+COMMENT ON COLUMN garmin.strength_set.activity_id IS
+'References garmin.activity(activity_id).';
+COMMENT ON COLUMN garmin.strength_set.set_idx IS
+'Set index from API messageIndex (may have gaps).';
+COMMENT ON COLUMN garmin.strength_set.set_type IS
+'Type of set (ACTIVE, REST, WARMUP, DROP_SET, FAILURE).';
+COMMENT ON COLUMN garmin.strength_set.start_time IS
+'Timestamp when the set started.';
+COMMENT ON COLUMN garmin.strength_set.duration IS
+'Duration of the set in seconds.';
+COMMENT ON COLUMN garmin.strength_set.wkt_step_index IS
+'Workout step index if from a structured workout.';
+COMMENT ON COLUMN garmin.strength_set.repetition_count IS
+'Number of repetitions in this set.';
+COMMENT ON COLUMN garmin.strength_set.weight IS
+'Weight used in grams.';
+COMMENT ON COLUMN garmin.strength_set.exercise_category IS
+'ML-classified exercise category (e.g., BENCH_PRESS). NULL for REST sets.';
+COMMENT ON COLUMN garmin.strength_set.exercise_name IS
+'ML-classified exercise name (e.g., BARBELL_BENCH_PRESS). NULL for REST sets.';
+COMMENT ON COLUMN garmin.strength_set.exercise_probability IS
+'ML classification probability (0.0-1.0). NULL for REST sets.';
+COMMENT ON COLUMN garmin.strength_set.create_ts IS
+'Timestamp when the record was created in the database.';
+COMMENT ON COLUMN garmin.strength_set.update_ts IS
+'Timestamp when the record was last modified in the database.';
+
+----------------------------------------------------------------------------------------
