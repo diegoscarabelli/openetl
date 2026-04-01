@@ -49,9 +49,16 @@ def batch(config: ETLConfig, **context: dict) -> list[tuple[FileSet, ...]]:
 
     for file_path in file_paths:
         # Extract user_id from the filename prefix (before the first underscore).
+        # Must be numeric: the DB schema uses BIGINT for user_id and the processor
+        # casts with int(user_id).
         filename = file_path.name
         parts = filename.split("_", 1)
-        user_id = parts[0] if len(parts) > 1 and parts[0].isdigit() else "unknown"
+        if len(parts) <= 1 or not parts[0].isdigit():
+            raise ValueError(
+                f"Invalid Garmin filename '{filename}': expected numeric user_id "
+                "prefix before first underscore (e.g., '12345678_SLEEP_...')."
+            )
+        user_id = parts[0]
 
         # Extract timestamp from the filename.
         match = re.search(timestamp_regex, filename)

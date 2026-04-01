@@ -1363,6 +1363,39 @@ class TestDiscoverAccounts:
         with pytest.raises(RuntimeError, match="No account directories found"):
             discover_accounts(str(temp_dir))
 
+    def test_discover_accounts_legacy_layout(self, temp_dir) -> None:
+        """
+        Test backward compatibility: tokens at root level (no subdirectories) returns
+        a single legacy account entry pointing to the base directory.
+
+        :param temp_dir: Temporary directory fixture.
+        """
+
+        # Arrange: create token files at root level (pre-multi-account layout).
+        (temp_dir / "oauth1_token.json").touch()
+        (temp_dir / "oauth2_token.json").touch()
+
+        # Act.
+        result = discover_accounts(str(temp_dir))
+
+        # Assert: single account with "legacy" placeholder and base dir as token path.
+        assert result == [("legacy", temp_dir)]
+
+    def test_discover_accounts_not_a_directory(self, temp_dir) -> None:
+        """
+        Test discover_accounts raises NotADirectoryError when path is a file.
+
+        :param temp_dir: Temporary directory fixture.
+        """
+
+        # Arrange.
+        file_path = temp_dir / "not_a_dir"
+        file_path.touch()
+
+        # Act & Assert.
+        with pytest.raises(NotADirectoryError, match="not a directory"):
+            discover_accounts(str(file_path))
+
 
 class TestExtractMultiAccount:
     """
@@ -1484,6 +1517,45 @@ class TestExtractMultiAccount:
     @patch("dags.pipelines.garmin.extract.discover_accounts")
     @patch("dags.pipelines.garmin.extract.GarminExtractor")
     @patch("dags.pipelines.garmin.extract.LOGGER")
+    def test_extract_account_filter_string_raises(
+        self, mock_logger, mock_extractor_class, mock_discover, mock_config
+    ) -> None:
+        """
+        Test that passing a string for 'accounts' raises ValueError instead of silently
+        iterating character-by-character.
+
+        :param mock_logger: Mock logger.
+        :param mock_extractor_class: Mock GarminExtractor class.
+        :param mock_discover: Mock discover_accounts function.
+        :param mock_config: Mock ETL config.
+        """
+
+        # Arrange.
+        mock_discover.return_value = [
+            ("12345678", Path("/tokens/12345678")),
+        ]
+
+        mock_dag_run = MagicMock()
+        mock_dag_run.conf = {"accounts": "12345678"}
+        mock_task = MagicMock()
+        mock_task.task_id = "extract"
+
+        data_interval_start = pendulum.datetime(2025, 1, 1, tz="UTC")
+        data_interval_end = pendulum.datetime(2025, 1, 3, tz="UTC")
+
+        # Act & Assert.
+        with pytest.raises(ValueError, match="must be a list"):
+            extract(
+                mock_config.data_dirs.ingest,
+                data_interval_start,
+                data_interval_end,
+                dag_run=mock_dag_run,
+                task=mock_task,
+            )
+
+    @patch("dags.pipelines.garmin.extract.discover_accounts")
+    @patch("dags.pipelines.garmin.extract.GarminExtractor")
+    @patch("dags.pipelines.garmin.extract.LOGGER")
     def test_extract_error_isolation(
         self, mock_logger, mock_extractor_class, mock_discover, mock_config
     ) -> None:
@@ -1527,7 +1599,7 @@ class TestExtractMultiAccount:
         assert mock_extractor_class.call_count == 2
         mock_extractor_ok.extract_garmin_data.assert_called_once()
         mock_extractor_ok.extract_fit_activities.assert_called_once()
-        mock_logger.error.assert_called()  # Error logged for first account.
+        mock_logger.exception.assert_called()  # Error logged for first account.
 
     @patch("dags.pipelines.garmin.extract.discover_accounts")
     @patch("dags.pipelines.garmin.extract.GarminExtractor")

@@ -502,13 +502,30 @@ def discover_accounts(
             "Run refresh_garmin_tokens.py to set up at least one account."
         )
 
+    if not base_path.is_dir():
+        raise NotADirectoryError(
+            f"Token path {base_path} exists but is not a directory."
+        )
+
     # Discover accounts: each subdirectory is a user_id with tokens.
     accounts = []
     for entry in sorted(base_path.iterdir()):
         if entry.is_dir() and entry.name.isdigit():
             accounts.append((entry.name, entry))
 
+    # Backward compatibility: if no subdirectories exist but token files are present
+    # at the root level (pre-multi-account layout), treat as a single legacy account.
     if not accounts:
+        legacy_token = base_path / "oauth1_token.json"
+        if legacy_token.exists():
+            LOGGER.warning(
+                f"⚠️ Legacy token layout detected in {base_path}. "
+                "Tokens are at the root level instead of a user-specific subdirectory. "
+                "Run refresh_garmin_tokens.py to migrate to the new layout: "
+                "~/.garminconnect/<user_id>/."
+            )
+            return [("legacy", base_path)]
+
         raise RuntimeError(
             f"No account directories found in {base_path}. "
             "Run refresh_garmin_tokens.py to set up at least one account. "
@@ -647,6 +664,11 @@ def extract(
     dag_run_conf = dag_run.conf if dag_run and dag_run.conf else {}
     account_filter = dag_run_conf.get("accounts")
     if account_filter:
+        if not isinstance(account_filter, (list, tuple)):
+            raise ValueError(
+                "DAG run config 'accounts' must be a list of account IDs, "
+                f"got {type(account_filter).__name__}."
+            )
         account_filter_set = set(str(a) for a in account_filter)
         accounts = [(uid, path) for uid, path in accounts if uid in account_filter_set]
         if not accounts:
@@ -681,10 +703,9 @@ def extract(
                 f"✅ Account {user_id}: {len(garmin_files)} data files, "
                 f"{len(activity_files)} activity files."
             )
-        except Exception as e:
-            LOGGER.error(
-                f"❌ Account {user_id} failed: {e}\n"
-                f"Continuing with remaining accounts."
+        except Exception:
+            LOGGER.exception(
+                f"❌ Account {user_id} failed. " "Continuing with remaining accounts."
             )
             failed_accounts.append(user_id)
 

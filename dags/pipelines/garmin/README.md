@@ -120,7 +120,9 @@ The pipeline supports multiple Garmin Connect accounts (e.g., family members). A
 
 To set up a new account, run [`refresh_garmin_tokens.py`](utility_scripts/refresh_garmin_tokens.py) once per account. The script authenticates with Garmin Connect, auto-detects the user ID, and saves tokens to the appropriate subdirectory. Repeat for each account you want to include in the pipeline.
 
-During extraction, the pipeline loops over all discovered accounts sequentially. Error isolation ensures that one account failing authentication does not block extraction for other accounts.
+During extraction, the pipeline loops over all discovered accounts sequentially, so total extraction time scales linearly with the number of accounts. For most setups (a few family members) this is not a concern. If extraction latency becomes a bottleneck with many accounts, the extract task could be parallelized using Airflow dynamic task mapping in a future iteration.
+
+Error isolation ensures that one account failing authentication does not block extraction for other accounts.
 
 To extract data for specific accounts only (e.g., during a backfill for a newly added account), use the `accounts` key in the DAG run configuration:
 

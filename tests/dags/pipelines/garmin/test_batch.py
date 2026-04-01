@@ -300,29 +300,23 @@ class TestBatchEdgeCases:
         with pytest.raises(ValueError, match="Not all files .* were included"):
             batch(config)
 
-    def test_file_without_numeric_user_id_prefix(self, tmp_path: Path) -> None:
+    def test_file_without_numeric_user_id_prefix_raises(self, tmp_path: Path) -> None:
         """
-        Files whose prefix (before the first underscore) is not numeric should be
-        grouped under the 'unknown' user_id.
+        Files whose prefix (before the first underscore) is not numeric should raise
+        ValueError.
 
-        The file still needs to match a file type pattern (which requires .*_TYPE_.*),
-        so a non-numeric prefix like "abc" satisfies the pattern while triggering the
-        'unknown' fallback.
+        The DB schema uses BIGINT for user_id, so non-numeric prefixes would fail
+        downstream in the processor.
         """
 
-        # Arrange: "abc" is not numeric, so user_id falls back to "unknown".
+        # Arrange: "abc" is not numeric.
         ts = "2025-08-07T12:00:00Z"
         create_garmin_file(tmp_path, f"abc_SLEEP_{ts}.json")
-        create_garmin_file(tmp_path, f"abc_HEART_RATE_{ts}.json")
         config = make_config(tmp_path)
 
-        # Act
-        result = batch(config)
-
-        # Assert: one FileSet grouped under user_id = "unknown".
-        assert count_file_sets(result) == 1
-        filenames = collect_all_filenames(result)
-        assert len(filenames) == 2
+        # Act / Assert
+        with pytest.raises(ValueError, match="expected numeric user_id prefix"):
+            batch(config)
 
 
 class TestBatchChunking:
