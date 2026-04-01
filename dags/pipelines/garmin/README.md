@@ -266,7 +266,7 @@ The pipeline executes 35 database operations to populate 31 tables because some 
 - `strength_exercise` and `strength_set` each use a delete+insert pair (2 operations per table) for reprocessing safety.
 - `activity_ts_metric`, `activity_lap_metric`, and `activity_split_metric` each use a delete+insert pair (2 operations per table) for idempotent FIT file reprocessing.
 
-This multi-source aggregation pattern (25 upserts + 3 merges + 1 add + 5 delete+inserts + 1 raw SQL = 35 operations) allows comprehensive daily records to be built incrementally from different data sources while maintaining data integrity through conflict-aware upserts with column-specific updates.
+This multi-source aggregation pattern (25 upserts + 3 merges + 1 add + 10 delete+inserts + 1 raw SQL = 40 operations) allows comprehensive daily records to be built incrementally from different data sources while maintaining data integrity through conflict-aware upserts with column-specific updates.
 
 **Processing Flow:**
 
@@ -294,7 +294,7 @@ The system processes 13 different JSON data types from [`GARMIN_DATA_REGISTRY`](
 **Activities List Processing** ([`_process_activities`](process.py#_process_activities))
 * **JSON file structure**: Array of activity objects containing `activityId`, `activityName`, timestamps (`startTimeLocal`, `startTimeGMT`, `endTimeGMT`), nested objects (`activityType`, `eventType`, `privacy`), activity metrics (distance, duration, calories, heart rate), sport-specific fields (running cadence, power metrics, swimming metrics), and arrays (`userRoles`, `splitSummaries`).
 * **Target tables**: `garmin.activity` (main), `running_agg_metrics`, `cycling_agg_metrics`, `swimming_agg_metrics`, `supplemental_activity_metric`.
-* **Database method**: [`upsert_model_instances`](../../lib/sql_utils.py#upsert_model_instances) for main activity with `["activity_id"]` with `on_conflict_update=True` (update logic); `session.merge()` for sport-specific tables, which uses primary keys for conflict resolution with update logic. When reprocessing, updates all activity data except `activity_id`.
+* **Database method**: [`upsert_model_instances`](../../lib/sql_utils.py#upsert_model_instances) for main activity with `["activity_id"]` with `on_conflict_update=True` (update logic); `session.merge()` for sport-specific tables, which uses primary keys for conflict resolution with update logic. When reprocessing, updates all mutable activity data except `activity_id`, `ts_data_available`, and `create_ts`.
 * **Data processing**: Uses cascading `pop()` method to remove processed fields, enabling automatic supplemental metrics extraction from remaining fields with sport-specific metrics only processed if sport type matches. Separate processing functions for running, cycling, and swimming metrics with specialized field handling. Supplemental metrics capture all remaining fields not processed by other functions. Calculates `timezone_offset_hours` from local vs GMT time difference, creates timezone-aware `start_ts` and `end_ts` datetime objects, and adds `user_id` foreign key reference.
 * **Data excluded**:
   - `userRoles` array containing API scope permissions for security.
