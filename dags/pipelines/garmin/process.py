@@ -547,13 +547,13 @@ class GarminProcessor(Processor):
         if activity_record:
             activity = Activity(**activity_record)
 
-            # Exclude `ts_data_available` from updates to preserve FIT file processing
-            # flag. This prevents activities list reprocessing from overwriting the
-            # flag set during FIT file processing.
+            # Exclude columns that should not be overwritten on re-runs:
+            # - ts_data_available: set by FIT file processing, not activity list upserts
+            # - create_ts: audit column, should only reflect initial insert time
             update_columns = [
                 col.name
                 for col in Activity.__table__.columns
-                if col.name not in ["activity_id", "ts_data_available"]
+                if col.name not in ["activity_id", "ts_data_available", "create_ts"]
             ]
 
             persisted_activity = upsert_model_instances(

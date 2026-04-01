@@ -737,6 +737,70 @@ class TestGarminProcessor:
         assert result == 987654321  # Should return activity_id.
 
     @patch("dags.pipelines.garmin.process.upsert_model_instances")
+    def test_process_activity_base_preserves_ts_data_available_flag(
+        self, mock_upsert, processor, mock_session
+    ):
+        """
+        Test that _process_activity_base excludes ts_data_available from updates.
+
+        This ensures that when activities list files are reprocessed, they don't
+        overwrite the ts_data_available flag that was set during FIT file processing.
+
+        :param mock_upsert: Mock upsert function.
+        :param processor: GarminProcessor fixture.
+        :param mock_session: Mock session fixture.
+        """
+
+        # Arrange.
+        activity_data = {
+            "activityId": 987654321,
+            "activityName": "Morning Run",
+            "activityType": {"typeId": 1, "typeKey": "running"},
+            "eventType": {"typeId": 1, "typeKey": "other"},
+            "startTimeGMT": "2022-01-01T07:00:00",
+            "startTimeLocal": "2022-01-01T00:00:00",
+            "endTimeGMT": "2022-01-01T08:30:00",
+            "deviceId": 123456789,
+            "manufacturer": "GARMIN",
+            "timeZoneId": 1,
+            "parent": False,
+            "purposeful": True,
+            "favorite": False,
+            "pr": False,
+            "hasPolyline": True,
+            "hasImages": False,
+            "hasVideo": False,
+            "hasSplits": True,
+            "hasHeatMap": False,
+            "elevationCorrected": True,
+            "atpActivity": False,
+            "manualActivity": False,
+            "autoCalcCalories": True,
+        }
+
+        mock_activity_with_id = Activity()
+        mock_activity_with_id.activity_id = 987654321
+        mock_upsert.return_value = [mock_activity_with_id]
+
+        # Act.
+        processor.user_id = 1
+        processor._process_activity_base(activity_data, mock_session)
+
+        # Assert.
+        mock_upsert.assert_called_once()
+        call_args = mock_upsert.call_args
+
+        # Verify that update_columns excludes columns that should not be overwritten.
+        update_columns = call_args[1]["update_columns"]
+        assert update_columns is not None
+        assert "ts_data_available" not in update_columns  # Set by FIT processing.
+        assert "create_ts" not in update_columns  # Audit column.
+        assert "activity_id" not in update_columns  # Conflict column.
+
+        # Verify other expected columns are included.
+        assert "activity_name" in update_columns
+
+    @patch("dags.pipelines.garmin.process.upsert_model_instances")
     def test_process_activity_base_handles_missing_end_time_gmt(
         self, mock_upsert, processor, mock_session
     ):
