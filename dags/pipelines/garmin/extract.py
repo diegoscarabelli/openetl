@@ -2,7 +2,8 @@
 Garmin Connect data extraction module.
 
 Extracts FIT activity files and JSON Garmin data from Garmin Connect API and saves them
-to the ingest directory for further processing by the ETL pipeline.
+to the ingest directory for further processing by the ETL pipeline. Supports multiple
+Garmin Connect accounts by discovering token subdirectories in the base token directory.
 """
 
 import json
@@ -12,7 +13,7 @@ import io
 
 from datetime import datetime, timedelta, date
 from pathlib import Path
-from typing import List, Optional, Union
+from typing import List, Optional, Tuple, Union
 
 import fire
 import pendulum
@@ -477,6 +478,80 @@ class GarminExtractor:
         return filepath
 
 
+def discover_accounts(
+    base_token_dir: str = "~/.garminconnect",
+) -> List[Tuple[str, Path]]:
+    """
+    Discover configured Garmin accounts by scanning token subdirectories.
+
+    Each subdirectory in the base token directory represents a configured account, where
+    the directory name is the Garmin user ID. Subdirectories are created by the
+    refresh_garmin_tokens.py utility script during initial account setup.
+
+    :param base_token_dir: Base directory containing per-account token subdirectories.
+    :return: List of (user_id, token_dir_path) tuples, sorted by user_id.
+    :raises FileNotFoundError: If the base token directory does not exist.
+    :raises RuntimeError: If no account subdirectories are found.
+    """
+
+    base_path = Path(base_token_dir).expanduser()
+
+    if not base_path.exists():
+        raise FileNotFoundError(
+            f"Token directory {base_path} does not exist. "
+            "Run refresh_garmin_tokens.py to set up at least one account."
+        )
+
+    # Discover accounts: each subdirectory is a user_id with tokens.
+    accounts = []
+    for entry in sorted(base_path.iterdir()):
+        if entry.is_dir() and entry.name.isdigit():
+            accounts.append((entry.name, entry))
+
+    if not accounts:
+        raise RuntimeError(
+            f"No account directories found in {base_path}. "
+            "Run refresh_garmin_tokens.py to set up at least one account. "
+            "Expected subdirectories named by Garmin user ID (e.g., 12345678/)."
+        )
+
+    LOGGER.info(
+        f"🔍 Discovered {len(accounts)} Garmin account(s): "
+        f"{[uid for uid, _ in accounts]}."
+    )
+    return accounts
+
+
+def _extract_account(
+    extractor: GarminExtractor,
+    token_dir: Path,
+    data_types: Optional[List[str]],
+) -> Tuple[List[Path], List[Path]]:
+    """
+    Run extraction for a single Garmin account.
+
+    Authenticates with the account's token directory and extracts all requested data
+    types, including FIT activity files.
+
+    :param extractor: Initialized GarminExtractor instance.
+    :param token_dir: Path to the account's token directory.
+    :param data_types: Optional list of data type names to extract.
+    :return: Tuple of (garmin_files, activity_files).
+    """
+
+    extractor.authenticate(token_store_dir=str(token_dir))
+
+    garmin_files = extractor.extract_garmin_data()
+
+    activity_files = []
+    if data_types is None or (
+        data_types and {"ACTIVITY", "EXERCISE_SETS"} & set(data_types)
+    ):
+        activity_files = extractor.extract_fit_activities()
+
+    return garmin_files, activity_files
+
+
 def extract(
     ingest_dir: Path,
     data_interval_start: Union[str, pendulum.DateTime],
@@ -488,6 +563,15 @@ def extract(
     Download data from Garmin Connect for the specified date range. Files are saved with
     standardized naming conventions to the specified directory for downstream
     processing.
+
+    Supports multiple Garmin Connect accounts. Accounts are discovered by scanning
+    subdirectories in ~/.garminconnect/, where each subdirectory is named by the Garmin
+    user ID and contains authentication tokens. The extraction loops over each discovered
+    account sequentially, with error isolation (one account failing does not block others).
+
+    Accounts can be filtered via DAG run configuration:
+        {"accounts": ["12345678", "87654321"]}
+    If "accounts" is not provided, all discovered accounts are extracted.
 
     Intended to be used as a PythonOperator callable in the `extract` Airflow task.
 
@@ -512,7 +596,7 @@ def extract(
         'HRV', 'USER_PROFILE', 'ACTIVITY'], provided in constants.GarminDataRegistry).
         If None, extracts all available data types including FIT activity files.
         If empty list [], skip extraction.
-    :raises AirflowSkipException: If no data found for extraction.
+    :raises AirflowSkipException: If no data found for extraction across all accounts.
     :raises ValueError: If any requested data type names are not found in registry.
     """
 
@@ -555,42 +639,86 @@ def extract(
     else:
         end_date = original_end_date  # Inclusive logic for same-day processing.
 
-    # Initialize extractor and authenticate.
-    extractor = GarminExtractor(start_date, end_date, ingest_dir, data_types)
-    extractor.authenticate()
+    # Discover configured accounts.
+    accounts = discover_accounts()
 
-    # Extract Garmin data.
-    garmin_files = extractor.extract_garmin_data()
-
-    # Extract FIT activity files (if requested in data_types or data_types is None).
-    activity_files = []
-    if data_types is None or (
-        data_types and {"ACTIVITY", "EXERCISE_SETS"} & set(data_types)
-    ):
-        activity_files = extractor.extract_fit_activities()
-
-    # Check if any data was extracted.
-    if not garmin_files and not activity_files:
-        raise AirflowSkipException(
-            "No Garmin Connect data found for extraction. Skipping downstream tasks."
+    # Apply optional account filter from DAG run configuration.
+    # Example: {"accounts": ["12345678"]}
+    dag_run_conf = dag_run.conf if dag_run and dag_run.conf else {}
+    account_filter = dag_run_conf.get("accounts")
+    if account_filter:
+        account_filter_set = set(str(a) for a in account_filter)
+        accounts = [(uid, path) for uid, path in accounts if uid in account_filter_set]
+        if not accounts:
+            raise AirflowSkipException(
+                f"No matching accounts found for filter: {account_filter}. "
+                "Check that the specified user IDs have token directories in "
+                "~/.garminconnect/."
+            )
+        LOGGER.info(
+            f"🔍 Account filter applied. Extracting for: "
+            f"{[uid for uid, _ in accounts]}."
         )
 
+    # Extract data for each account sequentially with error isolation.
+    all_garmin_files = []
+    all_activity_files = []
+    failed_accounts = []
+
+    for user_id, token_dir in accounts:
+        LOGGER.info(f"{'=' * 60}")
+        LOGGER.info(f"📥 Extracting data for account {user_id}...")
+
+        try:
+            extractor = GarminExtractor(start_date, end_date, ingest_dir, data_types)
+            garmin_files, activity_files = _extract_account(
+                extractor, token_dir, data_types
+            )
+            all_garmin_files.extend(garmin_files)
+            all_activity_files.extend(activity_files)
+
+            LOGGER.info(
+                f"✅ Account {user_id}: {len(garmin_files)} data files, "
+                f"{len(activity_files)} activity files."
+            )
+        except Exception as e:
+            LOGGER.error(
+                f"❌ Account {user_id} failed: {e}\n"
+                f"Continuing with remaining accounts."
+            )
+            failed_accounts.append(user_id)
+
+    LOGGER.info(f"{'=' * 60}")
+
+    # Check if any data was extracted across all accounts.
+    if not all_garmin_files and not all_activity_files:
+        raise AirflowSkipException(
+            "No Garmin Connect data found for extraction across all accounts. "
+            "Skipping downstream tasks."
+        )
+
+    # Log extraction summary.
     activity_summary = (
-        "\n".join([f"      • {file.name}" for file in activity_files])
-        if activity_files
+        "\n".join([f"      • {file.name}" for file in all_activity_files])
+        if all_activity_files
         else "      (none)"
     )
     garmin_summary = (
-        "\n".join([f"      • {file.name}" for file in garmin_files])
-        if garmin_files
+        "\n".join([f"      • {file.name}" for file in all_garmin_files])
+        if all_garmin_files
         else "      (none)"
+    )
+    failed_summary = (
+        f"\n   ⚠️ Failed accounts: {failed_accounts}" if failed_accounts else ""
     )
     LOGGER.info(
         f"🎯 Extraction Summary:\n"
         f"   📂 Saved to: {ingest_dir}\n"
-        f"   ✅ FIT activity files (total: {len(activity_files)}):\n"
+        f"   👥 Accounts processed: {len(accounts) - len(failed_accounts)}"
+        f"/{len(accounts)}{failed_summary}\n"
+        f"   ✅ FIT activity files (total: {len(all_activity_files)}):\n"
         f"{activity_summary}\n"
-        f"   ✅ Garmin data files (total: {len(garmin_files)}):\n{garmin_summary}"
+        f"   ✅ Garmin data files (total: {len(all_garmin_files)}):\n{garmin_summary}"
     )
 
 

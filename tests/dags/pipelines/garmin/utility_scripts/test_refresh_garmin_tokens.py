@@ -310,3 +310,136 @@ class TestGarminTokenRefresh:
 
             # Should not call garth.dump if login fails.
             mock_garmin_instance.garth.dump.assert_not_called()
+
+
+class TestRefreshTokensMultiAccount:
+    """
+    Test class for multi-account token storage behavior in refresh_tokens.
+
+    Verifies that tokens are saved to user-specific subdirectories and that the user ID
+    is correctly detected from the Garmin profile API.
+    """
+
+    @pytest.fixture
+    def mock_garmin_instance(self) -> MagicMock:
+        """
+        Create a mock Garmin instance for testing.
+
+        :return: Mock Garmin instance.
+        """
+
+        return MagicMock()
+
+    @pytest.fixture
+    def mock_garmin_class_with_instance(self, mock_garmin_instance):
+        """
+        Create a patched Garmin class that returns a mock instance.
+
+        :param mock_garmin_instance: Mock Garmin instance fixture.
+        :return: Tuple of mock class and mock instance.
+        """
+
+        with patch(
+            "dags.pipelines.garmin.utility_scripts.refresh_garmin_tokens.Garmin"
+        ) as mock_class:
+            mock_class.return_value = mock_garmin_instance
+            yield mock_class, mock_garmin_instance
+
+    def test_refresh_tokens_saves_to_user_subdir(
+        self, mock_garmin_class_with_instance, tmp_path
+    ) -> None:
+        """
+        Test that refresh_tokens saves tokens to a subdirectory named by user ID.
+
+        After login, the function calls get_user_profile() to obtain the user ID, then
+        saves tokens to base_token_dir/<user_id>/.
+
+        :param mock_garmin_class_with_instance: Mock Garmin class fixture.
+        :param tmp_path: Pytest temporary path fixture.
+        """
+
+        # Arrange.
+        _mock_garmin_class, mock_garmin_instance = mock_garmin_class_with_instance
+        mock_garmin_instance.login.return_value = None  # No MFA required.
+        mock_garmin_instance.get_user_profile.return_value = {"id": "12345678"}
+        mock_garth = MagicMock()
+        mock_garmin_instance.garth = mock_garth
+
+        with patch(
+            "dags.pipelines.garmin.utility_scripts.refresh_garmin_tokens.logger"
+        ):
+            # Act.
+            refresh_tokens("test@example.com", "password123", str(tmp_path))
+
+            # Assert.
+            dump_call_args = mock_garth.dump.call_args[0][0]
+            assert dump_call_args.endswith("/12345678")
+            mock_garmin_instance.get_user_profile.assert_called_once()
+
+    def test_refresh_tokens_missing_user_id(
+        self, mock_garmin_class_with_instance, tmp_path
+    ) -> None:
+        """
+        Test that refresh_tokens raises RuntimeError when user ID is missing from
+        profile.
+
+        If get_user_profile() returns a dict without an "id" key, the function should
+        raise RuntimeError since the user-specific token directory cannot be determined.
+
+        :param mock_garmin_class_with_instance: Mock Garmin class fixture.
+        :param tmp_path: Pytest temporary path fixture.
+        """
+
+        # Arrange.
+        _mock_garmin_class, mock_garmin_instance = mock_garmin_class_with_instance
+        mock_garmin_instance.login.return_value = None  # No MFA required.
+        mock_garmin_instance.get_user_profile.return_value = {}  # No "id" key.
+
+        with patch(
+            "dags.pipelines.garmin.utility_scripts.refresh_garmin_tokens.logger"
+        ), patch(
+            "dags.pipelines.garmin.utility_scripts.refresh_garmin_tokens."
+            "_print_troubleshooting"
+        ):
+            # Act & Assert.
+            with pytest.raises(RuntimeError, match="Could not determine user ID"):
+                refresh_tokens("test@example.com", "password123", str(tmp_path))
+
+            # Should not call garth.dump if user ID is missing.
+            mock_garmin_instance.garth.dump.assert_not_called()
+
+    def test_refresh_tokens_with_mfa(
+        self, mock_garmin_class_with_instance, tmp_path
+    ) -> None:
+        """
+        Test that refresh_tokens handles MFA flow and saves tokens to user subdirectory.
+
+        When login returns ("needs_mfa", token), the MFA handler is invoked, and after
+        successful authentication, tokens are saved to base_token_dir/<user_id>/.
+
+        :param mock_garmin_class_with_instance: Mock Garmin class fixture.
+        :param tmp_path: Pytest temporary path fixture.
+        """
+
+        # Arrange.
+        _mock_garmin_class, mock_garmin_instance = mock_garmin_class_with_instance
+        mock_garmin_instance.login.return_value = ("needs_mfa", "mfa_token")
+        mock_garmin_instance.get_user_profile.return_value = {"id": "12345678"}
+        mock_garth = MagicMock()
+        mock_garmin_instance.garth = mock_garth
+
+        with patch(
+            "dags.pipelines.garmin.utility_scripts.refresh_garmin_tokens."
+            "_handle_mfa_authentication"
+        ) as mock_handle_mfa, patch(
+            "dags.pipelines.garmin.utility_scripts.refresh_garmin_tokens.logger"
+        ):
+            # Act.
+            refresh_tokens("test@example.com", "password123", str(tmp_path))
+
+            # Assert: MFA handler was called.
+            mock_handle_mfa.assert_called_once_with(mock_garmin_instance, "mfa_token")
+
+            # Assert: tokens saved to user-specific subdirectory.
+            dump_call_args = mock_garth.dump.call_args[0][0]
+            assert dump_call_args.endswith("/12345678")
