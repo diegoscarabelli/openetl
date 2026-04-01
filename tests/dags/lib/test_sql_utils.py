@@ -58,24 +58,68 @@ class TestUpsertModelInstances:
             "on_conflict_update": True,
         }
         with patch("dags.lib.sql_utils._upsert_values") as mock_upsert:
-            mock_upsert.return_value = []
-            upsert_model_instances(db_session, [obj1, obj2], **kwargs)
+            mock_upsert.return_value = None
+            result = upsert_model_instances(db_session, [obj1, obj2], **kwargs)
+
+        # Default returning_columns=None passes None to _upsert_values.
+        assert mock_upsert.call_args.kwargs["returning_columns"] is None
+        assert result is None
         db_session.commit()
 
-        # Update.
+        # Update with explicit returning_columns.
         obj1_updated = MyTest(id=1, col_a="C")
         kwargs = {
             "conflict_columns": ["id"],
             "on_conflict_update": True,
+            "returning_columns": ["id", "col_a"],
         }
         with patch("dags.lib.sql_utils._upsert_values") as mock_upsert:
-            mock_upsert.return_value = []
-            upsert_model_instances(db_session, [obj1_updated], **kwargs)
-        db_session.commit()
+            mock_upsert.return_value = [{"id": 1, "col_a": "C"}]
+            result = upsert_model_instances(db_session, [obj1_updated], **kwargs)
 
-        # Simulate result.
-        result = MyTest(id=1, col_a="C")
-        assert result.col_a == "C"
+        # returning_columns is passed through to _upsert_values.
+        assert mock_upsert.call_args.kwargs["returning_columns"] == [
+            "id",
+            "col_a",
+        ]
+        assert len(result) == 1
+        assert result[0].col_a == "C"
+
+    def test_upsert_model_instances_returning_columns_integration(self, db_session):
+        """
+        Test upsert_model_instances with returning_columns against real DB.
+        """
+
+        obj = MyTest(id=1, col_a="A", col_b="B")
+        result = upsert_model_instances(
+            db_session,
+            [obj],
+            conflict_columns=["id"],
+            on_conflict_update=True,
+            returning_columns=["id", "col_a"],
+        )
+        db_session.commit()
+        assert len(result) == 1
+        assert result[0].id == 1
+        assert result[0].col_a == "A"
+
+    def test_upsert_model_instances_no_returning_columns(self, db_session):
+        """
+        Test upsert_model_instances without returning_columns returns None.
+        """
+
+        obj = MyTest(id=1, col_a="A")
+        result = upsert_model_instances(
+            db_session,
+            [obj],
+            conflict_columns=["id"],
+            on_conflict_update=True,
+        )
+        db_session.commit()
+        assert result is None
+        # Row should still exist.
+        row = db_session.query(MyTest).filter_by(id=1).first()
+        assert row.col_a == "A"
 
     def test_upsert_values_missing_conflict_columns_raises(self, db_session):
         """
