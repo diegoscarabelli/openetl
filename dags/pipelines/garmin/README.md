@@ -248,18 +248,11 @@ The ETL pipeline uses four complementary methods to populate the Garmin schema t
 - **Why**: Provides explicit control over insertion order when state management is critical.
 - **Pattern**: Typically follows `session.query().update()` to modify existing records before inserting new ones.
 
-**3b. Delete+Insert (`session.query().delete()` + `session.add_all()`). Used for 2 strength training tables.**
-- **Purpose**: Full replacement of records for an activity to handle reprocessing where composite PK components can change.
-- **When used**: Strength training tables (`strength_exercise`, `strength_set`) where exercise names, set counts, or weights may be edited on Garmin Connect after initial processing.
-- **Why**: Standard upsert cannot handle renamed exercises (stale PK rows persist) or removed sets (orphaned index rows persist). Delete+insert ensures a clean slate.
-- **Pattern**: Delete all rows for a given `activity_id`, then insert fresh rows within the same transaction.
-
-**4. Bulk Insert (`session.bulk_save_objects`). Used for 3 high-volume time-series tables.**
-- **Purpose**: Maximum insert performance by bypassing ORM overhead and conflict detection.
-- **When used**: FIT file time-series data (activity records, heart rate samples, speed/power data) with 10,000+ records per activity.
-- **Why**: Data integrity guaranteed by upstream processing; duplicates are structurally impossible.
-- **Performance**: 10-50x faster than ORM methods for large time-series datasets.
-- **Tradeoff**: No conflict handling or updates. Suitable only for insert-only workflows.
+**3b. Delete+Insert (`session.query().delete()` + `session.bulk_save_objects()`/`session.add_all()`). Used for 5 tables.**
+- **Purpose**: Full replacement of records for an activity to handle reprocessing where rows can be added, removed, or changed.
+- **When used**: Strength training tables (`strength_exercise`, `strength_set`) and FIT metric tables (`activity_ts_metric`, `activity_lap_metric`, `activity_split_metric`).
+- **Why**: Standard upsert cannot handle removed rows (orphaned records persist). Delete+insert ensures a clean slate on each reprocessing.
+- **Pattern**: Delete all rows for a given `activity_id`, then insert fresh rows within the same transaction. FIT metric tables use `bulk_save_objects` for performance (10,000+ ts_metric rows per activity).
 
 The method selection balances three factors: **performance** (bulk operations preferred), **data integrity** (conflict handling when needed), and **code clarity** (ORM methods for complex relationships).
 
@@ -271,8 +264,9 @@ The pipeline executes 35 database operations to populate 31 tables because some 
 - `training_load` receives 3 upsert operations all contributing different columns to the same daily record.
 - `user` table is created via raw SQL `INSERT ... ON CONFLICT DO NOTHING` for initial user record creation.
 - `strength_exercise` and `strength_set` each use a delete+insert pair (2 operations per table) for reprocessing safety.
+- `activity_ts_metric`, `activity_lap_metric`, and `activity_split_metric` each use a delete+insert pair (2 operations per table) for idempotent FIT file reprocessing.
 
-This multi-source aggregation pattern (25 upserts + 3 merges + 1 add + 2 delete+inserts + 3 bulk + 1 raw SQL = 35 operations) allows comprehensive daily records to be built incrementally from different data sources while maintaining data integrity through conflict-aware upserts with column-specific updates.
+This multi-source aggregation pattern (25 upserts + 3 merges + 1 add + 5 delete+inserts + 1 raw SQL = 35 operations) allows comprehensive daily records to be built incrementally from different data sources while maintaining data integrity through conflict-aware upserts with column-specific updates.
 
 **Processing Flow:**
 
@@ -300,7 +294,7 @@ The system processes 13 different JSON data types from [`GARMIN_DATA_REGISTRY`](
 **Activities List Processing** ([`_process_activities`](process.py#_process_activities))
 * **JSON file structure**: Array of activity objects containing `activityId`, `activityName`, timestamps (`startTimeLocal`, `startTimeGMT`, `endTimeGMT`), nested objects (`activityType`, `eventType`, `privacy`), activity metrics (distance, duration, calories, heart rate), sport-specific fields (running cadence, power metrics, swimming metrics), and arrays (`userRoles`, `splitSummaries`).
 * **Target tables**: `garmin.activity` (main), `running_agg_metrics`, `cycling_agg_metrics`, `swimming_agg_metrics`, `supplemental_activity_metric`.
-* **Database method**: [`upsert_model_instances`](../../lib/sql_utils.py#upsert_model_instances) for main activity with `["activity_id"]` with `on_conflict_update=True` (update logic); `session.merge()` for sport-specific tables, which uses primary keys for conflict resolution with update logic. When reprocessing, updates all activity data except `activity_id` and `ts_data_available` flag (preserved to maintain FIT file processing state).
+* **Database method**: [`upsert_model_instances`](../../lib/sql_utils.py#upsert_model_instances) for main activity with `["activity_id"]` with `on_conflict_update=True` (update logic); `session.merge()` for sport-specific tables, which uses primary keys for conflict resolution with update logic. When reprocessing, updates all activity data except `activity_id`.
 * **Data processing**: Uses cascading `pop()` method to remove processed fields, enabling automatic supplemental metrics extraction from remaining fields with sport-specific metrics only processed if sport type matches. Separate processing functions for running, cycling, and swimming metrics with specialized field handling. Supplemental metrics capture all remaining fields not processed by other functions. Calculates `timezone_offset_hours` from local vs GMT time difference, creates timezone-aware `start_ts` and `end_ts` datetime objects, and adds `user_id` foreign key reference.
 * **Data excluded**:
   - `userRoles` array containing API scope permissions for security.
@@ -393,7 +387,7 @@ The system processes 13 different JSON data types from [`GARMIN_DATA_REGISTRY`](
 FIT file processing occurs after JSON wellness data processing and handles detailed time-series activity data. Each activity present in the Activities List JSON file should have a corresponding FIT file containing granular sensor measurements, lap metrics, and split data. FIT files provide the detailed temporal data that complements the aggregate metrics already stored from the Activities List processing.
 
 * **Target tables**: `garmin.activity_ts_metric` (hypertable), `activity_lap_metric`, `activity_split_metric`.
-* **Database method**: `session.bulk_save_objects()` for time-series efficiency, updates `activity` table `ts_data_available=True` flag. When reprocessing, checks `ts_data_available` flag and skips processing if `True`. No database conflicts occur as already-processed files are detected and skipped entirely.
+* **Database method**: Delete+insert strategy for idempotent reprocessing. Deletes all existing rows for the activity across all three FIT metric tables, then inserts fresh data via `session.bulk_save_objects()`. This approach handles added/removed laps, splits, or records between reprocesses without UNIQUE constraint violations. After insertion, sets `activity.ts_data_available` to reflect whether time-series records were found in the FIT file.
 * **Data processing**: Uses [`fitdecode`](https://pypi.org/project/fitdecode/) library for binary FIT file parsing with frame-based processing. Processes three frame types: Record frames (time-series sensor data with two-pass timestamp processing → `activity_ts_metric`), Lap frames (device-triggered segments with metric extraction → `activity_lap_metric`), Split frames (algorithmic intervals with type classification: rwd_run, rwd_walk, rwd_stand, interval_active → `activity_split_metric`). Handles array fields using suffix indexing (`_1`, `_2`, etc.) for multiple values per timestamp with field name validation (`field.name is not None`), "unknown" field filtering, and null value checking. Includes binary format validation, type conversion error handling (ValueError, TypeError), and graceful degradation for corrupt data.
 * **Data excluded**: "Unknown" field names, null values, fields with invalid field names (`field.name is None`), and corrupted binary data that fails parsing.
 

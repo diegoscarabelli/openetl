@@ -159,6 +159,7 @@ class Activity(UpsertBase):
     has_video = Column(Boolean, nullable=False)
     has_splits = Column(Boolean)
     has_heat_map = Column(Boolean, nullable=False)
+    ts_data_available = Column(Boolean, nullable=False, default=False)
 
     # Activity status flags.
     parent = Column(Boolean, nullable=False)
@@ -169,7 +170,6 @@ class Activity(UpsertBase):
     manual_activity = Column(Boolean, nullable=False)
     pr = Column(Boolean, nullable=False)
     auto_calc_calories = Column(Boolean, nullable=False)
-    ts_data_available = Column(Boolean, nullable=False, default=False)
 
 
 class SwimmingAggMetrics(UpsertBase):
