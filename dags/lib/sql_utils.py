@@ -228,12 +228,14 @@ def upsert_model_instances(
     on_conflict_update: bool = False,
     latest_check_column: str = None,
     latest_check_inclusive: bool = False,
-) -> List[DeclarativeMeta]:
+    returning_columns: Optional[List[str]] = None,
+) -> Optional[List[DeclarativeMeta]]:
     """
     Bulk upsert SQLAlchemy ORM model instances into SQL database tables, handling
     conflicts and optionally updating existing rows. This function converts model
     instances to dictionaries, delegates the upsert logic to a lower-level helper, and
-    returns the persisted instances as they exist in the database after the operation.
+    optionally returns the persisted instances as they exist in the database after the
+    operation.
 
     :param session: SQLAlchemy ORM session for database operations.
     :param model_instances: List of SQLAlchemy ORM model instances to upsert. All
@@ -250,8 +252,11 @@ def upsert_model_instances(
         is True) the existing value. Useful for time/version-based updates.
     :param latest_check_inclusive: If True, use >= comparison for latest_check_column
         instead of >. Defaults to False (strict greater than).
-    :return: List of SQLAlchemy model instances as persisted in the database after
-        upsert.
+    :param returning_columns: List of column names to return via RETURNING clause. If
+        None, no RETURNING is issued and the function returns None. Matches the
+        behavior of ``_upsert_values``.
+    :return: List of SQLAlchemy model instances (with only the requested columns
+        populated) if returning_columns is specified, otherwise None.
     """
 
     if not model_instances:
@@ -279,8 +284,11 @@ def upsert_model_instances(
         on_conflict_update=on_conflict_update,
         latest_check_column=latest_check_column,
         latest_check_inclusive=latest_check_inclusive,
-        returning_columns=model_columns,
+        returning_columns=returning_columns,
     )
+
+    if results is None:
+        return None
 
     persisted_instances = [model(**result) for result in results]
 

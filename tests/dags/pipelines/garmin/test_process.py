@@ -790,15 +790,15 @@ class TestGarminProcessor:
         mock_upsert.assert_called_once()
         call_args = mock_upsert.call_args
 
-        # Verify that update_columns parameter is provided and excludes ts_data_available.
+        # Verify that update_columns excludes columns that should not be overwritten.
         update_columns = call_args[1]["update_columns"]
         assert update_columns is not None
-        assert "ts_data_available" not in update_columns
+        assert "ts_data_available" not in update_columns  # Set by FIT processing.
+        assert "create_ts" not in update_columns  # Audit column.
         assert "activity_id" not in update_columns  # Conflict column.
 
         # Verify other expected columns are included.
         assert "activity_name" in update_columns
-        assert "device_id" in update_columns
 
     @patch("dags.pipelines.garmin.process.upsert_model_instances")
     def test_process_activity_base_handles_missing_end_time_gmt(
@@ -4245,7 +4245,6 @@ class TestGarminProcessor:
         # Mock existing activity.
         mock_activity = MagicMock()
         mock_activity.activity_id = activity_id
-        mock_activity.ts_data_available = False
 
         mock_session.query().filter().first.return_value = mock_activity
 
@@ -4282,11 +4281,12 @@ class TestGarminProcessor:
         assert ts_metrics[0].units == "bpm"
         assert mock_activity.ts_data_available is True
 
-    def test_process_fit_file_already_processed(
-        self, processor, mock_session, temp_dir
-    ):
+    def test_process_fit_file_reprocessing(self, processor, mock_session, temp_dir):
         """
-        Test FIT file processing when data already exists.
+        Test FIT file reprocessing deletes existing rows and re-inserts.
+
+        Reprocessing should delete existing metrics and insert fresh data. This is the
+        core fix for the UNIQUE constraint violation (#14).
         """
 
         # Arrange.
@@ -4298,14 +4298,50 @@ class TestGarminProcessor:
 
         mock_activity = MagicMock()
         mock_activity.activity_id = activity_id
-        mock_activity.ts_data_available = True
         mock_session.query().filter().first.return_value = mock_activity
 
-        # Act.
-        processor._process_fit_file(fit_file, mock_session)
+        # Mock FIT frames: record + lap.
+        mock_timestamp_field = MagicMock()
+        mock_timestamp_field.name = "timestamp"
+        mock_timestamp_field.value = datetime(2025, 8, 7, 14, 30, tzinfo=timezone.utc)
 
-        # Assert - no processing should occur since ts_data_available is True.
-        mock_session.bulk_save_objects.assert_not_called()
+        mock_hr_field = MagicMock()
+        mock_hr_field.name = "heart_rate"
+        mock_hr_field.value = 150
+        mock_hr_field.units = "bpm"
+
+        mock_record_frame = MagicMock()
+        mock_record_frame.frame_type = 4
+        mock_record_frame.name = "record"
+        mock_record_frame.fields = [mock_timestamp_field, mock_hr_field]
+
+        mock_lap_field = MagicMock()
+        mock_lap_field.name = "total_distance"
+        mock_lap_field.value = 1000.0
+        mock_lap_field.units = "m"
+
+        mock_lap_frame = MagicMock()
+        mock_lap_frame.frame_type = 4
+        mock_lap_frame.name = "lap"
+        mock_lap_frame.fields = [mock_lap_field]
+
+        mock_fit_reader = MagicMock()
+        mock_fit_reader.__enter__.return_value = [mock_record_frame, mock_lap_frame]
+
+        with patch("fitdecode.FitReader", return_value=mock_fit_reader):
+            with patch("fitdecode.FIT_FRAME_DATA", 4):
+                # Act.
+                processor._process_fit_file(fit_file, mock_session)
+
+        # Assert - deletes happen (via filter_by chain on the mock).
+        # Both ts_metrics and lap_metrics are re-inserted.
+        assert mock_session.bulk_save_objects.call_count == 2
+        ts_metrics = mock_session.bulk_save_objects.call_args_list[0][0][0]
+        lap_metrics = mock_session.bulk_save_objects.call_args_list[1][0][0]
+        assert len(ts_metrics) == 1
+        assert ts_metrics[0].name == "heart_rate"
+        assert len(lap_metrics) == 1
+        assert lap_metrics[0].name == "total_distance"
 
     def test_process_fit_file_activity_not_found(
         self, processor, mock_session, temp_dir
@@ -4358,7 +4394,6 @@ class TestGarminProcessor:
 
         mock_activity = MagicMock()
         mock_activity.activity_id = activity_id
-        mock_activity.ts_data_available = False
         mock_session.query().filter().first.return_value = mock_activity
 
         # Mock fields with one UNKNOWN field.
@@ -4411,7 +4446,6 @@ class TestGarminProcessor:
 
         mock_activity = MagicMock()
         mock_activity.activity_id = activity_id
-        mock_activity.ts_data_available = False
         mock_session.query().filter().first.return_value = mock_activity
 
         with patch("fitdecode.FitReader", side_effect=Exception("FIT decode error")):
@@ -4446,7 +4480,6 @@ class TestGarminProcessor:
         # Mock existing activity.
         mock_activity = MagicMock()
         mock_activity.activity_id = 12345
-        mock_activity.ts_data_available = False
         mock_session.query().filter().first.return_value = mock_activity
 
         # Mock FIT processing.
@@ -4472,7 +4505,6 @@ class TestGarminProcessor:
         # Mock existing activity.
         mock_activity = MagicMock()
         mock_activity.activity_id = activity_id
-        mock_activity.ts_data_available = False
         mock_session.query().filter().first.return_value = mock_activity
 
         # Mock FIT lap frame and fields.
@@ -4544,7 +4576,6 @@ class TestGarminProcessor:
         # Mock existing activity.
         mock_activity = MagicMock()
         mock_activity.activity_id = activity_id
-        mock_activity.ts_data_available = False
         mock_session.query().filter().first.return_value = mock_activity
 
         # Mock FIT split frame and fields.
@@ -4626,7 +4657,6 @@ class TestGarminProcessor:
         # Mock existing activity.
         mock_activity = MagicMock()
         mock_activity.activity_id = activity_id
-        mock_activity.ts_data_available = False
         mock_session.query().filter().first.return_value = mock_activity
 
         # Mock FIT lap frame with array field.
@@ -4692,7 +4722,6 @@ class TestGarminProcessor:
         # Mock existing activity.
         mock_activity = MagicMock()
         mock_activity.activity_id = activity_id
-        mock_activity.ts_data_available = False
         mock_session.query().filter().first.return_value = mock_activity
 
         # Mock FIT split frame with array field.
@@ -4754,7 +4783,6 @@ class TestGarminProcessor:
         # Mock existing activity.
         mock_activity = MagicMock()
         mock_activity.activity_id = activity_id
-        mock_activity.ts_data_available = False
         mock_session.query().filter().first.return_value = mock_activity
 
         # Mock first lap frame.
@@ -4880,7 +4908,6 @@ class TestGarminProcessor:
         # Mock existing activity.
         mock_activity = MagicMock()
         mock_activity.activity_id = activity_id
-        mock_activity.ts_data_available = False
         mock_session.query().filter().first.return_value = mock_activity
 
         # Mock lap frame with unconvertible value.
@@ -4920,6 +4947,52 @@ class TestGarminProcessor:
         assert lap_metric.name == "valid_field"
         assert lap_metric.value == 123.45
         assert lap_metric.units == "units"
+
+    def test_process_fit_file_laps_only(self, processor, mock_session, temp_dir):
+        """
+        Test FIT file with only laps and no record frames.
+
+        This is the bug scenario from #14: activities with only laps previously caused
+        UNIQUE constraint violations on re-runs. Delete+insert ensures idempotent
+        reprocessing regardless of which frame types are present.
+        """
+
+        # Arrange.
+        activity_id = 12345
+        fit_file = (
+            temp_dir / f"15007510_ACTIVITY_{activity_id}_2025-08-07T12:00:00Z.fit"
+        )
+        fit_file.write_bytes(b"dummy fit data")
+
+        mock_activity = MagicMock()
+        mock_activity.activity_id = activity_id
+        mock_session.query().filter().first.return_value = mock_activity
+
+        # Mock FIT lap frame (no record frames).
+        mock_lap_field = MagicMock()
+        mock_lap_field.name = "total_distance"
+        mock_lap_field.value = 1000.0
+        mock_lap_field.units = "m"
+
+        mock_lap_frame = MagicMock()
+        mock_lap_frame.frame_type = 4
+        mock_lap_frame.name = "lap"
+        mock_lap_frame.fields = [mock_lap_field]
+
+        mock_fit_reader = MagicMock()
+        mock_fit_reader.__enter__.return_value = [mock_lap_frame]
+
+        with patch("fitdecode.FitReader", return_value=mock_fit_reader):
+            with patch("fitdecode.FIT_FRAME_DATA", 4):
+                # Act.
+                processor._process_fit_file(fit_file, mock_session)
+
+        # Assert - laps inserted despite no record frames.
+        mock_session.bulk_save_objects.assert_called_once()
+        lap_metrics = mock_session.bulk_save_objects.call_args[0][0]
+        assert len(lap_metrics) == 1
+        assert lap_metrics[0].name == "total_distance"
+        assert mock_activity.ts_data_available is False
 
     # ==================== Strength Training Tests ====================
 
