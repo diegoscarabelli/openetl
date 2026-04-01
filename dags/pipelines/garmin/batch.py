@@ -17,7 +17,9 @@ from dags.lib.filesystem_utils import FileSet
 from dags.lib.logging_utils import LOGGER
 
 
-def batch(config: ETLConfig, **context: dict) -> list[tuple[FileSet, ...]]:
+def batch(
+    config: ETLConfig, **context: dict
+) -> list[tuple[list[dict[str, list[str]]]]]:
     """
     Construct batches of file sets from the content of the 'process' directory, grouping
     by (user_id, timestamp) instead of timestamp alone.
@@ -30,7 +32,8 @@ def batch(config: ETLConfig, **context: dict) -> list[tuple[FileSet, ...]]:
 
     :param config: Configuration parameters for Airflow DAGs and pipeline tasks.
     :param context: Additional Airflow keyword arguments.
-    :return: Batched file sets grouped by (user_id, timestamp).
+    :return: Serialized batches for XCom. Each batch is a single-element tuple containing
+        a list of serialized FileSets (dicts mapping file type patterns to file paths).
     """
 
     if config.max_process_tasks <= 0:
@@ -74,7 +77,8 @@ def batch(config: ETLConfig, **context: dict) -> list[tuple[FileSet, ...]]:
         key = (user_id, dt)
         files_by_key.setdefault(key, []).append(file_path)
 
-    # Sort by key for chronological and user-based ordering.
+    # Sort by (user_id, timestamp): groups each user's files together, then
+    # chronologically within each user.
     files_by_key = {k: v for k, v in sorted(files_by_key.items())}
 
     # Build FileSets from grouped files.
