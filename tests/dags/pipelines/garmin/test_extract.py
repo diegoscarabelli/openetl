@@ -1703,7 +1703,7 @@ class TestExtractMultiAccount:
         assert mock_extractor_class.call_count == 2
         mock_extractor_ok.extract_garmin_data.assert_called_once()
         mock_extractor_ok.extract_fit_activities.assert_called_once()
-        mock_logger.exception.assert_called()  # Error logged for first account.
+        mock_logger.error.assert_called()  # Error logged for first account.
 
     @patch("dags.pipelines.garmin.extract.discover_accounts")
     @patch("dags.pipelines.garmin.extract.GarminExtractor")
