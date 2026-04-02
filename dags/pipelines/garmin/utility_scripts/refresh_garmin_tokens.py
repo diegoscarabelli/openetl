@@ -279,7 +279,8 @@ def refresh_tokens(email: str, password: str, base_token_dir: str = "~/.garminco
 
         # Lock down token files to owner-only (garth.dump uses default umask).
         for token_file in token_path.iterdir():
-            token_file.chmod(0o600)
+            if token_file.is_file():
+                token_file.chmod(0o600)
 
         logger.info(
             f"✅ Tokens successfully saved to {token_path}.\n"

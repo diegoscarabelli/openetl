@@ -662,7 +662,11 @@ def extract(
         end_date = original_end_date  # Inclusive logic for same-day processing.
 
     # Discover configured accounts.
-    accounts = discover_accounts()
+    try:
+        accounts = discover_accounts()
+    except (FileNotFoundError, NotADirectoryError, RuntimeError) as e:
+        LOGGER.error(f"❌ Account discovery failed: {e}")
+        raise
 
     # Apply optional account filter from DAG run configuration.
     # Example: {"accounts": ["12345678"]}
