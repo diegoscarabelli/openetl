@@ -139,9 +139,9 @@ If `accounts` is omitted, all discovered accounts are extracted.
 **Authentication Integration:**
 * OAuth token-based authentication using [`garminconnect`](https://github.com/cyberjunky/python-garminconnect) library with native OAuth2 engine
 * Token storage: `~/.garminconnect/<user_id>/` per-account subdirectories
-* Token refresh utility: [`refresh_garmin_tokens.py`](utility_scripts/refresh_garmin_tokens.py) script for initial setup and yearly refresh (run once per account)
+* Token bootstrap utility: [`refresh_garmin_tokens.py`](utility_scripts/refresh_garmin_tokens.py) script for initial setup (run once per account)
 * Multi-Factor Authentication (MFA) support with interactive prompts
-* Token lifecycle: Valid for approximately 1 year from creation
+* Token lifecycle: Access tokens (~18h) are auto-refreshed transparently by the library using the refresh token (30 days, rotates on each use). The token directory must be mounted read-write so refreshed tokens are persisted to disk. Re-run the bootstrap script only if the pipeline is idle for 30+ days or the refresh token is revoked
 * Error handling: Authentication failures are logged per-account with detailed troubleshooting instructions
 
 The task extracts data types defined in [`GARMIN_DATA_REGISTRY`](constants.py#GARMIN_DATA_REGISTRY):
