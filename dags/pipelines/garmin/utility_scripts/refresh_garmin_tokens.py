@@ -68,15 +68,25 @@ location is used by:
 - The garminconnect library's native OAuth2 engine.
 
 TOKEN REFRESH:
-Access tokens expire after ~20 hours. The garminconnect library automatically
-refreshes them using the stored refresh token before each API call, and persists
-the updated tokens back to disk. This script is only needed for the initial
-bootstrap (username + password + MFA) to create the first token file.
+The garminconnect library uses two OAuth2 tokens:
+- Access token (~18 hours): used in API call headers, refreshed automatically.
+- Refresh token (30 days): used to obtain new access tokens without credentials.
+  Rotates on each use (each refresh response includes a new refresh token).
+
+The library automatically refreshes tokens before each API call and persists
+the updated tokens back to disk. As long as the pipeline runs at least once
+within 30 days, the token chain stays alive indefinitely. If the pipeline is
+idle for more than 30 days, the refresh token expires and this script must be
+re-run with username + password + MFA to bootstrap fresh tokens.
+
+This script is only needed for:
+- Initial setup (first-time authentication per account).
+- Recovery after the refresh token expires (30+ days of inactivity).
 
 SECURITY NOTES:
 - Tokens are stored locally in your home directory with 0700/0600 permissions.
 - The token directory must be mounted read-write so the library can persist
-  refreshed tokens. Stale refresh tokens can be revoked server-side.
+  refreshed tokens.
 - The script does not store your password or MFA codes.
 - Only OAuth tokens are persisted for future authentication.
 """
