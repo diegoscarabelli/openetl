@@ -17,7 +17,7 @@ services:
       - DATA_DIR=/usr/local/airflow/data
       - AIRFLOW__LOGGING__ENABLE_TASK_CONTEXT_LOGGER=False
     volumes:
-      - ~/.garminconnect:/home/astro/.garminconnect:ro
+      - ~/.garminconnect:/home/astro/.garminconnect:rw
       - ${SQL_CREDENTIALS_DIR}:/usr/local/airflow/sql_credentials:ro
       - ${DATA_DIR:-./data}:/usr/local/airflow/data
 

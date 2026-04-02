@@ -27,7 +27,7 @@ subdirectories in ~/.garminconnect/ at runtime.
 WHEN TO USE:
 Run this script when:
 - Setting up the pipeline for the first time (once per account).
-- Tokens have expired (approximately every 1 year).
+- The refresh token has been revoked or expired server-side.
 - MFA authentication is required.
 - The Airflow DAG fails due to authentication errors.
 - Adding a new Garmin Connect account to the pipeline.
@@ -67,9 +67,16 @@ location is used by:
 - The python-garminconnect library.
 - The garminconnect library's native OAuth2 engine.
 
+TOKEN REFRESH:
+Access tokens expire after ~20 hours. The garminconnect library automatically
+refreshes them using the stored refresh token before each API call, and persists
+the updated tokens back to disk. This script is only needed for the initial
+bootstrap (username + password + MFA) to create the first token file.
+
 SECURITY NOTES:
-- Tokens are stored locally in your home directory.
-- Tokens are valid for approximately 1 year.
+- Tokens are stored locally in your home directory with 0700/0600 permissions.
+- The token directory must be mounted read-write so the library can persist
+  refreshed tokens. Stale refresh tokens can be revoked server-side.
 - The script does not store your password or MFA codes.
 - Only OAuth tokens are persisted for future authentication.
 """
@@ -274,7 +281,7 @@ def refresh_tokens(email: str, password: str, base_token_dir: str = "~/.garminco
             "🎯 Token refresh complete!\n\n"
             "🎉 Success! Your Garmin Connect tokens have been refreshed.\n"
             "   Your Airflow pipeline will now use these fresh tokens.\n\n"
-            "ℹ️  These tokens are valid for approximately 1 year."
+            "ℹ️  Tokens auto-refresh transparently during pipeline runs."
         )
 
     except Exception:
