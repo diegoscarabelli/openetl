@@ -64,14 +64,14 @@ class ETLDataDirectories:
         Get the directory path for a given data state.
 
         Uses DATA_DIR environment variable (set by docker-compose to the container path)
-        to locate the data directory.
+        to locate the data directory. Falls back to "data" if DATA_DIR is not set.
 
         :param base_dir: Name of the base pipeline data directory.
         :param data_state: Data state.
         :return: Path object for the directory.
         """
 
-        return Path(os.environ["DATA_DIR"]) / base_dir / data_state.value
+        return Path(os.environ.get("DATA_DIR", "data")) / base_dir / data_state.value
 
     def _create_directories(self) -> None:
         """
