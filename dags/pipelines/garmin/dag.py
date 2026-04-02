@@ -52,6 +52,7 @@ with dag:
     task_extract = PythonOperator(
         task_id="extract",
         python_callable=extract,
+        execution_timeout=timedelta(hours=6),
         op_kwargs={
             "ingest_dir": config.data_dirs.ingest,
             "data_interval_start": (

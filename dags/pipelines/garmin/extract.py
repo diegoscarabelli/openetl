@@ -591,9 +591,10 @@ def extract(
     user ID and contains authentication tokens. The extraction loops over each discovered
     account sequentially, with error isolation (one account failing does not block others).
 
-    Accounts can be filtered via DAG run configuration:
-        {"accounts": ["12345678", "87654321"]}
+    Accounts and data types can be filtered via DAG run configuration:
+        {"accounts": ["12345678", "87654321"], "data_types": ["SLEEP", "HEART_RATE"]}
     If "accounts" is not provided, all discovered accounts are extracted.
+    If "data_types" is not provided, all available data types are extracted.
 
     Intended to be used as a PythonOperator callable in the `extract` Airflow task.
 
@@ -691,6 +692,23 @@ def extract(
             f"{[uid for uid, _ in accounts]}."
         )
 
+    # Apply optional data_types filter from DAG run configuration.
+    # Example: {"data_types": ["SLEEP", "HEART_RATE", "ACTIVITY"]}
+    data_types_filter = dag_run_conf.get("data_types")
+    if data_types_filter is not None:
+        if not isinstance(data_types_filter, (list, tuple)):
+            raise ValueError(
+                "DAG run config 'data_types' must be a list of data type names, "
+                f"got {type(data_types_filter).__name__}."
+            )
+        if not data_types_filter:
+            raise AirflowSkipException(
+                "DAG run config 'data_types' was provided as an empty list; "
+                "nothing to extract."
+            )
+        data_types = data_types_filter
+        LOGGER.info(f"🔍 Data types filter applied: {data_types}.")
+
     # Extract data for each account sequentially with error isolation.
     all_garmin_files = []
     all_activity_files = []
@@ -713,8 +731,9 @@ def extract(
                 f"{len(activity_files)} activity files."
             )
         except Exception:
-            LOGGER.exception(
-                f"❌ Account {user_id} failed. " "Continuing with remaining accounts."
+            LOGGER.error(
+                f"❌ Account {user_id} failed. " "Continuing with remaining accounts.",
+                exc_info=True,
             )
             failed_accounts.append(user_id)
 

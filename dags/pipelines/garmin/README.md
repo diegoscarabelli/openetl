@@ -93,6 +93,15 @@ To load historical data when first setting up the pipeline (or to fill gaps), fo
        "data_interval_end": "2025-01-01T00:00:00Z"
      }
      ```
+   - Optionally filter by account or data type to scope the backfill:
+     ```json
+     {
+       "data_interval_start": "2015-01-01T00:00:00Z",
+       "data_interval_end": "2025-01-01T00:00:00Z",
+       "accounts": ["12345678"],
+       "data_types": ["SLEEP", "HEART_RATE", "ACTIVITY"]
+     }
+     ```
    - Click "Trigger" to start processing
 
 3. **Uncomment the schedule interval** in [`dag.py`](dag.py) after backfill completes to resume normal daily scheduled runs:
@@ -124,17 +133,18 @@ During extraction, the pipeline loops over all discovered accounts sequentially,
 
 Error isolation ensures that one account failing authentication does not block extraction for other accounts.
 
-To extract data for specific accounts only (e.g., during a backfill for a newly added account), use the `accounts` key in the DAG run configuration:
+To extract data for specific accounts or data types only (e.g., during a backfill for a newly added account, or resuming a partial backfill), use the `accounts` and `data_types` keys in the DAG run configuration:
 
 ```json
 {
   "data_interval_start": "2015-01-01T00:00:00Z",
   "data_interval_end": "2025-01-01T00:00:00Z",
-  "accounts": ["12345678"]
+  "accounts": ["12345678"],
+  "data_types": ["TRAINING_STATUS", "STEPS", "ACTIVITY"]
 }
 ```
 
-If `accounts` is omitted, all discovered accounts are extracted.
+If `accounts` is omitted, all discovered accounts are extracted. If `data_types` is omitted, all available data types are extracted. Valid data type names are defined in [`GARMIN_DATA_REGISTRY`](constants.py).
 
 **Authentication Integration:**
 * OAuth token-based authentication using [`garminconnect`](https://github.com/cyberjunky/python-garminconnect) library with native OAuth2 engine

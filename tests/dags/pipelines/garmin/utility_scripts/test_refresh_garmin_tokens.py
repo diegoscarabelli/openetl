@@ -221,12 +221,13 @@ class TestGarminTokenRefresh:
                 _handle_mfa_authentication(mock_garmin_instance, result2)
 
     def test_refresh_tokens_success_no_mfa(
-        self, mock_garmin_class_with_instance
+        self, mock_garmin_class_with_instance, tmp_path
     ) -> None:
         """
         Test successful token refresh without MFA.
 
         :param mock_garmin_class_with_instance: Mock Garmin class fixture.
+        :param tmp_path: Pytest temporary path fixture.
         """
 
         # Arrange
@@ -239,7 +240,7 @@ class TestGarminTokenRefresh:
             "dags.pipelines.garmin.utility_scripts.refresh_garmin_tokens.logger"
         ):
             # Act.
-            refresh_tokens("test@example.com", "password123")
+            refresh_tokens("test@example.com", "password123", str(tmp_path))
 
             # Assert
             mock_garmin_class.assert_called_once_with(
@@ -252,12 +253,13 @@ class TestGarminTokenRefresh:
             mock_client.dump.assert_called_once()
 
     def test_refresh_tokens_success_with_mfa(
-        self, mock_garmin_class_with_instance
+        self, mock_garmin_class_with_instance, tmp_path
     ) -> None:
         """
         Test successful token refresh with MFA.
 
         :param mock_garmin_class_with_instance: Mock Garmin class fixture.
+        :param tmp_path: Pytest temporary path fixture.
         """
 
         # Arrange
@@ -273,7 +275,7 @@ class TestGarminTokenRefresh:
             "dags.pipelines.garmin.utility_scripts.refresh_garmin_tokens.logger"
         ):
             # Act.
-            refresh_tokens("test@example.com", "password123")
+            refresh_tokens("test@example.com", "password123", str(tmp_path))
 
             # Assert
             mock_garmin_class.assert_called_once_with(
@@ -287,12 +289,13 @@ class TestGarminTokenRefresh:
             mock_client.dump.assert_called_once()
 
     def test_refresh_tokens_authentication_failure(
-        self, mock_garmin_class_with_instance
+        self, mock_garmin_class_with_instance, tmp_path
     ) -> None:
         """
         Test token refresh with authentication failure.
 
         :param mock_garmin_class_with_instance: Mock Garmin class fixture.
+        :param tmp_path: Pytest temporary path fixture.
         """
 
         # Arrange
@@ -307,7 +310,7 @@ class TestGarminTokenRefresh:
         ):
             # Act & Assert.
             with pytest.raises(Exception, match="401 Unauthorized"):
-                refresh_tokens("invalid@example.com", "wrong_password")
+                refresh_tokens("invalid@example.com", "wrong_password", str(tmp_path))
 
             # Should not call client.dump if login fails.
             mock_garmin_instance.client.dump.assert_not_called()
