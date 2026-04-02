@@ -10,15 +10,27 @@ What the script does:
 2. Automatically detects if MFA is required.
 3. Handles MFA by prompting for your 6-digit code (if MFA is enabled).
 4. Works seamlessly for accounts without MFA enabled.
-5. Saves tokens to ~/.garminconnect (same location used by pipeline).
-6. Validates the authentication was successful.
+5. Auto-detects the Garmin user ID after authentication.
+6. Saves tokens to ~/.garminconnect/<user_id>/ for multi-account support.
+7. Validates the authentication was successful.
+
+MULTI-ACCOUNT SUPPORT:
+The pipeline supports multiple Garmin Connect accounts (e.g., family members).
+Run this script once per account to set up tokens. Each account's tokens are
+stored in a separate subdirectory named by the Garmin user ID:
+    ~/.garminconnect/12345678/
+    ~/.garminconnect/87654321/
+
+The pipeline automatically discovers all configured accounts by scanning
+subdirectories in ~/.garminconnect/ at runtime.
 
 WHEN TO USE:
 Run this script when:
-- Setting up the pipeline for the first time.
+- Setting up the pipeline for the first time (once per account).
 - Tokens have expired (approximately every 1 year).
 - MFA authentication is required.
 - The Airflow DAG fails due to authentication errors.
+- Adding a new Garmin Connect account to the pipeline.
 
 USAGE:
     python refresh_garmin_tokens.py
@@ -48,8 +60,10 @@ Common Issues:
    - Check if Garmin Connect services are operational.
 
 TOKEN STORAGE:
-Tokens are saved to ~/.garminconnect/ which is the same location used by:
-- The Airflow pipeline (extract.py).
+Tokens are saved to ~/.garminconnect/<user_id>/ where <user_id> is the Garmin
+Connect numeric user ID, automatically detected after authentication. This
+location is used by:
+- The Airflow pipeline (extract.py) for multi-account data extraction.
 - The python-garminconnect library.
 - The underlying Garth authentication library.
 
@@ -184,19 +198,25 @@ def _handle_mfa_authentication(garmin, result2) -> None:
             raise  # Re-raise the exception
 
 
-def refresh_tokens(email: str, password: str, token_dir: str = "~/.garminconnect"):
+def refresh_tokens(email: str, password: str, base_token_dir: str = "~/.garminconnect"):
     """
     Refresh Garmin Connect tokens with MFA support.
 
+    After successful authentication, the Garmin user ID is auto-detected via the
+    user profile API. Tokens are saved to a user-specific subdirectory:
+    ``<base_token_dir>/<user_id>/``.
+
     :param email: Garmin Connect email.
     :param password: Garmin Connect password.
-    :param token_dir: Directory to store tokens.
+    :param base_token_dir: Base directory for token storage. Tokens will be saved
+        to a ``<user_id>`` subdirectory within this directory.
     """
 
-    token_path = Path(token_dir).expanduser()
+    base_path = Path(base_token_dir).expanduser()
 
     logger.info(
-        f"\n🔄 Authenticating with Garmin Connect...\n   Token storage: {token_path}."
+        f"\n🔄 Authenticating with Garmin Connect...\n"
+        f"   Base token directory: {base_path}."
     )
 
     try:
@@ -204,6 +224,19 @@ def refresh_tokens(email: str, password: str, token_dir: str = "~/.garminconnect
         # is_cn=False connects to international servers (garmin.com).
         # vs Chinese (garmin.cn).
         garmin = Garmin(email=email, password=password, is_cn=False, return_on_mfa=True)
+
+        # Override garth's default User-Agent ("GCM-iOS-5.7.2.1") with a
+        # browser string. Garmin's Cloudflare blocks the mobile app identifier
+        # for programmatic SSO login, but allows browser User-Agents through.
+        garmin.garth.sess.headers.update(
+            {
+                "User-Agent": (
+                    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+                    "AppleWebKit/537.36 (KHTML, like Gecko) "
+                    "Chrome/131.0.0.0 Safari/537.36"
+                )
+            }
+        )
 
         # Attempt login.
         login_result = garmin.login()
@@ -221,11 +254,26 @@ def refresh_tokens(email: str, password: str, token_dir: str = "~/.garminconnect
             # Handle case where login() returns single value or None (no MFA).
             logger.info("✅ Authentication successful (no MFA required).")
 
-        logger.info("💾 Saving authentication tokens...")
+        # Auto-detect user ID from the authenticated profile.
+        user_id = garmin.get_user_profile().get("id")
+        if not user_id:
+            raise RuntimeError(
+                "Could not determine user ID from Garmin profile. "
+                "The 'id' field was missing from get_user_profile() response."
+            )
 
-        # Ensure token directory exists with proper permissions.
-        token_path.mkdir(parents=True, exist_ok=True)
-        token_path.chmod(0o755)
+        logger.info(f"👤 Detected Garmin user ID: {user_id}.")
+
+        # Build user-specific token path: ~/.garminconnect/<user_id>/
+        token_path = base_path / str(user_id)
+
+        logger.info(f"💾 Saving authentication tokens to {token_path}...")
+
+        # Ensure directories exist with user-only permissions (tokens are secrets).
+        base_path.mkdir(parents=True, exist_ok=True)
+        base_path.chmod(0o700)
+        token_path.mkdir(exist_ok=True)
+        token_path.chmod(0o700)
 
         garmin.garth.dump(str(token_path))
 

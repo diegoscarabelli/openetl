@@ -144,6 +144,9 @@ GRANT USAGE, SELECT, UPDATE ON ALL SEQUENCES IN SCHEMA garmin TO airflow_garmin;
 -- so stale rows must be removed before reinserting.
 GRANT DELETE ON garmin.strength_exercise TO airflow_garmin;
 GRANT DELETE ON garmin.strength_set TO airflow_garmin;
+GRANT DELETE ON garmin.activity_ts_metric TO airflow_garmin;
+GRANT DELETE ON garmin.activity_split_metric TO airflow_garmin;
+GRANT DELETE ON garmin.activity_lap_metric TO airflow_garmin;
 
 -- Set default privileges for future objects in garmin schema.
 ALTER DEFAULT PRIVILEGES IN SCHEMA garmin

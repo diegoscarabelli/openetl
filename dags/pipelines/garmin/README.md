@@ -108,13 +108,41 @@ The single DAG run will extract and process all Garmin data within the specified
 
 The custom extract task uses the [`GarminExtractor`](extract.py) class to download data from Garmin Connect for the specified date range using the [`python-garminconnect`](https://github.com/cyberjunky/python-garminconnect) library. Files are saved with standardized naming conventions to the ingest directory for downstream processing.
 
+**Multi-Account Support:**
+
+The pipeline supports multiple Garmin Connect accounts (e.g., family members). Accounts are discovered automatically by scanning subdirectories in `~/.garminconnect/`, where each subdirectory is named by the Garmin user ID and contains authentication tokens:
+
+```text
+~/.garminconnect/
+├── 12345678/    # Account A tokens
+└── 87654321/    # Account B tokens
+```
+
+To set up a new account, run [`refresh_garmin_tokens.py`](utility_scripts/refresh_garmin_tokens.py) once per account. The script authenticates with Garmin Connect, auto-detects the user ID, and saves tokens to the appropriate subdirectory. Repeat for each account you want to include in the pipeline.
+
+During extraction, the pipeline loops over all discovered accounts sequentially, so total extraction time scales linearly with the number of accounts. For most setups (a few family members) this is not a concern. If extraction latency becomes a bottleneck with many accounts, the extract task could be parallelized using Airflow dynamic task mapping in a future iteration.
+
+Error isolation ensures that one account failing authentication does not block extraction for other accounts.
+
+To extract data for specific accounts only (e.g., during a backfill for a newly added account), use the `accounts` key in the DAG run configuration:
+
+```json
+{
+  "data_interval_start": "2015-01-01T00:00:00Z",
+  "data_interval_end": "2025-01-01T00:00:00Z",
+  "accounts": ["12345678"]
+}
+```
+
+If `accounts` is omitted, all discovered accounts are extracted.
+
 **Authentication Integration:**
 * OAuth token-based authentication using [`garminconnect`](https://github.com/cyberjunky/python-garminconnect) library with underlying [Garth library](https://github.com/matin/garth) support
-* Token storage: `~/.garminconnect/` directory 
-* Token refresh utility: [`refresh_garmin_tokens.py`](utility_scripts/refresh_garmin_tokens.py) script for initial setup and yearly refresh
+* Token storage: `~/.garminconnect/<user_id>/` per-account subdirectories
+* Token refresh utility: [`refresh_garmin_tokens.py`](utility_scripts/refresh_garmin_tokens.py) script for initial setup and yearly refresh (run once per account)
 * Multi-Factor Authentication (MFA) support with interactive prompts
 * Token lifecycle: Valid for approximately 1 year from creation
-* Error handling: Authentication failures trigger detailed troubleshooting instructions referencing the token refresh utility
+* Error handling: Authentication failures are logged per-account with detailed troubleshooting instructions
 
 The task extracts data types defined in [`GARMIN_DATA_REGISTRY`](constants.py#GARMIN_DATA_REGISTRY):
 
@@ -140,11 +168,14 @@ The ingest task utilizes the standard `ingest()` function from the [Standard DAG
 
 ### Batch task
 
-The batch task uses the standard `batch()` function from the [Standard DAG](../../../README.md#standard-dag) pattern with custom configuration:
+[Code](batch.py)
 
-* Groups files by timestamp into processing batches using [`GARMIN_FILE_TYPES`](constants.py#GARMIN_FILE_TYPES) for file type coordination
+The batch task uses a custom [`batch()`](batch.py) callable (configured via `batch_callable` in ETLConfig) that groups files by `(user_id, timestamp)` instead of timestamp alone. This ensures files from different Garmin accounts are never mixed in the same FileSet, which is required for the processor's single-user assumption.
+
+* Groups files by `(user_id, timestamp)` into processing batches using [`GARMIN_FILE_TYPES`](constants.py#GARMIN_FILE_TYPES) for file type coordination
+* Extracts user_id from the filename prefix (before the first underscore)
 * **Custom parameter**: `min_file_sets_in_batch=1`: sets the minimum number of file sets required in a batch to 1 (the lowest possible limit)
-* **Custom parameter**: `max_process_tasks=3`: limits concurrent processing tasks for resource management
+* **Custom parameter**: `max_process_tasks=8`: limits concurrent processing tasks for resource management
 
 ### Process task
 

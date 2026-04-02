@@ -2,7 +2,8 @@
 Garmin Connect data pipeline DAG configuration.
 
 Orchestrates the extraction, processing, and storage of Garmin Connect wellness and
-activity data.
+activity data. Supports multiple Garmin Connect accounts via convention-based account
+discovery (subdirectories in ~/.garminconnect/).
 """
 
 from datetime import timedelta
@@ -12,16 +13,21 @@ from airflow.providers.standard.operators.python import PythonOperator
 
 from dags.lib.dag_utils import create_dag
 from dags.lib.etl_config import ETLConfig
+from dags.pipelines.garmin.batch import batch as garmin_batch
 from dags.pipelines.garmin.constants import GARMIN_FILE_TYPES
 from dags.pipelines.garmin.extract import extract
 from dags.pipelines.garmin.process import GarminProcessor
 
 # Configure the Garmin Connect data pipeline.
+# Uses a custom batch callable that groups files by (user_id, timestamp) to support
+# multi-account extraction where files from different users share the same ingest
+# directory.
 config = ETLConfig(
     dag_id="garmin",
     pipeline_print_name="Garmin",
     description="Extract, process, and store Garmin Connect data",
     file_types=GARMIN_FILE_TYPES,
+    batch_callable=garmin_batch,
     max_process_tasks=8,
     min_file_sets_in_batch=1,
     dag_start_date=pendulum.datetime(
