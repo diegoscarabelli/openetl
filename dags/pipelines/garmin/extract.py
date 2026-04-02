@@ -696,10 +696,15 @@ def extract(
     # Example: {"data_types": ["SLEEP", "HEART_RATE", "ACTIVITY"]}
     data_types_filter = dag_run_conf.get("data_types")
     if data_types_filter is not None:
-        if not isinstance(data_types_filter, list):
+        if not isinstance(data_types_filter, (list, tuple)):
             raise ValueError(
                 "DAG run config 'data_types' must be a list of data type names, "
                 f"got {type(data_types_filter).__name__}."
+            )
+        if not data_types_filter:
+            raise AirflowSkipException(
+                "DAG run config 'data_types' was provided as an empty list; "
+                "nothing to extract."
             )
         data_types = data_types_filter
         LOGGER.info(f"🔍 Data types filter applied: {data_types}.")

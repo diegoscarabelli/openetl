@@ -1621,6 +1621,45 @@ class TestExtractMultiAccount:
     @patch("dags.pipelines.garmin.extract.discover_accounts")
     @patch("dags.pipelines.garmin.extract.GarminExtractor")
     @patch("dags.pipelines.garmin.extract.LOGGER")
+    def test_extract_data_types_filter_empty_list_skips(
+        self, mock_logger, mock_extractor_class, mock_discover, mock_config
+    ) -> None:
+        """
+        Test that passing an empty list for 'data_types' in dag_run.conf raises
+        AirflowSkipException.
+
+        :param mock_logger: Mock logger.
+        :param mock_extractor_class: Mock GarminExtractor class.
+        :param mock_discover: Mock discover_accounts function.
+        :param mock_config: Mock ETL config.
+        """
+
+        # Arrange.
+        mock_discover.return_value = [
+            ("12345678", Path("/tokens/12345678")),
+        ]
+
+        mock_dag_run = MagicMock()
+        mock_dag_run.conf = {"data_types": []}
+        mock_task = MagicMock()
+        mock_task.task_id = "extract"
+
+        data_interval_start = pendulum.datetime(2025, 1, 1, tz="UTC")
+        data_interval_end = pendulum.datetime(2025, 1, 3, tz="UTC")
+
+        # Act & Assert.
+        with pytest.raises(AirflowSkipException, match="empty list"):
+            extract(
+                mock_config.data_dirs.ingest,
+                data_interval_start,
+                data_interval_end,
+                dag_run=mock_dag_run,
+                task=mock_task,
+            )
+
+    @patch("dags.pipelines.garmin.extract.discover_accounts")
+    @patch("dags.pipelines.garmin.extract.GarminExtractor")
+    @patch("dags.pipelines.garmin.extract.LOGGER")
     def test_extract_error_isolation(
         self, mock_logger, mock_extractor_class, mock_discover, mock_config
     ) -> None:
