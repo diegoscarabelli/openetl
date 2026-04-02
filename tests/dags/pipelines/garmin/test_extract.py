@@ -16,7 +16,7 @@ import zipfile
 
 from datetime import date
 from pathlib import Path
-from unittest.mock import MagicMock, call, patch
+from unittest.mock import ANY, MagicMock, call, patch
 
 import pendulum
 import pytest
@@ -1576,8 +1576,9 @@ class TestExtractMultiAccount:
         )
 
         # Assert: data_types filter passed to GarminExtractor.
-        call_args = mock_extractor_class.call_args
-        assert call_args[0][3] == ["SLEEP", "HEART_RATE"]
+        mock_extractor_class.assert_called_once_with(
+            ANY, ANY, ANY, ["SLEEP", "HEART_RATE"]
+        )
 
     @patch("dags.pipelines.garmin.extract.discover_accounts")
     @patch("dags.pipelines.garmin.extract.GarminExtractor")

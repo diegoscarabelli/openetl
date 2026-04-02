@@ -71,7 +71,15 @@ class ETLDataDirectories:
         :return: Path object for the directory.
         """
 
-        return Path(os.environ.get("DATA_DIR", "data")) / base_dir / data_state.value
+        data_dir = os.environ.get("DATA_DIR")
+        if not data_dir:
+            LOGGER.warning(
+                "DATA_DIR environment variable is not set; falling back to relative "
+                "'data' directory. This may indicate a deployment misconfiguration."
+            )
+            data_dir = "data"
+
+        return Path(data_dir) / base_dir / data_state.value
 
     def _create_directories(self) -> None:
         """

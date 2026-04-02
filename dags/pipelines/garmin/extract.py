@@ -8,7 +8,6 @@ Garmin Connect accounts by discovering token subdirectories in the base token di
 
 import json
 import time
-import traceback
 import zipfile
 import io
 
@@ -733,8 +732,8 @@ def extract(
             )
         except Exception:
             LOGGER.error(
-                f"❌ Account {user_id} failed. "
-                f"Continuing with remaining accounts.\n{traceback.format_exc()}"
+                f"❌ Account {user_id} failed. " "Continuing with remaining accounts.",
+                exc_info=True,
             )
             failed_accounts.append(user_id)
 
