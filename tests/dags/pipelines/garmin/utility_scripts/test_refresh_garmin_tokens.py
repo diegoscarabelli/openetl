@@ -232,8 +232,8 @@ class TestGarminTokenRefresh:
         # Arrange
         mock_garmin_class, mock_garmin_instance = mock_garmin_class_with_instance
         mock_garmin_instance.login.return_value = None  # No MFA required.
-        mock_garth = MagicMock()
-        mock_garmin_instance.garth = mock_garth
+        mock_client = MagicMock()
+        mock_garmin_instance.client = mock_client
 
         with patch(
             "dags.pipelines.garmin.utility_scripts.refresh_garmin_tokens.logger"
@@ -249,7 +249,7 @@ class TestGarminTokenRefresh:
                 return_on_mfa=True,
             )
             mock_garmin_instance.login.assert_called_once()
-            mock_garth.dump.assert_called_once()
+            mock_client.dump.assert_called_once()
 
     def test_refresh_tokens_success_with_mfa(
         self, mock_garmin_class_with_instance
@@ -263,8 +263,8 @@ class TestGarminTokenRefresh:
         # Arrange
         mock_garmin_class, mock_garmin_instance = mock_garmin_class_with_instance
         mock_garmin_instance.login.return_value = ("needs_mfa", "mfa_token")
-        mock_garth = MagicMock()
-        mock_garmin_instance.garth = mock_garth
+        mock_client = MagicMock()
+        mock_garmin_instance.client = mock_client
 
         with patch(
             "dags.pipelines.garmin.utility_scripts.refresh_garmin_tokens."
@@ -284,7 +284,7 @@ class TestGarminTokenRefresh:
             )
             mock_garmin_instance.login.assert_called_once()
             mock_handle_mfa.assert_called_once_with(mock_garmin_instance, "mfa_token")
-            mock_garth.dump.assert_called_once()
+            mock_client.dump.assert_called_once()
 
     def test_refresh_tokens_authentication_failure(
         self, mock_garmin_class_with_instance
@@ -309,8 +309,8 @@ class TestGarminTokenRefresh:
             with pytest.raises(Exception, match="401 Unauthorized"):
                 refresh_tokens("invalid@example.com", "wrong_password")
 
-            # Should not call garth.dump if login fails.
-            mock_garmin_instance.garth.dump.assert_not_called()
+            # Should not call client.dump if login fails.
+            mock_garmin_instance.client.dump.assert_not_called()
 
 
 class TestRefreshTokensMultiAccount:
@@ -363,8 +363,8 @@ class TestRefreshTokensMultiAccount:
         _mock_garmin_class, mock_garmin_instance = mock_garmin_class_with_instance
         mock_garmin_instance.login.return_value = None  # No MFA required.
         mock_garmin_instance.get_user_profile.return_value = {"id": "12345678"}
-        mock_garth = MagicMock()
-        mock_garmin_instance.garth = mock_garth
+        mock_client = MagicMock()
+        mock_garmin_instance.client = mock_client
 
         with patch(
             "dags.pipelines.garmin.utility_scripts.refresh_garmin_tokens.logger"
@@ -373,7 +373,7 @@ class TestRefreshTokensMultiAccount:
             refresh_tokens("test@example.com", "password123", str(tmp_path))
 
             # Assert.
-            dump_call_args = mock_garth.dump.call_args[0][0]
+            dump_call_args = mock_client.dump.call_args[0][0]
             assert Path(dump_call_args).name == "12345678"
             mock_garmin_instance.get_user_profile.assert_called_once()
 
@@ -406,8 +406,8 @@ class TestRefreshTokensMultiAccount:
             with pytest.raises(RuntimeError, match="Could not determine user ID"):
                 refresh_tokens("test@example.com", "password123", str(tmp_path))
 
-            # Should not call garth.dump if user ID is missing.
-            mock_garmin_instance.garth.dump.assert_not_called()
+            # Should not call client.dump if user ID is missing.
+            mock_garmin_instance.client.dump.assert_not_called()
 
     def test_refresh_tokens_with_mfa(
         self, mock_garmin_class_with_instance, tmp_path
@@ -426,8 +426,8 @@ class TestRefreshTokensMultiAccount:
         _mock_garmin_class, mock_garmin_instance = mock_garmin_class_with_instance
         mock_garmin_instance.login.return_value = ("needs_mfa", "mfa_token")
         mock_garmin_instance.get_user_profile.return_value = {"id": "12345678"}
-        mock_garth = MagicMock()
-        mock_garmin_instance.garth = mock_garth
+        mock_client = MagicMock()
+        mock_garmin_instance.client = mock_client
 
         with patch(
             "dags.pipelines.garmin.utility_scripts.refresh_garmin_tokens."
@@ -442,5 +442,5 @@ class TestRefreshTokensMultiAccount:
             mock_handle_mfa.assert_called_once_with(mock_garmin_instance, "mfa_token")
 
             # Assert: tokens saved to user-specific subdirectory.
-            dump_call_args = mock_garth.dump.call_args[0][0]
+            dump_call_args = mock_client.dump.call_args[0][0]
             assert Path(dump_call_args).name == "12345678"

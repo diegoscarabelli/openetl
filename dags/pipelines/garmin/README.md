@@ -2,7 +2,7 @@
 
 ## Context
 
-This document describes the ETL data pipeline which processes data sourced from Garmin Connect. The pipeline collects comprehensive health, fitness, and activity data using the [python-garminconnect](https://github.com/cyberjunky/python-garminconnect) library, a robust Python SDK that provides comprehensive access to Garmin's ecosystem. The library leverages the [Garth library](https://github.com/matin/garth) underneath to handle complex OAuth 1.0/2.0 authentication flows, multi-factor authentication (MFA) challenges, intelligent session management, and efficient HTTP request pooling to Garmin's servers.
+This document describes the ETL data pipeline which processes data sourced from Garmin Connect. The pipeline collects comprehensive health, fitness, and activity data using the [python-garminconnect](https://github.com/cyberjunky/python-garminconnect) library, a robust Python SDK that provides comprehensive access to Garmin's ecosystem. The library uses a native OAuth2 engine with `curl_cffi` TLS fingerprint impersonation for reliable authentication, multi-factor authentication (MFA) support, intelligent session management, and efficient HTTP request handling to Garmin's servers.
 
 The goal of this pipeline is to support downstream data consumers in generating analytics that provide insights into personal health metrics, training performance, sleep quality, and activity tracking for comprehensive wellness monitoring and optimization.
 
@@ -137,7 +137,7 @@ To extract data for specific accounts only (e.g., during a backfill for a newly 
 If `accounts` is omitted, all discovered accounts are extracted.
 
 **Authentication Integration:**
-* OAuth token-based authentication using [`garminconnect`](https://github.com/cyberjunky/python-garminconnect) library with underlying [Garth library](https://github.com/matin/garth) support
+* OAuth token-based authentication using [`garminconnect`](https://github.com/cyberjunky/python-garminconnect) library with native OAuth2 engine
 * Token storage: `~/.garminconnect/<user_id>/` per-account subdirectories
 * Token refresh utility: [`refresh_garmin_tokens.py`](utility_scripts/refresh_garmin_tokens.py) script for initial setup and yearly refresh (run once per account)
 * Multi-Factor Authentication (MFA) support with interactive prompts

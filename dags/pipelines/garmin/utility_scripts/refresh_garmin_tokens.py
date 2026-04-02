@@ -65,7 +65,7 @@ Connect numeric user ID, automatically detected after authentication. This
 location is used by:
 - The Airflow pipeline (extract.py) for multi-account data extraction.
 - The python-garminconnect library.
-- The underlying Garth authentication library.
+- The garminconnect library's native OAuth2 engine.
 
 SECURITY NOTES:
 - Tokens are stored locally in your home directory.
@@ -225,19 +225,6 @@ def refresh_tokens(email: str, password: str, base_token_dir: str = "~/.garminco
         # vs Chinese (garmin.cn).
         garmin = Garmin(email=email, password=password, is_cn=False, return_on_mfa=True)
 
-        # Override garth's default User-Agent ("GCM-iOS-5.7.2.1") with a
-        # browser string. Garmin's Cloudflare blocks the mobile app identifier
-        # for programmatic SSO login, but allows browser User-Agents through.
-        garmin.garth.sess.headers.update(
-            {
-                "User-Agent": (
-                    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
-                    "AppleWebKit/537.36 (KHTML, like Gecko) "
-                    "Chrome/131.0.0.0 Safari/537.36"
-                )
-            }
-        )
-
         # Attempt login.
         login_result = garmin.login()
 
@@ -275,9 +262,9 @@ def refresh_tokens(email: str, password: str, base_token_dir: str = "~/.garminco
         token_path.mkdir(exist_ok=True)
         token_path.chmod(0o700)
 
-        garmin.garth.dump(str(token_path))
+        garmin.client.dump(str(token_path))
 
-        # Lock down token files to owner-only (garth.dump uses default umask).
+        # Lock down token files to owner-only (client.dump uses default umask).
         for token_file in token_path.iterdir():
             if token_file.is_file():
                 token_file.chmod(0o600)

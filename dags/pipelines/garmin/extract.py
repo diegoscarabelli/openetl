@@ -74,7 +74,7 @@ class GarminExtractor:
         Authenticate with Garmin Connect using pre-existing tokens and get user ID.
 
         This function relies on OAuth tokens that have been previously saved by the
-        refresh_garmin_tokens.py script. The Garth library automatically handles token
+        refresh_garmin_tokens.py script. The library automatically handles token
         validation and session management once valid tokens are present.
 
         Sets both self.garmin_client and self.user_id upon successful authentication.
@@ -82,7 +82,7 @@ class GarminExtractor:
         Token Lifecycle:
         - Tokens are stored in ~/.garminconnect/ by default.
         - Valid for approximately 1 year from creation.
-        - Garth attempts automatic token refresh, but may require manual refresh.
+        - The library attempts automatic token refresh, but may require manual refresh.
         - No credentials (email/password) required once valid tokens exist.
 
         When to run refresh_garmin_tokens.py:
