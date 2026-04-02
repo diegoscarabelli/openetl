@@ -269,8 +269,10 @@ def refresh_tokens(email: str, password: str, base_token_dir: str = "~/.garminco
 
         logger.info(f"💾 Saving authentication tokens to {token_path}...")
 
-        # Ensure token directory exists with user-only permissions (tokens are secrets).
-        token_path.mkdir(parents=True, exist_ok=True)
+        # Ensure directories exist with user-only permissions (tokens are secrets).
+        base_path.mkdir(parents=True, exist_ok=True)
+        base_path.chmod(0o700)
+        token_path.mkdir(exist_ok=True)
         token_path.chmod(0o700)
 
         garmin.garth.dump(str(token_path))

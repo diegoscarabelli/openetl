@@ -488,10 +488,15 @@ def discover_accounts(
     the directory name is the Garmin user ID. Subdirectories are created by the
     refresh_garmin_tokens.py utility script during initial account setup.
 
+    If no numeric subdirectories are found but token files exist at the root level
+    (pre-multi-account layout), returns a single ``("legacy", base_path)`` entry and
+    logs a migration warning.
+
     :param base_token_dir: Base directory containing per-account token subdirectories.
     :return: List of (user_id, token_dir_path) tuples, sorted by user_id.
     :raises FileNotFoundError: If the base token directory does not exist.
-    :raises RuntimeError: If no account subdirectories are found.
+    :raises NotADirectoryError: If the base token path exists but is not a directory.
+    :raises RuntimeError: If no account subdirectories and no legacy token files are found.
     """
 
     base_path = Path(base_token_dir).expanduser()
@@ -516,8 +521,8 @@ def discover_accounts(
     # Backward compatibility: if no subdirectories exist but token files are present
     # at the root level (pre-multi-account layout), treat as a single legacy account.
     if not accounts:
-        legacy_token = base_path / "oauth1_token.json"
-        if legacy_token.exists():
+        token_files = list(base_path.glob("*token*.json"))
+        if token_files:
             LOGGER.warning(
                 f"⚠️ Legacy token layout detected in {base_path}. "
                 "Tokens are at the root level instead of a user-specific subdirectory. "

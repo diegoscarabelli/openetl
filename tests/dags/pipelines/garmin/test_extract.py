@@ -677,14 +677,12 @@ class TestExtractFunction:
 
     @patch("dags.pipelines.garmin.extract.discover_accounts")
     @patch("dags.pipelines.garmin.extract.GarminExtractor")
-    @patch("dags.pipelines.garmin.extract.AirflowSkipException")
     def test_extract_no_data_found(
-        self, mock_skip_exception, mock_extractor_class, mock_discover, mock_config
+        self, mock_extractor_class, mock_discover, mock_config
     ) -> None:
         """
         Test extract function with no data found.
 
-        :param mock_skip_exception: Mock AirflowSkipException.
         :param mock_extractor_class: Mock GarminExtractor class.
         :param mock_discover: Mock discover_accounts function.
         :param mock_config: Mock ETL config.
@@ -702,12 +700,10 @@ class TestExtractFunction:
         data_interval_end = pendulum.datetime(2025, 1, 3, tz="UTC")
 
         # Act & Assert.
-        with pytest.raises(Exception):  # AirflowSkipException.
+        with pytest.raises(AirflowSkipException, match="No Garmin Connect data found"):
             extract(
                 mock_config.data_dirs.ingest, data_interval_start, data_interval_end
             )
-
-        mock_skip_exception.assert_called_once()
 
     @patch("dags.pipelines.garmin.extract.discover_accounts")
     @patch("dags.pipelines.garmin.extract.GarminExtractor")
@@ -752,14 +748,12 @@ class TestExtractFunction:
 
     @patch("dags.pipelines.garmin.extract.discover_accounts")
     @patch("dags.pipelines.garmin.extract.GarminExtractor")
-    @patch("dags.pipelines.garmin.extract.AirflowSkipException")
     def test_extract_activities_false_no_garmin_data(
-        self, mock_skip_exception, mock_extractor_class, mock_discover, mock_config
+        self, mock_extractor_class, mock_discover, mock_config
     ) -> None:
         """
         Test extract function with specific data types and no Garmin data.
 
-        :param mock_skip_exception: Mock AirflowSkipException.
         :param mock_extractor_class: Mock GarminExtractor class.
         :param mock_discover: Mock discover_accounts function.
         :param mock_config: Mock ETL config.
@@ -776,7 +770,7 @@ class TestExtractFunction:
         data_interval_end = pendulum.datetime(2025, 1, 3, tz="UTC")
 
         # Act & Assert.
-        with pytest.raises(Exception):  # AirflowSkipException.
+        with pytest.raises(AirflowSkipException, match="No Garmin Connect data found"):
             extract(
                 mock_config.data_dirs.ingest,
                 data_interval_start,
@@ -784,7 +778,6 @@ class TestExtractFunction:
                 data_types=["SLEEP"],  # Specific data type that returns no data
             )
 
-        mock_skip_exception.assert_called_once()
         mock_extractor.extract_fit_activities.assert_not_called()
 
     @patch("dags.pipelines.garmin.extract.GarminExtractor")
@@ -819,28 +812,22 @@ class TestExtractFunction:
         mock_extractor_class.assert_not_called()
 
     @patch("dags.pipelines.garmin.extract.GarminExtractor")
-    @patch("dags.pipelines.garmin.extract.AirflowSkipException")
     def test_extract_empty_data_types_no_activities(
-        self, mock_skip_exception, mock_extractor_class, mock_config
+        self, mock_extractor_class, mock_config
     ) -> None:
         """
         Test extract function with empty data_types.
 
-        :param mock_skip_exception: Mock AirflowSkipException.
         :param mock_extractor_class: Mock GarminExtractor class.
         :param mock_config: Mock ETL config.
         """
 
         # Arrange.
-        mock_extractor = MagicMock()
-        mock_extractor.extract_garmin_data.return_value = []
-        mock_extractor_class.return_value = mock_extractor
-
         data_interval_start = pendulum.datetime(2025, 1, 1, tz="UTC")
         data_interval_end = pendulum.datetime(2025, 1, 3, tz="UTC")
 
         # Act & Assert.
-        with pytest.raises(Exception):  # AirflowSkipException.
+        with pytest.raises(AirflowSkipException, match="data_types is an empty list"):
             extract(
                 mock_config.data_dirs.ingest,
                 data_interval_start,
@@ -848,16 +835,8 @@ class TestExtractFunction:
                 data_types=[],  # Empty list
             )
 
-        # Should get early validation error message
-        mock_skip_exception.assert_called_once_with(
-            "data_types is an empty list. Use None to extract all types "
-            "or specify data types to extract. Extraction will be skipped."
-        )
-        # Since validation fails early, extractor should not be created or called
+        # Since validation fails early, extractor should not be created or called.
         mock_extractor_class.assert_not_called()
-        mock_extractor.extract_fit_activities.assert_not_called()
-        mock_extractor.extract_garmin_data.assert_not_called()
-        mock_extractor.authenticate.assert_not_called()
 
     @patch("dags.pipelines.garmin.extract.discover_accounts")
     @patch("dags.pipelines.garmin.extract.GarminExtractor")

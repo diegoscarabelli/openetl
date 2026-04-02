@@ -8,6 +8,7 @@ This test suite covers:
 """
 
 import os
+from pathlib import Path
 from unittest.mock import MagicMock, call, patch
 
 import pytest
@@ -373,7 +374,7 @@ class TestRefreshTokensMultiAccount:
 
             # Assert.
             dump_call_args = mock_garth.dump.call_args[0][0]
-            assert dump_call_args.endswith("/12345678")
+            assert Path(dump_call_args).name == "12345678"
             mock_garmin_instance.get_user_profile.assert_called_once()
 
     def test_refresh_tokens_missing_user_id(
@@ -442,4 +443,4 @@ class TestRefreshTokensMultiAccount:
 
             # Assert: tokens saved to user-specific subdirectory.
             dump_call_args = mock_garth.dump.call_args[0][0]
-            assert dump_call_args.endswith("/12345678")
+            assert Path(dump_call_args).name == "12345678"
