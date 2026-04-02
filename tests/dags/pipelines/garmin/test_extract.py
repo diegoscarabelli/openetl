@@ -16,7 +16,7 @@ import zipfile
 
 from datetime import date
 from pathlib import Path
-from unittest.mock import MagicMock, call, patch
+from unittest.mock import ANY, MagicMock, call, patch
 
 import pendulum
 import pytest
@@ -1535,6 +1535,132 @@ class TestExtractMultiAccount:
     @patch("dags.pipelines.garmin.extract.discover_accounts")
     @patch("dags.pipelines.garmin.extract.GarminExtractor")
     @patch("dags.pipelines.garmin.extract.LOGGER")
+    def test_extract_data_types_filter(
+        self, mock_logger, mock_extractor_class, mock_discover, mock_config
+    ) -> None:
+        """
+        Test extract with data_types filter from dag_run.conf passes the filter to
+        GarminExtractor.
+
+        :param mock_logger: Mock logger.
+        :param mock_extractor_class: Mock GarminExtractor class.
+        :param mock_discover: Mock discover_accounts function.
+        :param mock_config: Mock ETL config.
+        """
+
+        # Arrange.
+        mock_discover.return_value = [
+            ("12345678", Path("/tokens/12345678")),
+        ]
+
+        mock_extractor = MagicMock()
+        mock_extractor.extract_garmin_data.return_value = [Path("data.json")]
+        mock_extractor.extract_fit_activities.return_value = []
+        mock_extractor_class.return_value = mock_extractor
+
+        mock_dag_run = MagicMock()
+        mock_dag_run.conf = {"data_types": ["SLEEP", "HEART_RATE"]}
+        mock_task = MagicMock()
+        mock_task.task_id = "extract"
+
+        data_interval_start = pendulum.datetime(2025, 1, 1, tz="UTC")
+        data_interval_end = pendulum.datetime(2025, 1, 3, tz="UTC")
+
+        # Act.
+        extract(
+            mock_config.data_dirs.ingest,
+            data_interval_start,
+            data_interval_end,
+            dag_run=mock_dag_run,
+            task=mock_task,
+        )
+
+        # Assert: data_types filter passed to GarminExtractor.
+        mock_extractor_class.assert_called_once_with(
+            ANY, ANY, ANY, ["SLEEP", "HEART_RATE"]
+        )
+
+    @patch("dags.pipelines.garmin.extract.discover_accounts")
+    @patch("dags.pipelines.garmin.extract.GarminExtractor")
+    @patch("dags.pipelines.garmin.extract.LOGGER")
+    def test_extract_data_types_filter_string_raises(
+        self, mock_logger, mock_extractor_class, mock_discover, mock_config
+    ) -> None:
+        """
+        Test that passing a string for 'data_types' in dag_run.conf raises ValueError
+        instead of silently iterating character-by-character.
+
+        :param mock_logger: Mock logger.
+        :param mock_extractor_class: Mock GarminExtractor class.
+        :param mock_discover: Mock discover_accounts function.
+        :param mock_config: Mock ETL config.
+        """
+
+        # Arrange.
+        mock_discover.return_value = [
+            ("12345678", Path("/tokens/12345678")),
+        ]
+
+        mock_dag_run = MagicMock()
+        mock_dag_run.conf = {"data_types": "SLEEP"}
+        mock_task = MagicMock()
+        mock_task.task_id = "extract"
+
+        data_interval_start = pendulum.datetime(2025, 1, 1, tz="UTC")
+        data_interval_end = pendulum.datetime(2025, 1, 3, tz="UTC")
+
+        # Act & Assert.
+        with pytest.raises(ValueError, match="must be a list"):
+            extract(
+                mock_config.data_dirs.ingest,
+                data_interval_start,
+                data_interval_end,
+                dag_run=mock_dag_run,
+                task=mock_task,
+            )
+
+    @patch("dags.pipelines.garmin.extract.discover_accounts")
+    @patch("dags.pipelines.garmin.extract.GarminExtractor")
+    @patch("dags.pipelines.garmin.extract.LOGGER")
+    def test_extract_data_types_filter_empty_list_skips(
+        self, mock_logger, mock_extractor_class, mock_discover, mock_config
+    ) -> None:
+        """
+        Test that passing an empty list for 'data_types' in dag_run.conf raises
+        AirflowSkipException.
+
+        :param mock_logger: Mock logger.
+        :param mock_extractor_class: Mock GarminExtractor class.
+        :param mock_discover: Mock discover_accounts function.
+        :param mock_config: Mock ETL config.
+        """
+
+        # Arrange.
+        mock_discover.return_value = [
+            ("12345678", Path("/tokens/12345678")),
+        ]
+
+        mock_dag_run = MagicMock()
+        mock_dag_run.conf = {"data_types": []}
+        mock_task = MagicMock()
+        mock_task.task_id = "extract"
+
+        data_interval_start = pendulum.datetime(2025, 1, 1, tz="UTC")
+        data_interval_end = pendulum.datetime(2025, 1, 3, tz="UTC")
+
+        # Act & Assert.
+        with pytest.raises(AirflowSkipException, match="empty list"):
+            extract(
+                mock_config.data_dirs.ingest,
+                data_interval_start,
+                data_interval_end,
+                dag_run=mock_dag_run,
+                task=mock_task,
+            )
+
+    @patch("dags.pipelines.garmin.extract.discover_accounts")
+    @patch("dags.pipelines.garmin.extract.GarminExtractor")
+    @patch("dags.pipelines.garmin.extract.LOGGER")
     def test_extract_error_isolation(
         self, mock_logger, mock_extractor_class, mock_discover, mock_config
     ) -> None:
@@ -1578,7 +1704,7 @@ class TestExtractMultiAccount:
         assert mock_extractor_class.call_count == 2
         mock_extractor_ok.extract_garmin_data.assert_called_once()
         mock_extractor_ok.extract_fit_activities.assert_called_once()
-        mock_logger.exception.assert_called()  # Error logged for first account.
+        mock_logger.error.assert_called()  # Error logged for first account.
 
     @patch("dags.pipelines.garmin.extract.discover_accounts")
     @patch("dags.pipelines.garmin.extract.GarminExtractor")
