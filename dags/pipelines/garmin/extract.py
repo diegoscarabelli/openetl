@@ -80,15 +80,14 @@ class GarminExtractor:
         Sets both self.garmin_client and self.user_id upon successful authentication.
 
         Token Lifecycle:
-        - Tokens are stored in ~/.garminconnect/ by default.
-        - Valid for approximately 1 year from creation.
-        - The library attempts automatic token refresh, but may require manual refresh.
+        - Tokens are stored in ~/.garminconnect/<user_id>/ per account.
+        - Access tokens (~18h) are auto-refreshed using the refresh token (30 days).
+        - Refresh tokens rotate on each use; updated tokens are persisted to disk.
         - No credentials (email/password) required once valid tokens exist.
 
         When to run refresh_garmin_tokens.py:
         - Initial setup (no tokens exist).
-        - Tokens have expired (approximately yearly).
-        - MFA is required on your Garmin account.
+        - Pipeline idle for 30+ days (refresh token expired).
         - Authentication errors occur in the pipeline.
 
         :param token_store_dir: Directory containing authentication tokens.
