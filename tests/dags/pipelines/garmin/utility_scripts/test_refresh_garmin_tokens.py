@@ -233,6 +233,7 @@ class TestGarminTokenRefresh:
         # Arrange
         mock_garmin_class, mock_garmin_instance = mock_garmin_class_with_instance
         mock_garmin_instance.login.return_value = None  # No MFA required.
+        mock_garmin_instance.get_user_profile.return_value = {"id": "12345678"}
         mock_client = MagicMock()
         mock_garmin_instance.client = mock_client
 
@@ -250,6 +251,7 @@ class TestGarminTokenRefresh:
                 return_on_mfa=True,
             )
             mock_garmin_instance.login.assert_called_once()
+            mock_garmin_instance.get_user_profile.assert_called_once()
             mock_client.dump.assert_called_once()
 
     def test_refresh_tokens_success_with_mfa(
@@ -265,6 +267,7 @@ class TestGarminTokenRefresh:
         # Arrange
         mock_garmin_class, mock_garmin_instance = mock_garmin_class_with_instance
         mock_garmin_instance.login.return_value = ("needs_mfa", "mfa_token")
+        mock_garmin_instance.get_user_profile.return_value = {"id": "12345678"}
         mock_client = MagicMock()
         mock_garmin_instance.client = mock_client
 
@@ -285,6 +288,7 @@ class TestGarminTokenRefresh:
                 return_on_mfa=True,
             )
             mock_garmin_instance.login.assert_called_once()
+            mock_garmin_instance.get_user_profile.assert_called_once()
             mock_handle_mfa.assert_called_once_with(mock_garmin_instance, "mfa_token")
             mock_client.dump.assert_called_once()
 
