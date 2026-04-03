@@ -27,7 +27,7 @@ subdirectories in ~/.garminconnect/ at runtime.
 WHEN TO USE:
 Run this script when:
 - Setting up the pipeline for the first time (once per account).
-- Tokens have expired (approximately every 1 year).
+- The refresh token has been revoked or expired server-side.
 - MFA authentication is required.
 - The Airflow DAG fails due to authentication errors.
 - Adding a new Garmin Connect account to the pipeline.
@@ -65,11 +65,28 @@ Connect numeric user ID, automatically detected after authentication. This
 location is used by:
 - The Airflow pipeline (extract.py) for multi-account data extraction.
 - The python-garminconnect library.
-- The underlying Garth authentication library.
+- The garminconnect library's native OAuth2 engine.
+
+TOKEN REFRESH:
+The garminconnect library uses two OAuth2 tokens:
+- Access token (~18 hours): used in API call headers, refreshed automatically.
+- Refresh token (30 days): used to obtain new access tokens without credentials.
+  Rotates on each use (each refresh response includes a new refresh token).
+
+The library automatically refreshes tokens before each API call and persists
+the updated tokens back to disk. As long as the pipeline runs at least once
+within 30 days, the token chain stays alive indefinitely. If the pipeline is
+idle for more than 30 days, the refresh token expires and this script must be
+re-run with username + password + MFA to bootstrap fresh tokens.
+
+This script is only needed for:
+- Initial setup (first-time authentication per account).
+- Recovery after the refresh token expires (30+ days of inactivity).
 
 SECURITY NOTES:
-- Tokens are stored locally in your home directory.
-- Tokens are valid for approximately 1 year.
+- Tokens are stored locally in your home directory with 0700/0600 permissions.
+- The token directory must be mounted read-write so the library can persist
+  refreshed tokens.
 - The script does not store your password or MFA codes.
 - Only OAuth tokens are persisted for future authentication.
 """
@@ -225,19 +242,6 @@ def refresh_tokens(email: str, password: str, base_token_dir: str = "~/.garminco
         # vs Chinese (garmin.cn).
         garmin = Garmin(email=email, password=password, is_cn=False, return_on_mfa=True)
 
-        # Override garth's default User-Agent ("GCM-iOS-5.7.2.1") with a
-        # browser string. Garmin's Cloudflare blocks the mobile app identifier
-        # for programmatic SSO login, but allows browser User-Agents through.
-        garmin.garth.sess.headers.update(
-            {
-                "User-Agent": (
-                    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
-                    "AppleWebKit/537.36 (KHTML, like Gecko) "
-                    "Chrome/131.0.0.0 Safari/537.36"
-                )
-            }
-        )
-
         # Attempt login.
         login_result = garmin.login()
 
@@ -275,9 +279,9 @@ def refresh_tokens(email: str, password: str, base_token_dir: str = "~/.garminco
         token_path.mkdir(exist_ok=True)
         token_path.chmod(0o700)
 
-        garmin.garth.dump(str(token_path))
+        garmin.client.dump(str(token_path))
 
-        # Lock down token files to owner-only (garth.dump uses default umask).
+        # Lock down token files to owner-only (client.dump uses default umask).
         for token_file in token_path.iterdir():
             if token_file.is_file():
                 token_file.chmod(0o600)
@@ -287,7 +291,7 @@ def refresh_tokens(email: str, password: str, base_token_dir: str = "~/.garminco
             "🎯 Token refresh complete!\n\n"
             "🎉 Success! Your Garmin Connect tokens have been refreshed.\n"
             "   Your Airflow pipeline will now use these fresh tokens.\n\n"
-            "ℹ️  These tokens are valid for approximately 1 year."
+            "ℹ️  Tokens auto-refresh transparently during pipeline runs."
         )
 
     except Exception:

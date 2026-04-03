@@ -141,7 +141,7 @@ x-airflow-common:
     - ${AIRFLOW_PROJ_DIR:-.}/config:/opt/airflow/config
     - ${AIRFLOW_PROJ_DIR:-.}/plugins:/opt/airflow/plugins
     - ~/.ssh:/home/airflow/.ssh
-    - ~/.garminconnect:/home/airflow/.garminconnect:ro
+    - ~/.garminconnect:/home/airflow/.garminconnect:rw
 
   user: "${AIRFLOW_UID:-50000}:0"
   depends_on:
