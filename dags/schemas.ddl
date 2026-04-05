@@ -17,6 +17,7 @@ Optional Components:
   - Extensions included with PostgreSQL:
     * pg_stat_statements: SQL performance tracking.
   - Extensions requiring separate installation:
+    * PostGIS: Spatial and geographic objects for PostgreSQL.
     * pgvectorscale: Vector similarity search.
     * TimescaleDB: Time-series database capabilities.
 
@@ -37,7 +38,7 @@ SET standard_conforming_strings = on;
 ----------------------------------------------------------------------------------------
 -- Optional: Comment out CREATE EXTENSION statements for extensions not installed.
 -- Note: Creating uninstalled extensions will cause errors and halt execution.
--- Extensions requiring separate installation: pgvectorscale, TimescaleDB
+-- Extensions requiring separate installation: PostGIS, pgvectorscale, TimescaleDB
 ----------------------------------------------------------------------------------------
 
 CREATE EXTENSION IF NOT EXISTS pg_stat_statements
@@ -49,8 +50,12 @@ CREATE EXTENSION IF NOT EXISTS vectorscale CASCADE;
 COMMENT ON EXTENSION vectorscale IS 
     'High-performance vector similarity search for PostgreSQL.';
 
+CREATE EXTENSION IF NOT EXISTS postgis;
+COMMENT ON EXTENSION postgis IS
+    'Spatial and geographic objects for PostgreSQL.';
+
 CREATE EXTENSION IF NOT EXISTS timescaledb CASCADE;
-COMMENT ON EXTENSION timescaledb IS 
+COMMENT ON EXTENSION timescaledb IS
     'Time-series database built on PostgreSQL.';
 
 ----------------------------------------------------------------------------------------
