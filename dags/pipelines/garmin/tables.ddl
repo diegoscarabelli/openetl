@@ -2194,6 +2194,17 @@ CREATE TABLE IF NOT EXISTS garmin.activity_path (
 
     -- Audit fields.
     , create_ts TIMESTAMPTZ NOT NULL DEFAULT NOW()
+
+    -- Integrity constraints: ensure path_json is always a JSON array and that
+    -- point_count stays in sync with the number of coordinate pairs. Also enforce
+    -- that we never persist an empty path (the writer skips activities without
+    -- GPS data instead of inserting an empty row).
+    , CONSTRAINT activity_path_path_json_is_array
+    CHECK (JSONB_TYPEOF(path_json) = 'array')
+    , CONSTRAINT activity_path_point_count_matches_array
+    CHECK (point_count = JSONB_ARRAY_LENGTH(path_json))
+    , CONSTRAINT activity_path_point_count_positive
+    CHECK (point_count > 0)
 );
 
 -- Indexes (activity_id covered by primary key).
