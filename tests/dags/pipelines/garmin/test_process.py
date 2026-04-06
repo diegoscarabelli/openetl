@@ -24,6 +24,7 @@ from dags.lib.filesystem_utils import FileSet
 from dags.pipelines.garmin.constants import (
     GARMIN_FILE_TYPES,
     PR_TYPE_LABELS,
+    SEMICIRCLES_TO_DEGREES,
 )
 from dags.pipelines.garmin.process import GarminProcessor
 from dags.pipelines.garmin.sqla_models import (
@@ -5073,11 +5074,10 @@ class TestGarminProcessor:
 
         # Points are sorted ascending by timestamp; the early frame's coords
         # come first regardless of input order.
-        semicircles_to_degrees = 180.0 / 2**31
-        early_lon = -1320000000 * semicircles_to_degrees
-        early_lat = 544445602 * semicircles_to_degrees
-        late_lon = -1320000100 * semicircles_to_degrees
-        late_lat = 544445700 * semicircles_to_degrees
+        early_lon = -1320000000 * SEMICIRCLES_TO_DEGREES
+        early_lat = 544445602 * SEMICIRCLES_TO_DEGREES
+        late_lon = -1320000100 * SEMICIRCLES_TO_DEGREES
+        late_lat = 544445700 * SEMICIRCLES_TO_DEGREES
 
         assert path_row.path_json[0][0] == pytest.approx(early_lon)
         assert path_row.path_json[0][1] == pytest.approx(early_lat)
@@ -5216,6 +5216,94 @@ class TestGarminProcessor:
         assert path_row.point_count == 1
         assert isinstance(path_row.path_json, list)
         assert len(path_row.path_json) == 1
+
+    def test_process_fit_file_duplicate_timestamps_preserved(
+        self, processor, mock_session, temp_dir
+    ):
+        """
+        Test FIT file with duplicate timestamps preserves all GPS points.
+
+        Two record frames sharing the same timestamp must each contribute their own
+        point to the path; the per-frame capture must not overwrite earlier samples.
+        """
+
+        # Arrange.
+        activity_id = 12345
+        fit_file = (
+            temp_dir / f"15007510_ACTIVITY_{activity_id}_2025-08-07T12:00:00Z.fit"
+        )
+        fit_file.write_bytes(b"dummy fit data")
+
+        mock_activity = MagicMock()
+        mock_activity.activity_id = activity_id
+        mock_session.query().filter().first.return_value = mock_activity
+
+        # Two record frames sharing the same timestamp but with different GPS coords.
+        shared_ts = datetime(2025, 8, 7, 14, 30, tzinfo=timezone.utc)
+
+        ts_field_a = MagicMock()
+        ts_field_a.name = "timestamp"
+        ts_field_a.value = shared_ts
+        lat_field_a = MagicMock()
+        lat_field_a.name = "position_lat"
+        lat_field_a.value = 544445602
+        lat_field_a.units = "semicircles"
+        lon_field_a = MagicMock()
+        lon_field_a.name = "position_long"
+        lon_field_a.value = -1320000000
+        lon_field_a.units = "semicircles"
+
+        frame_a = MagicMock()
+        frame_a.frame_type = 4
+        frame_a.name = "record"
+        frame_a.fields = [ts_field_a, lat_field_a, lon_field_a]
+
+        ts_field_b = MagicMock()
+        ts_field_b.name = "timestamp"
+        ts_field_b.value = shared_ts
+        lat_field_b = MagicMock()
+        lat_field_b.name = "position_lat"
+        lat_field_b.value = 544445700
+        lat_field_b.units = "semicircles"
+        lon_field_b = MagicMock()
+        lon_field_b.name = "position_long"
+        lon_field_b.value = -1320000100
+        lon_field_b.units = "semicircles"
+
+        frame_b = MagicMock()
+        frame_b.frame_type = 4
+        frame_b.name = "record"
+        frame_b.fields = [ts_field_b, lat_field_b, lon_field_b]
+
+        mock_fit_reader = MagicMock()
+        mock_fit_reader.__enter__.return_value = [frame_a, frame_b]
+
+        with patch("fitdecode.FitReader", return_value=mock_fit_reader):
+            with patch("fitdecode.FIT_FRAME_DATA", 4):
+                # Act.
+                processor._process_fit_file(fit_file, mock_session)
+
+        # Assert: both points are preserved despite the shared timestamp.
+        assert mock_session.bulk_save_objects.call_count == 2
+        activity_paths = mock_session.bulk_save_objects.call_args_list[1][0][0]
+        assert len(activity_paths) == 1
+        path_row = activity_paths[0]
+        assert path_row.point_count == 2
+        assert len(path_row.path_json) == 2
+
+        # Both frames' coordinates must be present (no silent overwrite).
+        expected_a = [
+            -1320000000 * SEMICIRCLES_TO_DEGREES,
+            544445602 * SEMICIRCLES_TO_DEGREES,
+        ]
+        expected_b = [
+            -1320000100 * SEMICIRCLES_TO_DEGREES,
+            544445700 * SEMICIRCLES_TO_DEGREES,
+        ]
+        assert path_row.path_json[0][0] == pytest.approx(expected_a[0])
+        assert path_row.path_json[0][1] == pytest.approx(expected_a[1])
+        assert path_row.path_json[1][0] == pytest.approx(expected_b[0])
+        assert path_row.path_json[1][1] == pytest.approx(expected_b[1])
 
     # ==================== Strength Training Tests ====================
 
