@@ -25,11 +25,13 @@ from dags.lib.sql_utils import upsert_model_instances
 from dags.pipelines.garmin.constants import (
     GARMIN_DATA_REGISTRY,
     PR_TYPE_LABELS,
+    SEMICIRCLES_TO_DEGREES,
 )
 from dags.pipelines.garmin.sqla_models import (
     Acclimation,
     Activity,
     ActivityLapMetric,
+    ActivityPath,
     ActivitySplitMetric,
     ActivityTsMetric,
     BodyBattery,
@@ -2379,6 +2381,10 @@ class GarminProcessor(Processor):
         split_idx = 0
         lap_idx = 0
 
+        # Collect GPS samples by timestamp for activity_path materialization.
+        # Maps timestamp -> {"lat": <semicircles>, "lon": <semicircles>}.
+        gps_samples: Dict[datetime, Dict[str, int]] = {}
+
         with fitdecode.FitReader(file_path) as fit:
             for frame in fit:
                 if frame.frame_type == fitdecode.FIT_FRAME_DATA:
@@ -2413,6 +2419,16 @@ class GarminProcessor(Processor):
                                             units=field.units if field.units else None,
                                         )
                                     )
+
+                                    # Collect GPS coordinates for activity_path.
+                                    if field.name == "position_lat":
+                                        gps_samples.setdefault(timestamp, {})[
+                                            "lat"
+                                        ] = field.value
+                                    elif field.name == "position_long":
+                                        gps_samples.setdefault(timestamp, {})[
+                                            "lon"
+                                        ] = field.value
 
                     # Process split frames.
                     elif frame.name == "split":
@@ -2531,6 +2547,9 @@ class GarminProcessor(Processor):
         session.query(ActivityLapMetric).filter_by(activity_id=activity_id).delete(
             synchronize_session=False
         )
+        session.query(ActivityPath).filter_by(activity_id=activity_id).delete(
+            synchronize_session=False
+        )
 
         # Bulk insert all metrics.
         if ts_metrics:
@@ -2552,3 +2571,36 @@ class GarminProcessor(Processor):
             LOGGER.info(f"Processed {len(lap_metrics)} lap records.")
         else:
             LOGGER.warning("⚠️ No lap data found.")
+
+        # Build and insert activity GPS path for deck.gl visualization.
+        # Only timestamps with both lat and lon are included.
+        path_points = [
+            (
+                ts,
+                sample["lon"] * SEMICIRCLES_TO_DEGREES,
+                sample["lat"] * SEMICIRCLES_TO_DEGREES,
+            )
+            for ts, sample in gps_samples.items()
+            if "lat" in sample and "lon" in sample
+        ]
+
+        if path_points:
+            # Sort ascending by timestamp so path order matches activity progress.
+            path_points.sort(key=lambda p: p[0])
+
+            # deck.gl path layer format: [[lon, lat], [lon, lat], ...]
+            # JSONB column accepts a Python list directly via psycopg2.
+            path_coords = [[lon, lat] for _, lon, lat in path_points]
+
+            session.bulk_save_objects(
+                [
+                    ActivityPath(
+                        activity_id=activity_id,
+                        path_json=path_coords,
+                        point_count=len(path_coords),
+                    )
+                ]
+            )
+            LOGGER.info(f"Materialized GPS path with {len(path_coords)} points.")
+        else:
+            LOGGER.info("ℹ️ No GPS data found, skipping activity_path materialization.")

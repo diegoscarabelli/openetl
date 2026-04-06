@@ -2184,6 +2184,49 @@ COMMENT ON COLUMN garmin.activity_lap_metric.create_ts IS
 
 ----------------------------------------------------------------------------------------
 
+-- Activity GPS path table for deck.gl visualization.
+CREATE TABLE IF NOT EXISTS garmin.activity_path (
+    activity_id BIGINT PRIMARY KEY REFERENCES garmin.activity (
+        activity_id
+    ) ON DELETE CASCADE
+    , path_json JSONB NOT NULL
+    , point_count INTEGER NOT NULL
+
+    -- Audit fields.
+    , create_ts TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+-- Indexes (activity_id covered by primary key).
+CREATE INDEX IF NOT EXISTS activity_path_point_count_idx
+ON garmin.activity_path (point_count);
+
+-- Table comment.
+COMMENT ON TABLE garmin.activity_path IS
+'Eagerly materialized GPS path for activities, populated during FIT file '
+'processing. Stores per-activity ordered coordinate sequences in deck.gl '
+'compatible JSON format (array of [longitude, latitude] pairs sorted '
+'ascending by timestamp). One row per activity with GPS data; activities '
+'without GPS samples (e.g., indoor workouts) have no row.';
+
+-- Column comments.
+COMMENT ON COLUMN garmin.activity_path.activity_id IS
+'References garmin.activity(activity_id). Identifies which activity this '
+'GPS path belongs to. One row per activity.';
+COMMENT ON COLUMN garmin.activity_path.path_json IS
+'Ordered array of [longitude, latitude] coordinate pairs in decimal '
+'degrees, sorted ascending by timestamp. Format: '
+'''[[lon, lat], [lon, lat], ...]''. Stored as JSONB for validation and '
+'queryability; the Superset virtual dataset casts this to TEXT '
+'(''ap.path_json::text AS path_json'') because Superset''s legacy '
+'DeckPathViz expects a JSON string and psycopg2 would otherwise '
+'auto-deserialize JSONB into a Python list before json.loads() runs.';
+COMMENT ON COLUMN garmin.activity_path.point_count IS
+'Number of GPS coordinate pairs in path_json.';
+COMMENT ON COLUMN garmin.activity_path.create_ts IS
+'Timestamp when the record was created in the database.';
+
+----------------------------------------------------------------------------------------
+
 -- Strength training per-exercise aggregates from summarizedExerciseSets.
 CREATE TABLE IF NOT EXISTS garmin.strength_exercise (
     activity_id BIGINT REFERENCES garmin.activity (activity_id) ON DELETE CASCADE

@@ -4994,6 +4994,229 @@ class TestGarminProcessor:
         assert lap_metrics[0].name == "total_distance"
         assert mock_activity.ts_data_available is False
 
+    def test_process_fit_file_creates_activity_path(
+        self, processor, mock_session, temp_dir
+    ):
+        """
+        Test FIT file with GPS data creates an activity_path row.
+
+        Verifies that record frames containing position_lat/position_long produce a
+        single ActivityPath insert with semicircles converted to decimal degrees and
+        points sorted ascending by timestamp. Records are emitted out of timestamp order
+        to verify the explicit sort.
+        """
+
+        # Arrange.
+        activity_id = 12345
+        fit_file = (
+            temp_dir / f"15007510_ACTIVITY_{activity_id}_2025-08-07T12:00:00Z.fit"
+        )
+        fit_file.write_bytes(b"dummy fit data")
+
+        mock_activity = MagicMock()
+        mock_activity.activity_id = activity_id
+        mock_session.query().filter().first.return_value = mock_activity
+
+        # Two record frames with GPS data, emitted out of timestamp order to
+        # verify the explicit sort. Each frame supplies position_lat,
+        # position_long (raw semicircles), and timestamp.
+        # 544445602 semicircles -> 45.6534... degrees latitude.
+        # -1320000000 semicircles -> -110.625 degrees longitude.
+        ts_late = datetime(2025, 8, 7, 14, 31, tzinfo=timezone.utc)
+        ts_early = datetime(2025, 8, 7, 14, 30, tzinfo=timezone.utc)
+
+        def _make_record_frame(timestamp, lat_semi, lon_semi):
+            ts_field = MagicMock()
+            ts_field.name = "timestamp"
+            ts_field.value = timestamp
+            lat_field = MagicMock()
+            lat_field.name = "position_lat"
+            lat_field.value = lat_semi
+            lat_field.units = "semicircles"
+            lon_field = MagicMock()
+            lon_field.name = "position_long"
+            lon_field.value = lon_semi
+            lon_field.units = "semicircles"
+            frame = MagicMock()
+            frame.frame_type = 4
+            frame.name = "record"
+            frame.fields = [ts_field, lat_field, lon_field]
+            return frame
+
+        late_frame = _make_record_frame(ts_late, 544445700, -1320000100)
+        early_frame = _make_record_frame(ts_early, 544445602, -1320000000)
+
+        mock_fit_reader = MagicMock()
+        mock_fit_reader.__enter__.return_value = [late_frame, early_frame]
+
+        with patch("fitdecode.FitReader", return_value=mock_fit_reader):
+            with patch("fitdecode.FIT_FRAME_DATA", 4):
+                # Act.
+                processor._process_fit_file(fit_file, mock_session)
+
+        # Assert: two bulk_save_objects calls (ts_metrics, then activity_path).
+        assert mock_session.bulk_save_objects.call_count == 2
+        ts_metrics = mock_session.bulk_save_objects.call_args_list[0][0][0]
+        # Two timestamps x two coords each = 4 ts_metric rows.
+        assert len(ts_metrics) == 4
+
+        activity_paths = mock_session.bulk_save_objects.call_args_list[1][0][0]
+        assert len(activity_paths) == 1
+        path_row = activity_paths[0]
+        assert path_row.activity_id == activity_id
+        assert path_row.point_count == 2
+
+        # path_json must be a Python list (JSONB column accepts a list directly,
+        # not a JSON-encoded string).
+        assert isinstance(path_row.path_json, list)
+        assert len(path_row.path_json) == 2
+
+        # Points are sorted ascending by timestamp; the early frame's coords
+        # come first regardless of input order.
+        semicircles_to_degrees = 180.0 / 2**31
+        early_lon = -1320000000 * semicircles_to_degrees
+        early_lat = 544445602 * semicircles_to_degrees
+        late_lon = -1320000100 * semicircles_to_degrees
+        late_lat = 544445700 * semicircles_to_degrees
+
+        assert path_row.path_json[0][0] == pytest.approx(early_lon)
+        assert path_row.path_json[0][1] == pytest.approx(early_lat)
+        assert path_row.path_json[1][0] == pytest.approx(late_lon)
+        assert path_row.path_json[1][1] == pytest.approx(late_lat)
+
+    def test_process_fit_file_no_gps_skips_activity_path(
+        self, processor, mock_session, temp_dir
+    ):
+        """
+        Test FIT file with no GPS data does not create an activity_path row.
+
+        Indoor activities (no GPS samples) should produce only ts_metric rows. The
+        activity_path delete must still fire so any stale row from a prior reprocess is
+        cleaned up.
+        """
+
+        # Arrange.
+        activity_id = 12345
+        fit_file = (
+            temp_dir / f"15007510_ACTIVITY_{activity_id}_2025-08-07T12:00:00Z.fit"
+        )
+        fit_file.write_bytes(b"dummy fit data")
+
+        mock_activity = MagicMock()
+        mock_activity.activity_id = activity_id
+        mock_session.query().filter().first.return_value = mock_activity
+
+        # Record frame with only heart_rate (no position fields).
+        ts_field = MagicMock()
+        ts_field.name = "timestamp"
+        ts_field.value = datetime(2025, 8, 7, 14, 30, tzinfo=timezone.utc)
+        hr_field = MagicMock()
+        hr_field.name = "heart_rate"
+        hr_field.value = 150
+        hr_field.units = "bpm"
+
+        record_frame = MagicMock()
+        record_frame.frame_type = 4
+        record_frame.name = "record"
+        record_frame.fields = [ts_field, hr_field]
+
+        mock_fit_reader = MagicMock()
+        mock_fit_reader.__enter__.return_value = [record_frame]
+
+        with patch("fitdecode.FitReader", return_value=mock_fit_reader):
+            with patch("fitdecode.FIT_FRAME_DATA", 4):
+                # Act.
+                processor._process_fit_file(fit_file, mock_session)
+
+        # Assert: only ts_metrics insert happened, no activity_path insert.
+        assert mock_session.bulk_save_objects.call_count == 1
+        ts_metrics = mock_session.bulk_save_objects.call_args_list[0][0][0]
+        assert len(ts_metrics) == 1
+        assert ts_metrics[0].name == "heart_rate"
+
+        # Assert: delete chain (query().filter_by().delete()) was called at
+        # least four times (ts_metric, split_metric, lap_metric, activity_path).
+        delete_call_count = (
+            mock_session.query.return_value.filter_by.return_value.delete.call_count
+        )
+        assert delete_call_count >= 4
+
+    def test_process_fit_file_partial_gps_sample_filtered(
+        self, processor, mock_session, temp_dir
+    ):
+        """
+        Test FIT file with partial GPS samples (lat without lon) filters them out.
+
+        A timestamp with only one of position_lat / position_long is dropped from the
+        path; only timestamps with BOTH coordinates contribute a point.
+        """
+
+        # Arrange.
+        activity_id = 12345
+        fit_file = (
+            temp_dir / f"15007510_ACTIVITY_{activity_id}_2025-08-07T12:00:00Z.fit"
+        )
+        fit_file.write_bytes(b"dummy fit data")
+
+        mock_activity = MagicMock()
+        mock_activity.activity_id = activity_id
+        mock_session.query().filter().first.return_value = mock_activity
+
+        # Timestamp 1: full sample (both lat and lon).
+        ts1 = datetime(2025, 8, 7, 14, 30, tzinfo=timezone.utc)
+        ts1_field = MagicMock()
+        ts1_field.name = "timestamp"
+        ts1_field.value = ts1
+        ts1_lat = MagicMock()
+        ts1_lat.name = "position_lat"
+        ts1_lat.value = 544445602
+        ts1_lat.units = "semicircles"
+        ts1_lon = MagicMock()
+        ts1_lon.name = "position_long"
+        ts1_lon.value = -1320000000
+        ts1_lon.units = "semicircles"
+
+        full_frame = MagicMock()
+        full_frame.frame_type = 4
+        full_frame.name = "record"
+        full_frame.fields = [ts1_field, ts1_lat, ts1_lon]
+
+        # Timestamp 2: partial sample (lat only, no lon).
+        ts2 = datetime(2025, 8, 7, 14, 31, tzinfo=timezone.utc)
+        ts2_field = MagicMock()
+        ts2_field.name = "timestamp"
+        ts2_field.value = ts2
+        ts2_lat = MagicMock()
+        ts2_lat.name = "position_lat"
+        ts2_lat.value = 544445700
+        ts2_lat.units = "semicircles"
+
+        partial_frame = MagicMock()
+        partial_frame.frame_type = 4
+        partial_frame.name = "record"
+        partial_frame.fields = [ts2_field, ts2_lat]
+
+        mock_fit_reader = MagicMock()
+        mock_fit_reader.__enter__.return_value = [full_frame, partial_frame]
+
+        with patch("fitdecode.FitReader", return_value=mock_fit_reader):
+            with patch("fitdecode.FIT_FRAME_DATA", 4):
+                # Act.
+                processor._process_fit_file(fit_file, mock_session)
+
+        # Assert: ts_metrics has 3 rows (lat+lon at ts1, lat at ts2),
+        # activity_path has only 1 point (the full sample).
+        assert mock_session.bulk_save_objects.call_count == 2
+        ts_metrics = mock_session.bulk_save_objects.call_args_list[0][0][0]
+        assert len(ts_metrics) == 3
+
+        activity_paths = mock_session.bulk_save_objects.call_args_list[1][0][0]
+        assert len(activity_paths) == 1
+        path_row = activity_paths[0]
+        assert path_row.point_count == 1
+        assert isinstance(path_row.path_json, list)
+        assert len(path_row.path_json) == 1
+
     # ==================== Strength Training Tests ====================
 
     def test_process_strength_metrics(self, processor, mock_session) -> None:
