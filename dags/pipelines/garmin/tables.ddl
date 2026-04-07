@@ -2372,11 +2372,11 @@ COMMENT ON COLUMN garmin.strength_set.update_ts IS
 -- One-time load via shp2pgsql:
 --   wget https://naciscdn.org/naturalearth/110m/cultural/ne_110m_admin_0_countries.zip
 --   unzip ne_110m_admin_0_countries.zip -d ne_countries
---   shp2pgsql -s 4326 ne_countries/ne_110m_admin_0_countries.shp countries_tmp \
+--   shp2pgsql -s 4326 ne_countries/ne_110m_admin_0_countries.shp public.countries_tmp \
 --     | psql -U postgres -d lens
 --   INSERT INTO garmin.countries (iso_a2, iso_a3, name, name_long, geom)
---     SELECT iso_a2, iso_a3, name, name_long, geom FROM countries_tmp;
---   DROP TABLE countries_tmp;
+--     SELECT iso_a2, iso_a3, name, name_long, geom FROM public.countries_tmp;
+--   DROP TABLE public.countries_tmp;
 CREATE TABLE IF NOT EXISTS garmin.countries (
     country_id SERIAL PRIMARY KEY
     , iso_a2 TEXT
