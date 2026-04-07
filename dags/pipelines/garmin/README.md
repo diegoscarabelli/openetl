@@ -197,6 +197,7 @@ The custom process task uses the [`GarminProcessor`](process.py) class that inhe
 
 * Database tables defined in [`tables.ddl`](tables.ddl).
 * TimescaleDB hypertables defined in [`tables_tsdb.ddl`](tables_tsdb.ddl) for time-series data storage and efficient querying.
+* PostGIS-dependent tables (e.g., `garmin.countries`) defined in [`tables_postgis.ddl`](tables_postgis.ddl); apply only when the PostGIS extension is installed.
 * SQLAlchemy ORM models in [`sqla_models.py`](sqla_models.py) extending base class defined in [`sql_utils.make_base()`](../../lib/sql_utils.py#make_base).
 
 The database schema contains 31 tables organized by category:

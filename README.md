@@ -86,6 +86,7 @@ psql -U postgres -d lens -f dags/lib/etl_monitor.ddl
 # Step 6: Create pipeline-specific tables (example: Garmin pipeline).
 psql -U postgres -d lens -f dags/pipelines/garmin/tables.ddl
 psql -U postgres -d lens -f dags/pipelines/garmin/tables_tsdb.ddl
+psql -U postgres -d lens -f dags/pipelines/garmin/tables_postgis.ddl
 ```
 
 > **Tip:** If your PostgreSQL `pg_hba.conf` is set to require password authentication, connect using `psql -h localhost` to ensure password prompts are triggered.
@@ -250,6 +251,7 @@ Contains a subdirectory for each DAG. Each subdirectory includes the DAG definit
 
 - `tables.ddl`: Standard SQL definitions for tables and views.
 - `tables_tsdb.ddl`: [TimescaleDB](https://github.com/timescale/timescaledb)-specific definitions, including hypertables and continuous aggregates.
+- `tables_postgis.ddl`: [PostGIS](https://postgis.net/)-specific definitions for tables that use the `geometry` type or spatial indexes.
 
 Each subdirectory also contains a `README.md` file that offers comprehensive details about the pipeline. This includes contextual background, prerequisites, configuration instructions, data ingestion and storage workflows, as well as data consumption patterns.
 
