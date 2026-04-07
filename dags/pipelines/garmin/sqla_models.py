@@ -17,6 +17,7 @@ from sqlalchemy import (
     String,
     Text,
 )
+from sqlalchemy.dialects.postgresql import JSONB
 
 from dags.lib.sql_utils import make_base, fkey
 
@@ -885,3 +886,24 @@ class ActivityLapMetric(InsertBase):
     name = Column(Text, primary_key=True)
     value = Column(Float)
     units = Column(Text)
+
+
+class ActivityPath(InsertBase):
+    """
+    Eagerly materialized GPS path for activities.
+
+    Stores a deck.gl-compatible coordinate array built from per-timestamp GPS samples
+    in `ActivityTsMetric` during FIT file processing. One row per activity that has
+    GPS data; activities without GPS samples (indoor workouts, etc.) have no row.
+    Uses delete+insert in `_process_fit_file` for reprocessing idempotency. Stored
+    as JSONB; Superset's virtual dataset casts to text so the legacy DeckPathViz
+    path layer receives a JSON string.
+    """
+
+    __tablename__ = "activity_path"
+
+    activity_id = Column(
+        BigInteger, fkey("garmin", "activity", "activity_id"), primary_key=True
+    )
+    path_json = Column(JSONB, nullable=False)
+    point_count = Column(Integer, nullable=False)

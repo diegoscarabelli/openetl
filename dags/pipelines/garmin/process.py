@@ -12,7 +12,7 @@ import re
 from collections import OrderedDict
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 import fitdecode
 from sqlalchemy import and_, text
@@ -25,11 +25,13 @@ from dags.lib.sql_utils import upsert_model_instances
 from dags.pipelines.garmin.constants import (
     GARMIN_DATA_REGISTRY,
     PR_TYPE_LABELS,
+    SEMICIRCLES_TO_DEGREES,
 )
 from dags.pipelines.garmin.sqla_models import (
     Acclimation,
     Activity,
     ActivityLapMetric,
+    ActivityPath,
     ActivitySplitMetric,
     ActivityTsMetric,
     BodyBattery,
@@ -2379,6 +2381,14 @@ class GarminProcessor(Processor):
         split_idx = 0
         lap_idx = 0
 
+        # Collect raw GPS samples for activity_path materialization. One entry per
+        # record frame that contains both position_lat and position_long. Stored as
+        # (timestamp, lon_semicircles, lat_semicircles) tuples and converted to
+        # decimal degrees only when building the final path. Using a list (rather
+        # than a dict keyed by timestamp) preserves all points even if multiple
+        # record frames share the same timestamp.
+        gps_records: List[Tuple[datetime, int, int]] = []
+
         with fitdecode.FitReader(file_path) as fit:
             for frame in fit:
                 if frame.frame_type == fitdecode.FIT_FRAME_DATA:
@@ -2396,6 +2406,10 @@ class GarminProcessor(Processor):
 
                         # Second pass: process all fields if timestamp was found.
                         if timestamp is not None:
+                            # Per-frame GPS capture so duplicate timestamps across
+                            # frames each contribute their own point.
+                            frame_lat: Optional[int] = None
+                            frame_lon: Optional[int] = None
                             for field in frame.fields:
                                 if (
                                     field.name is not None
@@ -2413,6 +2427,17 @@ class GarminProcessor(Processor):
                                             units=field.units if field.units else None,
                                         )
                                     )
+
+                                    # Capture GPS coordinates from this frame.
+                                    if field.name == "position_lat":
+                                        frame_lat = field.value
+                                    elif field.name == "position_long":
+                                        frame_lon = field.value
+
+                            # Only record the GPS point if BOTH coordinates are
+                            # present in this frame.
+                            if frame_lat is not None and frame_lon is not None:
+                                gps_records.append((timestamp, frame_lon, frame_lat))
 
                     # Process split frames.
                     elif frame.name == "split":
@@ -2531,6 +2556,9 @@ class GarminProcessor(Processor):
         session.query(ActivityLapMetric).filter_by(activity_id=activity_id).delete(
             synchronize_session=False
         )
+        session.query(ActivityPath).filter_by(activity_id=activity_id).delete(
+            synchronize_session=False
+        )
 
         # Bulk insert all metrics.
         if ts_metrics:
@@ -2552,3 +2580,33 @@ class GarminProcessor(Processor):
             LOGGER.info(f"Processed {len(lap_metrics)} lap records.")
         else:
             LOGGER.warning("⚠️ No lap data found.")
+
+        # Build and insert activity GPS path for deck.gl visualization.
+        if gps_records:
+            # Sort ascending by timestamp so path order matches activity progress.
+            # FIT iteration order is not guaranteed monotonic.
+            gps_records.sort(key=lambda r: r[0])
+
+            # Convert raw semicircles to decimal degrees and emit deck.gl path layer
+            # format: [[lon, lat], [lon, lat], ...]. JSONB column accepts a Python
+            # list directly via psycopg2.
+            path_coords = [
+                [
+                    lon_semi * SEMICIRCLES_TO_DEGREES,
+                    lat_semi * SEMICIRCLES_TO_DEGREES,
+                ]
+                for _, lon_semi, lat_semi in gps_records
+            ]
+
+            session.bulk_save_objects(
+                [
+                    ActivityPath(
+                        activity_id=activity_id,
+                        path_json=path_coords,
+                        point_count=len(path_coords),
+                    )
+                ]
+            )
+            LOGGER.info(f"Materialized GPS path with {len(path_coords)} points.")
+        else:
+            LOGGER.info("ℹ️ No GPS data found, skipping activity_path materialization.")
