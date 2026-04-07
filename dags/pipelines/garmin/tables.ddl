@@ -2378,12 +2378,12 @@ COMMENT ON COLUMN garmin.strength_set.update_ts IS
 --     SELECT iso_a2, iso_a3, name, name_long, geom FROM countries_tmp;
 --   DROP TABLE countries_tmp;
 CREATE TABLE IF NOT EXISTS garmin.countries (
-    gid SERIAL PRIMARY KEY
+    country_id SERIAL PRIMARY KEY
     , iso_a2 TEXT
     , iso_a3 TEXT
     , name TEXT NOT NULL
     , name_long TEXT
-    , geom PUBLIC.GEOMETRY (MULTIPOLYGON, 4326) NOT NULL
+    , geom GEOMETRY (MULTIPOLYGON, 4326) NOT NULL
 );
 
 -- Spatial index for ST_Contains lookups.
@@ -2396,7 +2396,7 @@ COMMENT ON TABLE garmin.countries IS
 'locations to ISO country codes. Enables Superset World Map visualizations.';
 
 -- Column comments.
-COMMENT ON COLUMN garmin.countries.gid IS
+COMMENT ON COLUMN garmin.countries.country_id IS
 'Auto-generated primary key.';
 COMMENT ON COLUMN garmin.countries.iso_a2 IS
 '2-letter ISO 3166-1 country code.';
