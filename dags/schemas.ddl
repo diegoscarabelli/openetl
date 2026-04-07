@@ -12,12 +12,17 @@ Prerequisites:
 
 Optional Components:
   - PostgreSQL extensions (see POSTGRESQL EXTENSIONS section).
-  - If not installed, comment out the corresponding CREATE EXTENSION statements.
-  - Note: Running with uninstalled extensions will cause errors.
+  - If an extension is not installed, comment out BOTH its CREATE EXTENSION
+    and the matching COMMENT ON EXTENSION statement; otherwise the COMMENT
+    ON statement will fail and halt execution.
+  - Note: Pipeline DDL files that depend on an extension (e.g.,
+    `tables_tsdb.ddl` for TimescaleDB, `tables_postgis.ddl` for PostGIS)
+    must also be skipped when the extension is not installed.
   - Extensions included with PostgreSQL:
     * pg_stat_statements: SQL performance tracking.
   - Extensions requiring separate installation:
-    * pgvectorscale: Vector similarity search.
+    * PostGIS: Spatial and geographic objects for PostgreSQL.
+    * vectorscale: Vector similarity search.
     * TimescaleDB: Time-series database capabilities.
 
 Connection:
@@ -35,9 +40,10 @@ SET standard_conforming_strings = on;
 ----------------------------------------------------------------------------------------
 -- POSTGRESQL EXTENSIONS (OPTIONAL)
 ----------------------------------------------------------------------------------------
--- Optional: Comment out CREATE EXTENSION statements for extensions not installed.
--- Note: Creating uninstalled extensions will cause errors and halt execution.
--- Extensions requiring separate installation: pgvectorscale, TimescaleDB
+-- Optional: For extensions not installed, comment out BOTH the CREATE EXTENSION and
+-- the associated COMMENT ON EXTENSION statements (the COMMENT ON statement will fail
+-- if the extension does not exist, halting execution).
+-- Extensions requiring separate installation: PostGIS, vectorscale, TimescaleDB
 ----------------------------------------------------------------------------------------
 
 CREATE EXTENSION IF NOT EXISTS pg_stat_statements
@@ -46,11 +52,16 @@ COMMENT ON EXTENSION pg_stat_statements IS
     'Track execution statistics of all SQL statements executed.';
 
 CREATE EXTENSION IF NOT EXISTS vectorscale CASCADE;
-COMMENT ON EXTENSION vectorscale IS 
+COMMENT ON EXTENSION vectorscale IS
     'High-performance vector similarity search for PostgreSQL.';
 
+CREATE EXTENSION IF NOT EXISTS postgis
+    WITH SCHEMA public;
+COMMENT ON EXTENSION postgis IS
+    'Spatial and geographic objects for PostgreSQL.';
+
 CREATE EXTENSION IF NOT EXISTS timescaledb CASCADE;
-COMMENT ON EXTENSION timescaledb IS 
+COMMENT ON EXTENSION timescaledb IS
     'Time-series database built on PostgreSQL.';
 
 ----------------------------------------------------------------------------------------

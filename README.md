@@ -57,11 +57,12 @@ Installation and configuration templates are provided in the [iac/timescaledb/RE
 **Prerequisites:**
 - Ensure PostgreSQL is installed and running.
 - To enable TimescaleDB features, install the TimescaleDB extension.
-- To enable vector search features, install the pgvectorscale extension.
+- To enable vector search features, install the vectorscale extension.
+- To enable spatial features (e.g., reverse-geocoding activity coordinates), install the PostGIS extension.
 
 After installing and starting PostgreSQL, proceed to create and initialize the analytics database (**lens**). Optionally, you can enable extensions such as TimescaleDB for time-series capabilities. Next, define the required schemas and configure users and permissions to ensure secure and organized access.
 
-> **Note:** If TimescaleDB or pgvectorscale are not required, comment out their respective `CREATE EXTENSION` statements in `dags/schemas.ddl` before initializing the database.
+> **Note:** If TimescaleDB, vectorscale, or PostGIS are not required, comment out the corresponding `CREATE EXTENSION` (and matching `COMMENT ON EXTENSION`) statements in `dags/schemas.ddl` before initializing the database, and skip the matching extension-specific DDL files in Step 6.
 
 > **IMPORTANT:** Before executing `dags/iam.sql`, replace all `<REDACTED>` password placeholders with the actual passwords for each database user.
 
@@ -71,7 +72,7 @@ To initialize the **lens** database, execute the following steps:
 psql -U postgres -d postgres -f dags/database.ddl
 
 # Step 2: Initialize schemas and extensions.
-# (Comment out extension sections in dags/schemas.ddl if TimescaleDB or pgvectorscale are not needed.)
+# (Comment out extension sections in dags/schemas.ddl if TimescaleDB, vectorscale, or PostGIS are not needed.)
 psql -U postgres -d lens -f dags/schemas.ddl
 
 # Step 3: Update passwords in dags/iam.sql.
@@ -85,7 +86,10 @@ psql -U postgres -d lens -f dags/lib/etl_monitor.ddl
 
 # Step 6: Create pipeline-specific tables (example: Garmin pipeline).
 psql -U postgres -d lens -f dags/pipelines/garmin/tables.ddl
+# Optional: only run if TimescaleDB is installed (see Step 2).
 psql -U postgres -d lens -f dags/pipelines/garmin/tables_tsdb.ddl
+# Optional: only run if PostGIS is installed (see Step 2).
+psql -U postgres -d lens -f dags/pipelines/garmin/tables_postgis.ddl
 ```
 
 > **Tip:** If your PostgreSQL `pg_hba.conf` is set to require password authentication, connect using `psql -h localhost` to ensure password prompts are triggered.
@@ -250,6 +254,7 @@ Contains a subdirectory for each DAG. Each subdirectory includes the DAG definit
 
 - `tables.ddl`: Standard SQL definitions for tables and views.
 - `tables_tsdb.ddl`: [TimescaleDB](https://github.com/timescale/timescaledb)-specific definitions, including hypertables and continuous aggregates.
+- `tables_postgis.ddl`: [PostGIS](https://postgis.net/)-specific definitions for tables that use the `geometry` type or spatial indexes.
 
 Each subdirectory also contains a `README.md` file that offers comprehensive details about the pipeline. This includes contextual background, prerequisites, configuration instructions, data ingestion and storage workflows, as well as data consumption patterns.
 
@@ -259,7 +264,7 @@ Creates the `lens` database, which serves as the central analytics database for 
 
 ## [dags/schemas.ddl](dags/schemas.ddl)
 
-Defines the database schema initialization for the `lens` database, a [TimescaleDB](https://docs.timescale.com/) instance built on PostgreSQL. This database serves as the central data warehouse for all pipeline outputs and analytical datasets. The schemas organize data into logical domains, and optional extensions (TimescaleDB, pgvectorscale) can be enabled for time-series and vector search capabilities. For development and staging, a local database instance is available at `localhost` and configured identically to production, using the same schemas, SQL users, and IAM configurations to ensure consistency across environments.
+Defines the database schema initialization for the `lens` database, a [TimescaleDB](https://docs.timescale.com/) instance built on PostgreSQL. This database serves as the central data warehouse for all pipeline outputs and analytical datasets. The schemas organize data into logical domains, and optional extensions (TimescaleDB, vectorscale, PostGIS) can be enabled for time-series, vector search, and spatial query capabilities. For development and staging, a local database instance is available at `localhost` and configured identically to production, using the same schemas, SQL users, and IAM configurations to ensure consistency across environments.
 
 ## [dags/iam.sql](dags/iam.sql)
 
