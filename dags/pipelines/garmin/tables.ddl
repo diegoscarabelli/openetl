@@ -2321,7 +2321,7 @@ COMMENT ON COLUMN garmin.strength_set.update_ts IS
 --   shp2pgsql -s 4326 ne_countries/ne_110m_admin_0_countries.shp countries_tmp \
 --     | psql -U postgres -d lens
 --   INSERT INTO garmin.countries (iso_a2, iso_a3, name, name_long, geom)
---     SELECT iso_a2, iso_a3, name, admin, geom FROM countries_tmp;
+--     SELECT iso_a2, iso_a3, name, name_long, geom FROM countries_tmp;
 --   DROP TABLE countries_tmp;
 CREATE TABLE IF NOT EXISTS garmin.countries (
     gid SERIAL PRIMARY KEY
@@ -2329,7 +2329,7 @@ CREATE TABLE IF NOT EXISTS garmin.countries (
     , iso_a3 TEXT
     , name TEXT NOT NULL
     , name_long TEXT
-    , geom GEOMETRY (MULTIPOLYGON, 4326) NOT NULL
+    , geom PUBLIC.GEOMETRY (MULTIPOLYGON, 4326) NOT NULL
 );
 
 -- Spatial index for ST_Contains lookups.
@@ -2351,7 +2351,7 @@ COMMENT ON COLUMN garmin.countries.iso_a3 IS
 COMMENT ON COLUMN garmin.countries.name IS
 'Short country name.';
 COMMENT ON COLUMN garmin.countries.name_long IS
-'Full official country name.';
+'Long-form country name from Natural Earth name_long attribute.';
 COMMENT ON COLUMN garmin.countries.geom IS
 'Country boundary polygon (SRID 4326, WGS84).';
 

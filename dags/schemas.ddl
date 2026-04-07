@@ -36,8 +36,9 @@ SET standard_conforming_strings = on;
 ----------------------------------------------------------------------------------------
 -- POSTGRESQL EXTENSIONS (OPTIONAL)
 ----------------------------------------------------------------------------------------
--- Optional: Comment out CREATE EXTENSION statements for extensions not installed.
--- Note: Creating uninstalled extensions will cause errors and halt execution.
+-- Optional: For extensions not installed, comment out BOTH the CREATE EXTENSION and
+-- the associated COMMENT ON EXTENSION statements (the COMMENT ON statement will fail
+-- if the extension does not exist, halting execution).
 -- Extensions requiring separate installation: PostGIS, pgvectorscale, TimescaleDB
 ----------------------------------------------------------------------------------------
 
@@ -47,10 +48,11 @@ COMMENT ON EXTENSION pg_stat_statements IS
     'Track execution statistics of all SQL statements executed.';
 
 CREATE EXTENSION IF NOT EXISTS vectorscale CASCADE;
-COMMENT ON EXTENSION vectorscale IS 
+COMMENT ON EXTENSION vectorscale IS
     'High-performance vector similarity search for PostgreSQL.';
 
-CREATE EXTENSION IF NOT EXISTS postgis;
+CREATE EXTENSION IF NOT EXISTS postgis
+    WITH SCHEMA public;
 COMMENT ON EXTENSION postgis IS
     'Spatial and geographic objects for PostgreSQL.';
 
