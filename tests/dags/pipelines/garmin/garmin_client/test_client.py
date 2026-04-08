@@ -312,6 +312,30 @@ class TestExchangeServiceTicket:
             with pytest.raises(GarminTooManyRequestsError):
                 client._exchange_service_ticket("ticket123")
 
+    def test_wraps_transport_error_as_connection_error(self) -> None:
+        """
+        Transport errors (connection, timeout, SSL) on every client ID surface as a
+        typed ``GarminConnectionError`` rather than leaking the underlying
+        requests/curl_cffi exception.
+        """
+
+        # Arrange.
+        client = GarminClient()
+        transport_error = requests.ConnectionError("network down")
+
+        with patch.object(
+            GarminClient, "_http_post", side_effect=transport_error
+        ) as mock_post:
+            # Act & Assert.
+            with pytest.raises(GarminConnectionError) as excinfo:
+                client._exchange_service_ticket("ticket123")
+
+        # Tried every client ID before giving up.
+        assert mock_post.call_count == 3
+        # Wrapped the original exception via ``raise ... from``.
+        assert excinfo.value.__cause__ is transport_error
+        assert "transport error" in str(excinfo.value)
+
 
 class TestRefreshDiToken:
     """

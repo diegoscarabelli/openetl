@@ -5,26 +5,27 @@ Garmin's Cloudflare WAF aggressively rate-limits the SSO login endpoints, and th
 exact endpoint that gets blocked rotates over time. To stay reliable, the client
 tries five fallback strategies in order until one succeeds:
 
-1. ``_portal_web_login_cffi``: ``/portal/api/login`` (the endpoint
+1. ``portal_web_login_cffi``: ``/portal/api/login`` (the endpoint
    connect.garmin.com itself uses) with curl_cffi, trying five browser TLS
    fingerprints.
-2. ``_portal_web_login_requests``: same endpoint with plain ``requests`` and a
+2. ``portal_web_login_requests``: same endpoint with plain ``requests`` and a
    random browser User-Agent.
-3. ``_portal_login``: mobile ``/mobile/api/login`` with curl_cffi (Safari TLS).
-4. ``_mobile_login``: mobile ``/mobile/api/login`` with plain ``requests``.
-5. ``_widget_login_cffi``: SSO embed widget HTML form flow with curl_cffi TLS
+3. ``portal_login``: mobile ``/mobile/api/login`` with curl_cffi (Safari TLS).
+4. ``mobile_login``: mobile ``/mobile/api/login`` with plain ``requests``.
+5. ``widget_login_cffi``: SSO embed widget HTML form flow with curl_cffi TLS
    impersonation. Last-resort fallback: empirically the most rate-limited path,
    but kept in the chain because it occasionally succeeds when all four JSON
    endpoints have been blocked.
 
-The portal and mobile flows (``_portal_web_login``, ``_portal_login``,
-``_mobile_login``) sleep 30-45 seconds between the SSO page GET and the credential
-POST. Without this delay Garmin's Cloudflare WAF returns 429 immediately, treating
-the back-to-back requests as bot-like.
+The portal and mobile flows (the internal ``_portal_web_login`` helper used by
+``portal_web_login_cffi`` / ``portal_web_login_requests``, plus ``portal_login``
+and ``mobile_login``) sleep 30-45 seconds between the SSO page GET and the
+credential POST. Without this delay Garmin's Cloudflare WAF returns 429
+immediately, treating the back-to-back requests as bot-like.
 
 These functions are written as plain functions taking ``client`` as the first
 argument so the file stays decoupled from the ``GarminClient`` class definition.
-The class binds them as bound methods at import time.
+``GarminClient.login`` invokes them via lambdas (no class-level binding).
 """
 
 import json

@@ -4,8 +4,8 @@ Vendored Garmin Connect client.
 A self-contained replacement for the ``python-garminconnect`` PyPI package,
 purpose-built for the openetl pipeline. Provides:
 
-- Five-strategy SSO login fallback chain (widget+cffi, portal+cffi,
-  portal+requests, mobile+cffi, mobile+requests) with anti-rate-limit delays
+- Five-strategy SSO login fallback chain (portal+cffi, portal+requests,
+  mobile+cffi, mobile+requests, widget+cffi) with anti-rate-limit delays
   and ``curl_cffi`` TLS impersonation.
 - DI OAuth2 token exchange and rotating-refresh persistence.
 - Token storage at ``~/.garminconnect/<user_id>/garmin_tokens.json`` (same

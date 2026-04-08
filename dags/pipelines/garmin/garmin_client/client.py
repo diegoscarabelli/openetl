@@ -417,7 +417,10 @@ class GarminClient:
         :param service_url: SSO service URL associated with the ticket. Must match the
             URL used during the originating login flow.
         :raises GarminTooManyRequestsError: On HTTP 429.
-        :raises GarminAuthenticationError: If exchange fails on all client IDs.
+        :raises GarminConnectionError: If every client ID fails due to transport errors
+            (connection, timeout, SSL).
+        :raises GarminAuthenticationError: If exchange fails on all client IDs for non-
+            transport reasons (HTTP error, malformed response, missing token).
         """
 
         svc_url = service_url or MOBILE_SSO_SERVICE_URL
@@ -425,26 +428,36 @@ class GarminClient:
         di_token = None
         di_refresh = None
         di_client_id = None
+        last_transport_error: Optional[Exception] = None
 
         for client_id in DI_CLIENT_IDS:
-            r = self._http_post(
-                DI_TOKEN_URL,
-                headers=_native_headers(
-                    {
-                        "Authorization": _build_basic_auth(client_id),
-                        "Accept": "application/json,text/html;q=0.9,*/*;q=0.8",
-                        "Content-Type": "application/x-www-form-urlencoded",
-                        "Cache-Control": "no-cache",
-                    }
-                ),
-                data={
-                    "client_id": client_id,
-                    "service_ticket": ticket,
-                    "grant_type": DI_GRANT_TYPE,
-                    "service_url": svc_url,
-                },
-                timeout=30,
-            )
+            try:
+                r = self._http_post(
+                    DI_TOKEN_URL,
+                    headers=_native_headers(
+                        {
+                            "Authorization": _build_basic_auth(client_id),
+                            "Accept": "application/json,text/html;q=0.9,*/*;q=0.8",
+                            "Content-Type": "application/x-www-form-urlencoded",
+                            "Cache-Control": "no-cache",
+                        }
+                    ),
+                    data={
+                        "client_id": client_id,
+                        "service_ticket": ticket,
+                        "grant_type": DI_GRANT_TYPE,
+                        "service_url": svc_url,
+                    },
+                    timeout=30,
+                )
+            except _TRANSPORT_EXCEPTIONS as exc:
+                # Transport-level failure (connection, timeout, SSL). Try the
+                # next client ID; if all fail this way, raise GarminConnectionError
+                # so callers see a typed transport error rather than a leaked
+                # requests/curl_cffi exception.
+                _LOGGER.debug("DI exchange transport error for %s: %s", client_id, exc)
+                last_transport_error = exc
+                continue
             if r.status_code == 429:
                 raise GarminTooManyRequestsError("DI token exchange rate limited")
             if not r.ok:
@@ -466,6 +479,11 @@ class GarminClient:
                 continue
 
         if not di_token:
+            if last_transport_error is not None:
+                raise GarminConnectionError(
+                    f"DI token exchange transport error on all client IDs: "
+                    f"{last_transport_error}"
+                ) from last_transport_error
             raise GarminAuthenticationError(
                 "DI token exchange failed for all client IDs"
             )
