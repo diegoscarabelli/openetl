@@ -5,6 +5,9 @@ This test suite covers:
     - Garmin Connect token refresh functionality and error handling.
     - MFA authentication handling.
     - Input validation and credential management.
+
+Mocks the vendored ``GarminClient`` (not the upstream ``garminconnect.Garmin``)
+since openetl no longer depends on the PyPI library.
 """
 
 import os
@@ -28,29 +31,29 @@ class TestGarminTokenRefresh:
     """
 
     @pytest.fixture
-    def mock_garmin_instance(self) -> MagicMock:
+    def mock_client_instance(self) -> MagicMock:
         """
-        Create a mock Garmin instance for testing.
+        Create a mock GarminClient instance for testing.
 
-        :return: Mock Garmin instance.
+        :return: Mock GarminClient instance.
         """
 
         return MagicMock()
 
     @pytest.fixture
-    def mock_garmin_class_with_instance(self, mock_garmin_instance):
+    def mock_client_class_with_instance(self, mock_client_instance):
         """
-        Create a patched Garmin class that returns a mock instance.
+        Create a patched GarminClient class that returns a mock instance.
 
-        :param mock_garmin_instance: Mock Garmin instance fixture.
+        :param mock_client_instance: Mock GarminClient instance fixture.
         :return: Tuple of mock class and mock instance.
         """
 
         with patch(
-            "dags.pipelines.garmin.utility_scripts.refresh_garmin_tokens.Garmin"
+            "dags.pipelines.garmin.utility_scripts.refresh_garmin_tokens.GarminClient"
         ) as mock_class:
-            mock_class.return_value = mock_garmin_instance
-            yield mock_class, mock_garmin_instance
+            mock_class.return_value = mock_client_instance
+            yield mock_class, mock_client_instance
 
     def test_validate_input_success(self) -> None:
         """
@@ -146,16 +149,16 @@ class TestGarminTokenRefresh:
         mock_logger.error.assert_called_with("⚠️  Error: MFA code should be 6 digits.")
 
     def test_handle_mfa_authentication_success(
-        self, mock_garmin_class_with_instance
+        self, mock_client_class_with_instance
     ) -> None:
         """
         Test successful MFA authentication.
 
-        :param mock_garmin_class_with_instance: Mock Garmin class fixture.
+        :param mock_client_class_with_instance: Mock GarminClient class fixture.
         """
 
         # Arrange.
-        _mock_garmin_class, mock_garmin_instance = mock_garmin_class_with_instance
+        _mock_class, mock_client_instance = mock_client_class_with_instance
         result2 = "mfa_token"
 
         with patch(
@@ -163,23 +166,23 @@ class TestGarminTokenRefresh:
             return_value="123456",
         ), patch("dags.pipelines.garmin.utility_scripts.refresh_garmin_tokens.logger"):
             # Act.
-            _handle_mfa_authentication(mock_garmin_instance, result2)
+            _handle_mfa_authentication(mock_client_instance, result2)
 
             # Assert.
-            mock_garmin_instance.resume_login.assert_called_once_with(result2, "123456")
+            mock_client_instance.resume_login.assert_called_once_with(result2, "123456")
 
     def test_handle_mfa_authentication_failure_retry_success(
-        self, mock_garmin_class_with_instance
+        self, mock_client_class_with_instance
     ) -> None:
         """
         Test MFA authentication failure followed by successful retry.
 
-        :param mock_garmin_class_with_instance: Mock Garmin class fixture.
+        :param mock_client_class_with_instance: Mock GarminClient class fixture.
         """
 
         # Arrange.
-        _mock_garmin_class, mock_garmin_instance = mock_garmin_class_with_instance
-        mock_garmin_instance.resume_login.side_effect = [
+        _mock_class, mock_client_instance = mock_client_class_with_instance
+        mock_client_instance.resume_login.side_effect = [
             Exception("Invalid MFA"),
             None,
         ]
@@ -190,26 +193,26 @@ class TestGarminTokenRefresh:
             side_effect=["000000", "123456"],
         ), patch("dags.pipelines.garmin.utility_scripts.refresh_garmin_tokens.logger"):
             # Act.
-            _handle_mfa_authentication(mock_garmin_instance, result2)
+            _handle_mfa_authentication(mock_client_instance, result2)
 
-            # Assert
-            assert mock_garmin_instance.resume_login.call_count == 2
-            mock_garmin_instance.resume_login.assert_has_calls(
+            # Assert.
+            assert mock_client_instance.resume_login.call_count == 2
+            mock_client_instance.resume_login.assert_has_calls(
                 [call(result2, "000000"), call(result2, "123456")]
             )
 
     def test_handle_mfa_authentication_failure_both_attempts(
-        self, mock_garmin_class_with_instance
+        self, mock_client_class_with_instance
     ) -> None:
         """
         Test MFA authentication failure on both attempts.
 
-        :param mock_garmin_class_with_instance: Mock Garmin class fixture.
+        :param mock_client_class_with_instance: Mock GarminClient class fixture.
         """
 
-        # Arrange
-        _mock_garmin_class, mock_garmin_instance = mock_garmin_class_with_instance
-        mock_garmin_instance.resume_login.side_effect = Exception("Invalid MFA")
+        # Arrange.
+        _mock_class, mock_client_instance = mock_client_class_with_instance
+        mock_client_instance.resume_login.side_effect = Exception("Invalid MFA")
         result2 = "mfa_token"
 
         with patch(
@@ -218,24 +221,22 @@ class TestGarminTokenRefresh:
         ), patch("dags.pipelines.garmin.utility_scripts.refresh_garmin_tokens.logger"):
             # Act & Assert.
             with pytest.raises(Exception, match="Invalid MFA"):
-                _handle_mfa_authentication(mock_garmin_instance, result2)
+                _handle_mfa_authentication(mock_client_instance, result2)
 
     def test_refresh_tokens_success_no_mfa(
-        self, mock_garmin_class_with_instance, tmp_path
+        self, mock_client_class_with_instance, tmp_path
     ) -> None:
         """
         Test successful token refresh without MFA.
 
-        :param mock_garmin_class_with_instance: Mock Garmin class fixture.
+        :param mock_client_class_with_instance: Mock GarminClient class fixture.
         :param tmp_path: Pytest temporary path fixture.
         """
 
-        # Arrange
-        mock_garmin_class, mock_garmin_instance = mock_garmin_class_with_instance
-        mock_garmin_instance.login.return_value = None  # No MFA required.
-        mock_garmin_instance.get_user_profile.return_value = {"id": "12345678"}
-        mock_client = MagicMock()
-        mock_garmin_instance.client = mock_client
+        # Arrange.
+        mock_class, mock_client_instance = mock_client_class_with_instance
+        mock_client_instance.login.return_value = None  # No MFA required.
+        mock_client_instance.get_user_profile.return_value = {"id": "12345678"}
 
         with patch(
             "dags.pipelines.garmin.utility_scripts.refresh_garmin_tokens.logger"
@@ -243,33 +244,28 @@ class TestGarminTokenRefresh:
             # Act.
             refresh_tokens("test@example.com", "password123", str(tmp_path))
 
-            # Assert
-            mock_garmin_class.assert_called_once_with(
-                email="test@example.com",
-                password="password123",
-                is_cn=False,
-                return_on_mfa=True,
+            # Assert.
+            mock_class.assert_called_once_with()
+            mock_client_instance.login.assert_called_once_with(
+                "test@example.com", "password123", return_on_mfa=True
             )
-            mock_garmin_instance.login.assert_called_once()
-            mock_garmin_instance.get_user_profile.assert_called_once()
-            mock_client.dump.assert_called_once()
+            mock_client_instance.get_user_profile.assert_called_once()
+            mock_client_instance.dump.assert_called_once()
 
     def test_refresh_tokens_success_with_mfa(
-        self, mock_garmin_class_with_instance, tmp_path
+        self, mock_client_class_with_instance, tmp_path
     ) -> None:
         """
         Test successful token refresh with MFA.
 
-        :param mock_garmin_class_with_instance: Mock Garmin class fixture.
+        :param mock_client_class_with_instance: Mock GarminClient class fixture.
         :param tmp_path: Pytest temporary path fixture.
         """
 
-        # Arrange
-        mock_garmin_class, mock_garmin_instance = mock_garmin_class_with_instance
-        mock_garmin_instance.login.return_value = ("needs_mfa", "mfa_token")
-        mock_garmin_instance.get_user_profile.return_value = {"id": "12345678"}
-        mock_client = MagicMock()
-        mock_garmin_instance.client = mock_client
+        # Arrange.
+        mock_class, mock_client_instance = mock_client_class_with_instance
+        mock_client_instance.login.return_value = ("needs_mfa", "mfa_token")
+        mock_client_instance.get_user_profile.return_value = {"id": "12345678"}
 
         with patch(
             "dags.pipelines.garmin.utility_scripts.refresh_garmin_tokens."
@@ -280,31 +276,28 @@ class TestGarminTokenRefresh:
             # Act.
             refresh_tokens("test@example.com", "password123", str(tmp_path))
 
-            # Assert
-            mock_garmin_class.assert_called_once_with(
-                email="test@example.com",
-                password="password123",
-                is_cn=False,
-                return_on_mfa=True,
+            # Assert.
+            mock_class.assert_called_once_with()
+            mock_client_instance.login.assert_called_once_with(
+                "test@example.com", "password123", return_on_mfa=True
             )
-            mock_garmin_instance.login.assert_called_once()
-            mock_garmin_instance.get_user_profile.assert_called_once()
-            mock_handle_mfa.assert_called_once_with(mock_garmin_instance, "mfa_token")
-            mock_client.dump.assert_called_once()
+            mock_client_instance.get_user_profile.assert_called_once()
+            mock_handle_mfa.assert_called_once_with(mock_client_instance, "mfa_token")
+            mock_client_instance.dump.assert_called_once()
 
     def test_refresh_tokens_authentication_failure(
-        self, mock_garmin_class_with_instance, tmp_path
+        self, mock_client_class_with_instance, tmp_path
     ) -> None:
         """
         Test token refresh with authentication failure.
 
-        :param mock_garmin_class_with_instance: Mock Garmin class fixture.
+        :param mock_client_class_with_instance: Mock GarminClient class fixture.
         :param tmp_path: Pytest temporary path fixture.
         """
 
-        # Arrange
-        _mock_garmin_class, mock_garmin_instance = mock_garmin_class_with_instance
-        mock_garmin_instance.login.side_effect = Exception("401 Unauthorized")
+        # Arrange.
+        _mock_class, mock_client_instance = mock_client_class_with_instance
+        mock_client_instance.login.side_effect = Exception("401 Unauthorized")
 
         with patch(
             "dags.pipelines.garmin.utility_scripts.refresh_garmin_tokens.logger"
@@ -317,7 +310,7 @@ class TestGarminTokenRefresh:
                 refresh_tokens("invalid@example.com", "wrong_password", str(tmp_path))
 
             # Should not call client.dump if login fails.
-            mock_garmin_instance.client.dump.assert_not_called()
+            mock_client_instance.dump.assert_not_called()
 
 
 class TestRefreshTokensMultiAccount:
@@ -329,32 +322,32 @@ class TestRefreshTokensMultiAccount:
     """
 
     @pytest.fixture
-    def mock_garmin_instance(self) -> MagicMock:
+    def mock_client_instance(self) -> MagicMock:
         """
-        Create a mock Garmin instance for testing.
+        Create a mock GarminClient instance for testing.
 
-        :return: Mock Garmin instance.
+        :return: Mock GarminClient instance.
         """
 
         return MagicMock()
 
     @pytest.fixture
-    def mock_garmin_class_with_instance(self, mock_garmin_instance):
+    def mock_client_class_with_instance(self, mock_client_instance):
         """
-        Create a patched Garmin class that returns a mock instance.
+        Create a patched GarminClient class that returns a mock instance.
 
-        :param mock_garmin_instance: Mock Garmin instance fixture.
+        :param mock_client_instance: Mock GarminClient instance fixture.
         :return: Tuple of mock class and mock instance.
         """
 
         with patch(
-            "dags.pipelines.garmin.utility_scripts.refresh_garmin_tokens.Garmin"
+            "dags.pipelines.garmin.utility_scripts.refresh_garmin_tokens.GarminClient"
         ) as mock_class:
-            mock_class.return_value = mock_garmin_instance
-            yield mock_class, mock_garmin_instance
+            mock_class.return_value = mock_client_instance
+            yield mock_class, mock_client_instance
 
     def test_refresh_tokens_saves_to_user_subdir(
-        self, mock_garmin_class_with_instance, tmp_path
+        self, mock_client_class_with_instance, tmp_path
     ) -> None:
         """
         Test that refresh_tokens saves tokens to a subdirectory named by user ID.
@@ -362,16 +355,14 @@ class TestRefreshTokensMultiAccount:
         After login, the function calls get_user_profile() to obtain the user ID, then
         saves tokens to base_token_dir/<user_id>/.
 
-        :param mock_garmin_class_with_instance: Mock Garmin class fixture.
+        :param mock_client_class_with_instance: Mock GarminClient class fixture.
         :param tmp_path: Pytest temporary path fixture.
         """
 
         # Arrange.
-        _mock_garmin_class, mock_garmin_instance = mock_garmin_class_with_instance
-        mock_garmin_instance.login.return_value = None  # No MFA required.
-        mock_garmin_instance.get_user_profile.return_value = {"id": "12345678"}
-        mock_client = MagicMock()
-        mock_garmin_instance.client = mock_client
+        _mock_class, mock_client_instance = mock_client_class_with_instance
+        mock_client_instance.login.return_value = None  # No MFA required.
+        mock_client_instance.get_user_profile.return_value = {"id": "12345678"}
 
         with patch(
             "dags.pipelines.garmin.utility_scripts.refresh_garmin_tokens.logger"
@@ -380,12 +371,12 @@ class TestRefreshTokensMultiAccount:
             refresh_tokens("test@example.com", "password123", str(tmp_path))
 
             # Assert.
-            dump_call_args = mock_client.dump.call_args[0][0]
+            dump_call_args = mock_client_instance.dump.call_args[0][0]
             assert Path(dump_call_args).name == "12345678"
-            mock_garmin_instance.get_user_profile.assert_called_once()
+            mock_client_instance.get_user_profile.assert_called_once()
 
     def test_refresh_tokens_missing_user_id(
-        self, mock_garmin_class_with_instance, tmp_path
+        self, mock_client_class_with_instance, tmp_path
     ) -> None:
         """
         Test that refresh_tokens raises RuntimeError when user ID is missing from
@@ -394,14 +385,14 @@ class TestRefreshTokensMultiAccount:
         If get_user_profile() returns a dict without an "id" key, the function should
         raise RuntimeError since the user-specific token directory cannot be determined.
 
-        :param mock_garmin_class_with_instance: Mock Garmin class fixture.
+        :param mock_client_class_with_instance: Mock GarminClient class fixture.
         :param tmp_path: Pytest temporary path fixture.
         """
 
         # Arrange.
-        _mock_garmin_class, mock_garmin_instance = mock_garmin_class_with_instance
-        mock_garmin_instance.login.return_value = None  # No MFA required.
-        mock_garmin_instance.get_user_profile.return_value = {}  # No "id" key.
+        _mock_class, mock_client_instance = mock_client_class_with_instance
+        mock_client_instance.login.return_value = None  # No MFA required.
+        mock_client_instance.get_user_profile.return_value = {}  # No "id" key.
 
         with patch(
             "dags.pipelines.garmin.utility_scripts.refresh_garmin_tokens.logger"
@@ -414,10 +405,10 @@ class TestRefreshTokensMultiAccount:
                 refresh_tokens("test@example.com", "password123", str(tmp_path))
 
             # Should not call client.dump if user ID is missing.
-            mock_garmin_instance.client.dump.assert_not_called()
+            mock_client_instance.dump.assert_not_called()
 
     def test_refresh_tokens_with_mfa(
-        self, mock_garmin_class_with_instance, tmp_path
+        self, mock_client_class_with_instance, tmp_path
     ) -> None:
         """
         Test that refresh_tokens handles MFA flow and saves tokens to user subdirectory.
@@ -425,16 +416,14 @@ class TestRefreshTokensMultiAccount:
         When login returns ("needs_mfa", token), the MFA handler is invoked, and after
         successful authentication, tokens are saved to base_token_dir/<user_id>/.
 
-        :param mock_garmin_class_with_instance: Mock Garmin class fixture.
+        :param mock_client_class_with_instance: Mock GarminClient class fixture.
         :param tmp_path: Pytest temporary path fixture.
         """
 
         # Arrange.
-        _mock_garmin_class, mock_garmin_instance = mock_garmin_class_with_instance
-        mock_garmin_instance.login.return_value = ("needs_mfa", "mfa_token")
-        mock_garmin_instance.get_user_profile.return_value = {"id": "12345678"}
-        mock_client = MagicMock()
-        mock_garmin_instance.client = mock_client
+        _mock_class, mock_client_instance = mock_client_class_with_instance
+        mock_client_instance.login.return_value = ("needs_mfa", "mfa_token")
+        mock_client_instance.get_user_profile.return_value = {"id": "12345678"}
 
         with patch(
             "dags.pipelines.garmin.utility_scripts.refresh_garmin_tokens."
@@ -446,8 +435,8 @@ class TestRefreshTokensMultiAccount:
             refresh_tokens("test@example.com", "password123", str(tmp_path))
 
             # Assert: MFA handler was called.
-            mock_handle_mfa.assert_called_once_with(mock_garmin_instance, "mfa_token")
+            mock_handle_mfa.assert_called_once_with(mock_client_instance, "mfa_token")
 
             # Assert: tokens saved to user-specific subdirectory.
-            dump_call_args = mock_client.dump.call_args[0][0]
+            dump_call_args = mock_client_instance.dump.call_args[0][0]
             assert Path(dump_call_args).name == "12345678"

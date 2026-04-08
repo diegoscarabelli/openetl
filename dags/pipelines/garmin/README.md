@@ -2,7 +2,7 @@
 
 ## Context
 
-This document describes the ETL data pipeline which processes data sourced from Garmin Connect. The pipeline collects comprehensive health, fitness, and activity data using the [python-garminconnect](https://github.com/cyberjunky/python-garminconnect) library, a robust Python SDK that provides comprehensive access to Garmin's ecosystem. The library uses a native OAuth2 engine with `curl_cffi` TLS fingerprint impersonation for reliable authentication, multi-factor authentication (MFA) support, intelligent session management, and efficient HTTP request handling to Garmin's servers.
+This document describes the ETL data pipeline which processes data sourced from Garmin Connect. The pipeline collects comprehensive health, fitness, and activity data using a vendored [`garmin_client/`](garmin_client/) module that handles SSO authentication and exposes the 15 Garmin Connect API endpoints used by the pipeline. The vendored client uses a five-strategy login fallback chain (portal web with `curl_cffi` TLS fingerprint impersonation, plain `requests` portal web, mobile cffi, mobile requests, and SSO embed widget as a last-resort) with a 30-45s anti-rate-limit delay between SSO page GET and credential POST, native DI OAuth2 token exchange and rotating-refresh persistence, and multi-factor authentication (MFA) support. No external Garmin client library is required.
 
 The goal of this pipeline is to support downstream data consumers in generating analytics that provide insights into personal health metrics, training performance, sleep quality, and activity tracking for comprehensive wellness monitoring and optimization.
 
@@ -21,7 +21,7 @@ The data includes:
 | **Intensity Minutes** | Weekly and daily moderate/vigorous intensity minutes with time-series data and goal tracking. | `/wellness-service/wellness/daily/im/{date}` | [12345678_INTENSITY_MINUTES_2025-08-07T12:00:00Z.json](./example_data/12345678_INTENSITY_MINUTES_2025-08-07T12:00:00Z.json) |
 | **Personal Records** | All-time personal bests steps, running, cycling, swimming, strength. | `/personalrecord-service/personalrecord/prs/{display_name}` | [12345678_PERSONAL_RECORDS_2025-08-07T12:00:00Z.json](./example_data/12345678_PERSONAL_RECORDS_2025-08-07T12:00:00Z.json) |
 | **Race Predictions** | Predicted running times based on current fitness level. | `/metrics-service/metrics/racepredictions/latest/{display_name}` | [12345678_RACE_PREDICTIONS_2025-08-07T12:00:00Z.json](./example_data/12345678_RACE_PREDICTIONS_2025-08-07T12:00:00Z.json) |
-| **User Profile** | User profile settings including gender, weight, height, birthday, VO2 max (running and cycling), and lactate threshold (speed and heart rate). | `/userprofile-service/userprofile/settings` | [12345678_USER_PROFILE_2025-08-07T12:00:00Z.json](./example_data/12345678_USER_PROFILE_2025-08-07T12:00:00Z.json) |
+| **User Profile** | User profile settings including gender, weight, height, birthday, VO2 max (running and cycling), and lactate threshold (speed and heart rate). | `/userprofile-service/userprofile/user-settings` | [12345678_USER_PROFILE_2025-08-07T12:00:00Z.json](./example_data/12345678_USER_PROFILE_2025-08-07T12:00:00Z.json) |
 | **Activities List** | Numerous aggregated metrics for user-recorded activities. | `/activitylist-service/activities/search/activities` | [12345678_ACTIVITIES_LIST_2025-08-07T12:00:00Z.json](./example_data/12345678_ACTIVITIES_LIST_2025-08-07T12:00:00Z.json) |
 | **Exercise Sets** | Per-set granular data from strength training activities, including exercise categories, repetition counts, weight, and set-level timing. Per-exercise aggregates are derived from summarized exercise data in the activities list. | `/activity-service/activity/{activity_id}/exerciseSets` | [12345678_EXERCISE_SETS_19983039914_2025-08-07T12:00:00Z.json](./example_data/12345678_EXERCISE_SETS_19983039914_2025-08-07T12:00:00Z.json) |
 | **Activity Data (FIT)** | Detailed time-series metrics from sports activities including lap metrics, split metrics, and record-level data with device information. Proprietary binary format optimized for compactness and interoperability. Follows the [FIT Protocol](https://developer.garmin.com/fit/protocol/).| `/download-service/files/activity/{activity_id}` | [12345678_ACTIVITY_19983039914_2025-08-07T12:00:00Z.fit](./example_data/12345678_ACTIVITY_19983039914_2025-08-07T12:00:00Z.fit) |
@@ -115,7 +115,7 @@ The single DAG run will extract and process all Garmin data within the specified
 
 [Code](extract.py)
 
-The custom extract task uses the [`GarminExtractor`](extract.py) class to download data from Garmin Connect for the specified date range using the [`python-garminconnect`](https://github.com/cyberjunky/python-garminconnect) library. Files are saved with standardized naming conventions to the ingest directory for downstream processing.
+The custom extract task uses the [`GarminExtractor`](extract.py) class to download data from Garmin Connect for the specified date range using the vendored [`garmin_client/`](garmin_client/) module. Files are saved with standardized naming conventions to the ingest directory for downstream processing.
 
 **Multi-Account Support:**
 
@@ -147,12 +147,17 @@ To extract data for specific accounts or data types only (e.g., during a backfil
 If `accounts` is omitted, all discovered accounts are extracted. If `data_types` is omitted, all available data types are extracted. Valid data type names are defined in [`GARMIN_DATA_REGISTRY`](constants.py).
 
 **Authentication Integration:**
-* OAuth token-based authentication using [`garminconnect`](https://github.com/cyberjunky/python-garminconnect) library with native OAuth2 engine
-* Token storage: `~/.garminconnect/<user_id>/` per-account subdirectories
-* Token bootstrap utility: [`refresh_garmin_tokens.py`](utility_scripts/refresh_garmin_tokens.py) script for initial setup (run once per account)
-* Multi-Factor Authentication (MFA) support with interactive prompts
-* Token lifecycle: Access tokens (~18h) are auto-refreshed transparently by the library using the refresh token (30 days, rotates on each use). The token directory must be mounted read-write so refreshed tokens are persisted to disk. Re-run the bootstrap script only if the pipeline is idle for 30+ days or the refresh token is revoked
-* Error handling: Authentication failures are logged per-account with detailed troubleshooting instructions
+
+* OAuth2 Bearer token authentication via the vendored [`garmin_client/`](garmin_client/) module. The pipeline calls `GarminClient.from_tokens(token_dir)`, which loads existing tokens, populates `display_name`/`full_name` from `/userprofile-service/socialProfile` (the `/userprofile-service/userprofile/profile` endpoint returns 404 against DI Bearer auth), and returns a client ready to make API calls.
+* Token storage: `~/.garminconnect/<user_id>/garmin_tokens.json` per-account subdirectories. The file is a JSON object with three keys: `di_token` (~18h Bearer access token), `di_refresh_token` (~30d rotating refresh token), and `di_client_id` (DI OAuth2 client ID extracted from the JWT). The format is identical to the layout that the upstream `python-garminconnect` library used, so existing tokens migrate to the vendored client with no re-bootstrapping.
+* Token bootstrap utility: [`refresh_garmin_tokens.py`](utility_scripts/refresh_garmin_tokens.py) script for initial setup (run once per account). Walks through the five-strategy SSO login chain, prompts for an MFA code if required, auto-detects the Garmin user ID via `client.get_user_profile()`, and writes the resulting tokens to disk.
+* Multi-Factor Authentication (MFA) support with interactive prompts.
+* Token lifecycle:
+  * **Access token** (Bearer, ~18h): used in the `Authorization` header for every API request. Auto-refreshed transparently by the vendored client when within 15 minutes of expiry, or on a 401 retry.
+  * **Refresh token** (~30d, rotates on use): used to obtain new access tokens without re-entering credentials. Each refresh response includes a new refresh token, which the client writes back to `garmin_tokens.json` immediately. As long as the pipeline runs at least once every 30 days, the chain stays alive indefinitely.
+  * **30-day expiry**: if the pipeline is idle longer than that, the refresh token expires and `refresh_garmin_tokens.py` must be re-run with email + password (+ MFA) to bootstrap a fresh pair.
+  * The token directory must be mounted read-write so refreshed tokens are persisted to disk.
+* Error handling: Authentication failures are logged per-account with detailed troubleshooting instructions.
 
 The task extracts data types defined in [`GARMIN_DATA_REGISTRY`](constants.py#GARMIN_DATA_REGISTRY):
 
