@@ -346,10 +346,12 @@ def portal_web_login_requests(
     return_on_mfa: bool = False,
 ) -> Tuple[Optional[str], Any]:
     """
-    Log in via the portal web endpoint using plain ``requests`` and a random browser
-    User-Agent.
+    Log in via the portal web endpoint using plain ``requests``.
 
-    Acts as a no-curl_cffi fallback for the portal flow.
+    Acts as a no-curl_cffi fallback for the portal flow. Browser-style headers
+    (random User-Agent + sec-ch-ua) are generated inside ``_portal_web_login``
+    and passed explicitly on each request, so no session-level headers are set
+    here.
 
     :param client: GarminClient instance.
     :param email: Garmin Connect email.
@@ -360,7 +362,6 @@ def portal_web_login_requests(
     """
 
     sess = requests.Session()
-    sess.headers.update(_random_browser_headers())
     return _portal_web_login(
         client,
         sess,

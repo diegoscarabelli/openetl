@@ -353,8 +353,13 @@ class GarminClient:
             strategies.complete_mfa_portal_web(self, mfa_code)
         elif hasattr(self, "_mfa_cffi_session"):
             strategies.complete_mfa_portal(self, mfa_code)
-        else:
+        elif hasattr(self, "_mfa_session"):
             strategies.complete_mfa(self, mfa_code)
+        else:
+            raise GarminAuthenticationError(
+                "No pending MFA challenge to resume. resume_login() must be "
+                "called after a login() call that returned ('needs_mfa', ...)"
+            )
 
         self._load_profile()
         return None, None
@@ -470,8 +475,16 @@ class GarminClient:
                 continue
             try:
                 data = r.json()
-                di_token = data["access_token"]
-                di_refresh = data.get("refresh_token")
+                new_token = data["access_token"]
+                new_refresh = data.get("refresh_token")
+                if not new_refresh:
+                    # Reject responses missing the refresh token. Without it the
+                    # client can never refresh the access token after expiry, so
+                    # treating an "incomplete" response as success would leave
+                    # the pipeline in a half-broken state.
+                    raise ValueError("response missing refresh_token")
+                di_token = new_token
+                di_refresh = new_refresh
                 di_client_id = self._extract_client_id_from_jwt(di_token) or client_id
                 break
             except Exception as e:

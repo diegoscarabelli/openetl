@@ -336,6 +336,38 @@ class TestExchangeServiceTicket:
         assert excinfo.value.__cause__ is transport_error
         assert "transport error" in str(excinfo.value)
 
+    def test_rejects_response_missing_refresh_token(self) -> None:
+        """
+        A 200 response that omits ``refresh_token`` is treated as a parse failure and
+        the exchange falls through to the next client ID.
+
+        If all three responses
+        are similarly malformed, the exchange raises ``GarminAuthenticationError``
+        rather than half-populating client state with no way to refresh later.
+        """
+
+        # Arrange.
+        client = GarminClient()
+        token = _make_jwt({"client_id": "FIRST_CID", "exp": 9999999999})
+        partial_response = MagicMock()
+        partial_response.ok = True
+        partial_response.status_code = 200
+        # Note: no ``refresh_token`` key.
+        partial_response.json.return_value = {"access_token": token}
+
+        with patch.object(
+            GarminClient, "_http_post", return_value=partial_response
+        ) as mock_post:
+            # Act & Assert.
+            with pytest.raises(GarminAuthenticationError):
+                client._exchange_service_ticket("ticket123")
+
+        # Tried every client ID before giving up; client state never half-populated.
+        assert mock_post.call_count == 3
+        assert client.di_token is None
+        assert client.di_refresh_token is None
+        assert client.di_client_id is None
+
 
 class TestRefreshDiToken:
     """
@@ -889,3 +921,23 @@ class TestLoadProfile:
             # Act & Assert.
             with pytest.raises(GarminAuthenticationError):
                 client._load_profile()
+
+
+class TestResumeLogin:
+    """
+    Tests for ``GarminClient.resume_login``.
+    """
+
+    def test_raises_when_no_pending_mfa(self) -> None:
+        """
+        Calling ``resume_login`` without a prior ``login(..., return_on_mfa=True)`` that
+        returned ``("needs_mfa", ...)`` raises a typed auth error rather than leaking an
+        ``AttributeError`` from the strategy module.
+        """
+
+        # Arrange: a fresh client has no ``_mfa_*_session`` attribute.
+        client = GarminClient()
+
+        # Act & Assert.
+        with pytest.raises(GarminAuthenticationError, match="No pending MFA challenge"):
+            client.resume_login("client_state", "123456")
