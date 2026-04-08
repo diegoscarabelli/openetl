@@ -132,7 +132,9 @@ def backfill_sleep_level(store_dir: Path) -> None:
     success = 0
     skipped = 0
     failed = 0
-    inserted_rows = 0
+    # Counts rows submitted to INSERT, not rows actually written: ON CONFLICT DO
+    # NOTHING means existing (sleep_id, start_ts) rows are silently kept.
+    processed_rows = 0
 
     with Session(engine) as session:
         for sleep_file in sleep_files:
@@ -179,7 +181,7 @@ def backfill_sleep_level(store_dir: Path) -> None:
                     on_conflict_update=False,
                 )
                 session.commit()
-                inserted_rows += len(records)
+                processed_rows += len(records)
                 success += 1
                 LOGGER.info(
                     f"✅ {sleep_file.name}: processed {len(records)} levels for "
@@ -192,8 +194,8 @@ def backfill_sleep_level(store_dir: Path) -> None:
 
     LOGGER.info(
         f"\n🎯 Backfill complete: {success} files processed, "
-        f"{skipped} skipped, {failed} failed, {inserted_rows} sleep_level rows "
-        f"inserted."
+        f"{skipped} skipped, {failed} failed, {processed_rows} sleep_level rows "
+        f"processed (existing rows kept via ON CONFLICT DO NOTHING)."
     )
 
 
