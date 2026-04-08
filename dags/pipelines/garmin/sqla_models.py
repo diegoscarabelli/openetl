@@ -346,13 +346,13 @@ class Sleep(UpsertBase):
     # Foreign key reference.
     user_id = Column(BigInteger, fkey("garmin", "user", "user_id"), nullable=False)
 
-    # Non-nullable timestamps.
+    # Non-nullable timestamps and calendar date.
     start_ts = Column(DateTime(timezone=True), nullable=False)
     end_ts = Column(DateTime(timezone=True), nullable=False)
     timezone_offset_hours = Column(Float, nullable=False)
+    calendar_date = Column(Date, nullable=False)
 
     # Sleep session metadata.
-    calendar_date = Column(Date, nullable=False)
     sleep_version = Column(Integer)
     age_group = Column(String)
     respiration_version = Column(Integer)
@@ -432,6 +432,26 @@ class Sleep(UpsertBase):
     next_sleep_need_history_adj = Column(String)
     next_sleep_need_hrv_adj = Column(String)
     next_sleep_need_nap_adj = Column(String)
+
+
+class SleepLevel(InsertBase):
+    """
+    Sleep stage classification intervals from Garmin Connect sleepLevels array.
+
+    Each row is a contiguous interval during which a single discrete sleep stage
+    (Deep, Light, REM, Awake) was detected. Used to reconstruct the per-night sleep
+    stages timeline shown in the Garmin Connect sleep view.
+
+    Time interval: Variable-length contiguous intervals (one row per stage segment).
+    """
+
+    __tablename__ = "sleep_level"
+
+    sleep_id = Column(Integer, fkey("garmin", "sleep", "sleep_id"), primary_key=True)
+    start_ts = Column(DateTime(timezone=True), primary_key=True)
+    end_ts = Column(DateTime(timezone=True), nullable=False)
+    stage = Column(Integer, nullable=False)
+    stage_label = Column(String, nullable=False)
 
 
 class SleepMovement(InsertBase):

@@ -38,6 +38,7 @@ from dags.pipelines.garmin.sqla_models import (
     RacePredictions,
     Respiration,
     Sleep,
+    SleepLevel,
     SleepMovement,
     SleepRestlessMoment,
     SpO2,
@@ -150,6 +151,28 @@ class TestGarminProcessor:
             "wellnessSpO2SleepSummaryDTO": {
                 "numberOfEventsBelowThreshold": 2,
             },
+            "sleepLevels": [
+                {
+                    "startGMT": "2022-01-01T00:00:00.0",
+                    "endGMT": "2022-01-01T01:00:00.0",
+                    "activityLevel": 1,  # LIGHT
+                },
+                {
+                    "startGMT": "2022-01-01T01:00:00.0",
+                    "endGMT": "2022-01-01T02:30:00.0",
+                    "activityLevel": 0,  # DEEP
+                },
+                {
+                    "startGMT": "2022-01-01T02:30:00.0",
+                    "endGMT": "2022-01-01T03:00:00.0",
+                    "activityLevel": 2,  # REM
+                },
+                {
+                    "startGMT": "2022-01-01T03:00:00.0",
+                    "endGMT": "2022-01-01T03:15:00.0",
+                    "activityLevel": 3,  # AWAKE
+                },
+            ],
             "sleepMovement": [
                 {"startGMT": "2022-01-01T00:30:00Z", "activityLevel": 0.1},
                 {"startGMT": "2022-01-01T01:00:00Z", "activityLevel": 0.2},
@@ -392,10 +415,9 @@ class TestGarminProcessor:
         processor._process_sleep(sleep_file, mock_session)
 
         # Assert.
-        # Verify upsert was called for sleep base record + timeseries data.
-        assert (
-            mock_upsert.call_count == 6
-        )  # Sleep base + Movement, restless, SpO2, HRV, breathing
+        # Verify upsert was called for sleep base record + timeseries data
+        # (sleep_level + movement + restless + SpO2 + HRV + breathing).
+        assert mock_upsert.call_count == 7
 
         # Check first call is for sleep base record.
         first_call = mock_upsert.call_args_list[0]
@@ -404,6 +426,21 @@ class TestGarminProcessor:
         assert len(first_call[1]["model_instances"]) == 1
         assert isinstance(first_call[1]["model_instances"][0], Sleep)
         assert first_call[1]["model_instances"][0].user_id == 1
+
+        # Verify one of the calls handled the four SleepLevel rows.
+        sleep_level_calls = [
+            call
+            for call in mock_upsert.call_args_list
+            if all(isinstance(m, SleepLevel) for m in call.kwargs["model_instances"])
+            and call.kwargs["model_instances"]
+        ]
+        assert len(sleep_level_calls) == 1
+        assert len(sleep_level_calls[0].kwargs["model_instances"]) == 4
+        assert sleep_level_calls[0].kwargs["conflict_columns"] == [
+            "sleep_id",
+            "start_ts",
+        ]
+        assert sleep_level_calls[0].kwargs["on_conflict_update"] is False
 
     @patch("dags.pipelines.garmin.process.upsert_model_instances")
     def test_process_sleep_base(self, mock_upsert, processor, mock_session):
@@ -459,29 +496,164 @@ class TestGarminProcessor:
         """
         Test _process_sleep_base raises ValueError when calendarDate is missing.
 
-        Garmin's calendarDate is the source of truth for the sleep session day and is
-        used by the unique (user_id, calendar_date) constraint. Missing values must fail
-        loudly rather than silently insert a NULL.
+        Garmin's calendarDate is the source of truth for the (user_id, calendar_date)
+        unique constraint, so a missing value must fail loudly rather than silently drop
+        the row.
 
         :param processor: GarminProcessor fixture.
         :param mock_session: Mock session fixture.
         """
 
-        # Arrange.
+        # Arrange: dailySleepDTO without calendarDate.
         sleep_data = {
             "dailySleepDTO": {
                 "sleepStartTimestampGMT": 1641078000000,
                 "sleepEndTimestampGMT": 1641106800000,
                 "sleepStartTimestampLocal": 1641052800000,
                 "sleepTimeSeconds": 28800,
-                # Intentionally no calendarDate.
             }
         }
-        processor.user_id = 1
 
         # Act & Assert.
-        with pytest.raises(ValueError, match="missing dailySleepDTO.calendarDate"):
+        processor.user_id = 1
+        with pytest.raises(ValueError, match="calendarDate"):
             processor._process_sleep_base(sleep_data, mock_session)
+
+    @patch("dags.pipelines.garmin.process.upsert_model_instances")
+    def test_process_sleep_level(self, mock_upsert, processor, mock_session):
+        """
+        Test _process_sleep_level method.
+
+        Verifies that sleepLevels intervals are converted to SleepLevel ORM instances
+        with the correct UTC timestamps and stage labels, that the upsert is called with
+        insert-or-ignore semantics on (sleep_id, start_ts), and that intervals with
+        unknown stage codes are skipped.
+
+        :param mock_upsert: Mock upsert function.
+        :param processor: GarminProcessor fixture.
+        :param mock_session: Mock session fixture.
+        """
+
+        # Arrange.
+        data = {
+            "sleepLevels": [
+                {
+                    "startGMT": "2022-01-01T00:00:00.0",
+                    "endGMT": "2022-01-01T01:00:00.0",
+                    "activityLevel": 1,  # LIGHT
+                },
+                {
+                    "startGMT": "2022-01-01T01:00:00.0",
+                    "endGMT": "2022-01-01T01:30:00.0",
+                    "activityLevel": 0,  # DEEP
+                },
+                {
+                    "startGMT": "2022-01-01T01:30:00.0",
+                    "endGMT": "2022-01-01T02:00:00.0",
+                    "activityLevel": 2,  # REM
+                },
+                {
+                    "startGMT": "2022-01-01T02:00:00.0",
+                    "endGMT": "2022-01-01T02:15:00.0",
+                    "activityLevel": 3,  # AWAKE
+                },
+                {
+                    # Unknown code: should be skipped without raising.
+                    "startGMT": "2022-01-01T02:15:00.0",
+                    "endGMT": "2022-01-01T02:30:00.0",
+                    "activityLevel": 99,
+                },
+            ]
+        }
+
+        # Act.
+        processor.user_id = 123456789
+        processor._process_sleep_level(data, 123456, mock_session)
+
+        # Assert: upsert called once with insert-or-ignore semantics.
+        mock_upsert.assert_called_once()
+        kwargs = mock_upsert.call_args.kwargs
+        assert kwargs["session"] == mock_session
+        assert kwargs["conflict_columns"] == ["sleep_id", "start_ts"]
+        assert kwargs["on_conflict_update"] is False
+
+        # Four valid intervals (the unknown code was dropped).
+        records = kwargs["model_instances"]
+        assert len(records) == 4
+        assert all(isinstance(rec, SleepLevel) for rec in records)
+
+        # Verify field mapping for the first record (LIGHT).
+        first = records[0]
+        assert first.sleep_id == 123456
+        assert first.start_ts == datetime(2022, 1, 1, 0, 0, 0, tzinfo=timezone.utc)
+        assert first.end_ts == datetime(2022, 1, 1, 1, 0, 0, tzinfo=timezone.utc)
+        assert first.stage == 1
+        assert first.stage_label == "LIGHT"
+
+        # Verify all stage labels in order.
+        assert [rec.stage_label for rec in records] == [
+            "LIGHT",
+            "DEEP",
+            "REM",
+            "AWAKE",
+        ]
+
+    @patch("dags.pipelines.garmin.process.upsert_model_instances")
+    def test_process_sleep_level_empty(self, mock_upsert, processor, mock_session):
+        """
+        Test _process_sleep_level with no sleepLevels in payload.
+
+        Should return early without calling upsert.
+
+        :param mock_upsert: Mock upsert function.
+        :param processor: GarminProcessor fixture.
+        :param mock_session: Mock session fixture.
+        """
+
+        # Arrange: payload with no sleepLevels key.
+        data = {}
+
+        # Act.
+        processor._process_sleep_level(data, 123456, mock_session)
+
+        # Assert.
+        mock_upsert.assert_not_called()
+
+    @patch("dags.pipelines.garmin.process.upsert_model_instances")
+    def test_process_sleep_level_all_invalid(
+        self, mock_upsert, processor, mock_session
+    ):
+        """
+        Test _process_sleep_level when every interval has an unknown stage code.
+
+        Should log and return without calling upsert (no spurious empty insert).
+
+        :param mock_upsert: Mock upsert function.
+        :param processor: GarminProcessor fixture.
+        :param mock_session: Mock session fixture.
+        """
+
+        # Arrange: payload with only unknown stage codes.
+        data = {
+            "sleepLevels": [
+                {
+                    "startGMT": "2022-01-01T00:00:00.0",
+                    "endGMT": "2022-01-01T01:00:00.0",
+                    "activityLevel": 99,
+                },
+                {
+                    "startGMT": "2022-01-01T01:00:00.0",
+                    "endGMT": "2022-01-01T02:00:00.0",
+                    "activityLevel": 100,
+                },
+            ]
+        }
+
+        # Act.
+        processor._process_sleep_level(data, 123456, mock_session)
+
+        # Assert.
+        mock_upsert.assert_not_called()
 
     @patch("dags.pipelines.garmin.process.upsert_model_instances")
     def test_process_sleep_movement(self, mock_upsert, processor, mock_session):

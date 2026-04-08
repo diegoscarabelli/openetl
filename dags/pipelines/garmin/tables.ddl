@@ -781,13 +781,13 @@ CREATE TABLE IF NOT EXISTS garmin.sleep (
     -- Foreign key reference.
     , user_id BIGINT NOT NULL REFERENCES garmin.user (user_id)
 
-    -- Non-nullable timestamps.
+    -- Non-nullable timestamps and calendar date.
     , start_ts TIMESTAMPTZ NOT NULL
     , end_ts TIMESTAMPTZ NOT NULL
     , timezone_offset_hours FLOAT NOT NULL
+    , calendar_date DATE NOT NULL
 
     -- Sleep session metadata.
-    , calendar_date DATE NOT NULL
     , sleep_version INTEGER
     , age_group TEXT
     , respiration_version INTEGER
@@ -909,7 +909,8 @@ COMMENT ON COLUMN garmin.sleep.timezone_offset_hours IS
 'Timezone offset from UTC in hours to infer local time '
 '(e.g., -7.0 for UTC-07:00, 5.5 for UTC+05:30).';
 COMMENT ON COLUMN garmin.sleep.calendar_date IS
-'Calendar date of the sleep session.';
+'Calendar date assigned to the sleep session by Garmin Connect. Sourced from '
+'dailySleepDTO.calendarDate. Together with user_id forms a unique constraint.';
 COMMENT ON COLUMN garmin.sleep.sleep_version IS
 'Version of sleep tracking algorithm used.';
 COMMENT ON COLUMN garmin.sleep.age_group IS
@@ -1044,6 +1045,55 @@ COMMENT ON COLUMN garmin.sleep.create_ts IS
 'Timestamp when the record was created in the database.';
 COMMENT ON COLUMN garmin.sleep.update_ts IS
 'Timestamp when the record was last modified in the database.';
+
+----------------------------------------------------------------------------------------
+
+-- Sleep stage classification intervals during sleep sessions.
+-- Time interval: Variable-length contiguous intervals (one row per stage segment).
+CREATE TABLE IF NOT EXISTS garmin.sleep_level (
+    sleep_id INTEGER REFERENCES garmin.sleep (sleep_id) ON DELETE CASCADE
+    , start_ts TIMESTAMPTZ NOT NULL
+    , end_ts TIMESTAMPTZ NOT NULL
+    , stage INTEGER NOT NULL
+    , stage_label TEXT NOT NULL
+
+    -- Audit fields.
+    , create_ts TIMESTAMPTZ NOT NULL DEFAULT NOW()
+
+    -- Primary key.
+    , PRIMARY KEY (sleep_id, start_ts)
+);
+
+-- Create indexes on sleep_level table.
+CREATE INDEX IF NOT EXISTS sleep_level_sleep_id_idx
+ON garmin.sleep_level (sleep_id);
+CREATE INDEX IF NOT EXISTS sleep_level_start_ts_brin_idx
+ON garmin.sleep_level USING brin (start_ts);
+CREATE INDEX IF NOT EXISTS sleep_level_stage_idx
+ON garmin.sleep_level (stage);
+
+-- Table comment.
+COMMENT ON TABLE garmin.sleep_level IS
+'Sleep stage classification intervals from Garmin Connect sleepLevels array. '
+'Each row is a contiguous interval during which a single discrete sleep stage '
+'(Deep, Light, REM, Awake) was detected. Used to reconstruct the per-night '
+'sleep stages timeline shown in the Garmin Connect sleep view.';
+
+-- Column comments for sleep_level table.
+COMMENT ON COLUMN garmin.sleep_level.sleep_id IS
+'References the sleep session identifier.';
+COMMENT ON COLUMN garmin.sleep_level.start_ts IS
+'Start timestamp of the sleep stage interval.';
+COMMENT ON COLUMN garmin.sleep_level.end_ts IS
+'End timestamp of the sleep stage interval.';
+COMMENT ON COLUMN garmin.sleep_level.stage IS
+'Sleep stage code: 0=Deep, 1=Light, 2=REM, 3=Awake. Sourced from '
+'sleepLevels[*].activityLevel in the Garmin SLEEP JSON response.';
+COMMENT ON COLUMN garmin.sleep_level.stage_label IS
+'Human-readable sleep stage label corresponding to stage (DEEP, LIGHT, REM, '
+'AWAKE). Denormalized for query convenience.';
+COMMENT ON COLUMN garmin.sleep_level.create_ts IS
+'Timestamp when the record was created in the database.';
 
 ----------------------------------------------------------------------------------------
 
