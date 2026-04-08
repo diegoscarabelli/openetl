@@ -10,7 +10,7 @@ and health metrics.
 import json
 import re
 from collections import OrderedDict
-from datetime import datetime, timezone, timedelta
+from datetime import date, datetime, timezone, timedelta
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -26,6 +26,7 @@ from dags.pipelines.garmin.constants import (
     GARMIN_DATA_REGISTRY,
     PR_TYPE_LABELS,
     SEMICIRCLES_TO_DEGREES,
+    SleepStage,
 )
 from dags.pipelines.garmin.sqla_models import (
     Acclimation,
@@ -46,6 +47,7 @@ from dags.pipelines.garmin.sqla_models import (
     Respiration,
     RunningAggMetrics,
     Sleep,
+    SleepLevel,
     SleepMovement,
     SleepRestlessMoment,
     SpO2,
@@ -1000,6 +1002,7 @@ class GarminProcessor(Processor):
             return
 
         # Extract and upsert timeseries data.
+        self._process_sleep_level(sleep_data, sleep_id, session)
         self._process_sleep_movement(sleep_data, sleep_id, session)
         self._process_sleep_restless_moments(sleep_data, sleep_id, session)
         self._process_sleep_spo2_data(sleep_data, sleep_id, session)
@@ -1037,6 +1040,14 @@ class GarminProcessor(Processor):
         if sleep_start_gmt_ms is None or sleep_end_gmt_ms is None:
             return None
 
+        # Calendar date is required (NOT NULL with unique constraint on
+        # (user_id, calendar_date)). Trust Garmin's calendarDate as the source of
+        # truth and raise if it's missing rather than silently dropping the row.
+        calendar_date_str = daily_sleep_dto.pop("calendarDate", None)
+        if calendar_date_str is None:
+            raise ValueError("Missing required field 'calendarDate' in dailySleepDTO.")
+        calendar_date = date.fromisoformat(calendar_date_str)
+
         # Remove sleepEndTimestampLocal if present (not used, prevents auto-conversion).
         daily_sleep_dto.pop("sleepEndTimestampLocal", None)
 
@@ -1055,10 +1066,11 @@ class GarminProcessor(Processor):
         sleep_record = {
             # Foreign key field.
             "user_id": int(self.user_id),
-            # Non-nullable timestamps.
+            # Non-nullable timestamps and calendar date.
             "start_ts": start_ts,
             "end_ts": end_ts,
             "timezone_offset_hours": timezone_offset_hours,
+            "calendar_date": calendar_date,
         }
 
         # Remove the id field from JSON (not used: sleep_id is auto-generated).
@@ -1092,7 +1104,6 @@ class GarminProcessor(Processor):
         # Auto-convert other nullable sleep fields to snake_case.
         sleep_fields_nullable = [
             # Basic sleep data.
-            "calendarDate",
             "sleepVersion",
             "ageGroup",
             "respirationVersion",
@@ -1239,6 +1250,65 @@ class GarminProcessor(Processor):
         else:
             LOGGER.warning("⚠️ No main sleep data found.")
             return None
+
+    def _process_sleep_level(self, sleep_data: dict, sleep_id: int, session: Session):
+        """
+        Process sleep stage classification intervals from sleepLevels array.
+
+        Each interval is a contiguous segment with a single discrete sleep stage (Deep,
+        Light, REM, Awake). Uses INSERT ... ON CONFLICT DO NOTHING on
+        (sleep_id, start_ts), matching the idempotency pattern of the sibling sleep
+        time-series tables.
+
+        :param sleep_data: Complete JSON sleep data (modified by pop()).
+        :param sleep_id: Sleep session ID.
+        :param session: SQLAlchemy Session object.
+        """
+
+        sleep_levels = sleep_data.pop("sleepLevels", [])
+        if not sleep_levels:
+            LOGGER.warning("⚠️ No sleep level data found.")
+            return
+
+        level_records = []
+        for level in sleep_levels:
+            start_gmt_str = level.pop("startGMT", None)
+            end_gmt_str = level.pop("endGMT", None)
+            activity_level = level.pop("activityLevel", None)
+            if start_gmt_str is None or end_gmt_str is None or activity_level is None:
+                continue
+            try:
+                stage = SleepStage(int(activity_level))
+            except ValueError:
+                LOGGER.warning(
+                    f"⚠️ Unknown sleep stage code {activity_level} for sleep_id="
+                    f"{sleep_id}; skipping interval."
+                )
+                continue
+            level_records.append(
+                SleepLevel(
+                    sleep_id=sleep_id,
+                    start_ts=datetime.fromisoformat(start_gmt_str).replace(
+                        tzinfo=timezone.utc
+                    ),
+                    end_ts=datetime.fromisoformat(end_gmt_str).replace(
+                        tzinfo=timezone.utc
+                    ),
+                    stage=stage.value,
+                    stage_label=stage.name,
+                )
+            )
+
+        if level_records:
+            upsert_model_instances(
+                session=session,
+                model_instances=level_records,
+                conflict_columns=["sleep_id", "start_ts"],
+                on_conflict_update=False,
+            )
+            LOGGER.info(f"Processed {len(level_records)} sleep level records.")
+        else:
+            LOGGER.warning("⚠️ No valid sleep level records to insert.")
 
     def _process_sleep_movement(
         self, sleep_data: dict, sleep_id: int, session: Session
