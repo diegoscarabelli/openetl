@@ -541,3 +541,354 @@ class TestMobileLogin:
             # Act & Assert.
             with pytest.raises(GarminTooManyRequestsError):
                 strategies.mobile_login(mock_client, "u", "p")
+
+    def test_get_429_raises_before_sleeping(self, mock_client: MagicMock) -> None:
+        """
+        A 429 on the initial GET raises ``GarminTooManyRequestsError`` before any delay
+        is taken so we don't waste 30-45s sleeping for nothing.
+        """
+
+        # Arrange.
+        get_resp = MagicMock()
+        get_resp.status_code = 429
+        get_resp.ok = False
+
+        with patch(
+            "dags.pipelines.garmin.garmin_client.strategies.requests.Session"
+        ) as mock_session_cls, patch(
+            "dags.pipelines.garmin.garmin_client.strategies.time.sleep"
+        ) as mock_sleep:
+            mock_session = mock_session_cls.return_value
+            mock_session.get.return_value = get_resp
+
+            # Act & Assert.
+            with pytest.raises(GarminTooManyRequestsError):
+                strategies.mobile_login(mock_client, "u", "p")
+
+            # Sleep must not have been called: we bailed before the delay.
+            mock_sleep.assert_not_called()
+            mock_session.post.assert_not_called()
+
+    def test_get_non_ok_raises_connection_error(self, mock_client: MagicMock) -> None:
+        """
+        A non-2xx (e.g., 503) on the initial GET raises ``GarminConnectionError`` before
+        sleeping or attempting credentials.
+        """
+
+        # Arrange.
+        get_resp = MagicMock()
+        get_resp.status_code = 503
+        get_resp.ok = False
+
+        with patch(
+            "dags.pipelines.garmin.garmin_client.strategies.requests.Session"
+        ) as mock_session_cls, patch(
+            "dags.pipelines.garmin.garmin_client.strategies.time.sleep"
+        ):
+            mock_session = mock_session_cls.return_value
+            mock_session.get.return_value = get_resp
+
+            # Act & Assert.
+            with pytest.raises(GarminConnectionError):
+                strategies.mobile_login(mock_client, "u", "p")
+
+    def test_get_and_post_use_explicit_timeout(self, mock_client: MagicMock) -> None:
+        """
+        Both the sign-in GET and the credential POST forward an explicit ``timeout``
+        kwarg so the calls can never hang indefinitely in long-running pipelines.
+        """
+
+        # Arrange.
+        get_resp = MagicMock()
+        get_resp.status_code = 200
+        get_resp.ok = True
+
+        post_resp = MagicMock()
+        post_resp.status_code = 200
+        post_resp.json.return_value = {
+            "responseStatus": {"type": "SUCCESSFUL"},
+            "serviceTicketId": "ticket123",
+        }
+
+        with patch(
+            "dags.pipelines.garmin.garmin_client.strategies.requests.Session"
+        ) as mock_session_cls, patch(
+            "dags.pipelines.garmin.garmin_client.strategies.time.sleep"
+        ):
+            mock_session = mock_session_cls.return_value
+            mock_session.get.return_value = get_resp
+            mock_session.post.return_value = post_resp
+
+            # Act.
+            strategies.mobile_login(mock_client, "u", "p")
+
+            # Assert.
+            assert "timeout" in mock_session.get.call_args.kwargs
+            assert "timeout" in mock_session.post.call_args.kwargs
+
+
+class TestPortalWebLoginGet:
+    """
+    Tests for the GET-side of ``_portal_web_login`` (Round 3 hardening).
+    """
+
+    def test_get_429_raises_before_sleeping(self, mock_client: MagicMock) -> None:
+        """
+        A 429 on the SSO sign-in GET raises ``GarminTooManyRequestsError`` immediately
+        rather than sleeping 30-45s and then attempting a doomed credential POST.
+        """
+
+        # Arrange.
+        get_resp = MagicMock()
+        get_resp.status_code = 429
+        get_resp.ok = False
+
+        mock_session = MagicMock()
+        mock_session.get.return_value = get_resp
+
+        with patch(
+            "dags.pipelines.garmin.garmin_client.strategies.time.sleep"
+        ) as mock_sleep:
+            # Act & Assert.
+            with pytest.raises(GarminTooManyRequestsError):
+                strategies._portal_web_login(mock_client, mock_session, "u", "p")
+
+            # Sleep must not have been called: we bailed before the delay.
+            mock_sleep.assert_not_called()
+            mock_session.post.assert_not_called()
+
+    def test_get_non_ok_raises_connection_error(self, mock_client: MagicMock) -> None:
+        """
+        A non-2xx (e.g., 502 Bad Gateway) on the SSO sign-in GET raises
+        ``GarminConnectionError`` before sleeping or POSTing credentials.
+        """
+
+        # Arrange.
+        get_resp = MagicMock()
+        get_resp.status_code = 502
+        get_resp.ok = False
+
+        mock_session = MagicMock()
+        mock_session.get.return_value = get_resp
+
+        with patch("dags.pipelines.garmin.garmin_client.strategies.time.sleep"):
+            # Act & Assert.
+            with pytest.raises(GarminConnectionError):
+                strategies._portal_web_login(mock_client, mock_session, "u", "p")
+
+
+class TestPortalLoginMobileCffiHardening:
+    """
+    Tests for Round 3 hardening of ``portal_login`` (mobile cffi flow):
+
+    GET response checks and JSON decode wrapping.
+    """
+
+    def test_get_429_raises_before_sleeping(self, mock_client: MagicMock) -> None:
+        """
+        A 429 on the mobile sign-in GET raises ``GarminTooManyRequestsError`` before any
+        delay or POST happens.
+        """
+
+        # Arrange.
+        get_resp = MagicMock()
+        get_resp.status_code = 429
+        get_resp.ok = False
+
+        mock_session = MagicMock()
+        mock_session.get.return_value = get_resp
+
+        with patch(
+            "dags.pipelines.garmin.garmin_client.strategies.HAS_CFFI", True
+        ), patch(
+            "dags.pipelines.garmin.garmin_client.strategies.cffi_requests"
+        ) as mock_cffi, patch(
+            "dags.pipelines.garmin.garmin_client.strategies.time.sleep"
+        ) as mock_sleep:
+            mock_cffi.Session.return_value = mock_session
+
+            # Act & Assert.
+            with pytest.raises(GarminTooManyRequestsError):
+                strategies.portal_login(mock_client, "u", "p")
+
+            mock_sleep.assert_not_called()
+            mock_session.post.assert_not_called()
+
+    def test_post_non_json_raises_connection_error(
+        self, mock_client: MagicMock
+    ) -> None:
+        """
+        If the credential POST returns 200 with a non-JSON body (e.g., a Cloudflare edge
+        HTML page), the JSON decode failure is wrapped as :class:`GarminConnectionError`
+        rather than escaping as a bare decode error.
+        """
+
+        # Arrange.
+        get_resp = MagicMock()
+        get_resp.status_code = 200
+        get_resp.ok = True
+
+        post_resp = MagicMock()
+        post_resp.status_code = 200
+        post_resp.ok = True
+        post_resp.text = "<html>edge cache</html>"
+        post_resp.json.side_effect = ValueError("not json")
+
+        mock_session = MagicMock()
+        mock_session.get.return_value = get_resp
+        mock_session.post.return_value = post_resp
+
+        with patch(
+            "dags.pipelines.garmin.garmin_client.strategies.HAS_CFFI", True
+        ), patch(
+            "dags.pipelines.garmin.garmin_client.strategies.cffi_requests"
+        ) as mock_cffi, patch(
+            "dags.pipelines.garmin.garmin_client.strategies.time.sleep"
+        ):
+            mock_cffi.Session.return_value = mock_session
+
+            # Act & Assert.
+            with pytest.raises(GarminConnectionError, match="non-JSON"):
+                strategies.portal_login(mock_client, "u", "p")
+
+
+class TestCompleteMfaPortalHardening:
+    """
+    Tests for Round 3 hardening of ``complete_mfa_portal``: status / JSON checks.
+    """
+
+    def test_429_raises_too_many_requests(self, mock_client: MagicMock) -> None:
+        """
+        A 429 from the verifyCode endpoint raises ``GarminTooManyRequestsError`` instead
+        of crashing on JSON decode of an HTML rate-limit page.
+        """
+
+        # Arrange.
+        verify_resp = MagicMock()
+        verify_resp.status_code = 429
+        verify_resp.ok = False
+        verify_resp.text = "Too Many Requests"
+
+        mock_session = MagicMock()
+        mock_session.post.return_value = verify_resp
+        mock_client._mfa_cffi_session = mock_session
+        mock_client._mfa_cffi_params = {}
+        mock_client._mfa_cffi_headers = {}
+
+        # Act & Assert.
+        with pytest.raises(GarminTooManyRequestsError):
+            strategies.complete_mfa_portal(mock_client, "123456")
+
+    def test_non_ok_raises_authentication_error(self, mock_client: MagicMock) -> None:
+        """
+        Non-2xx responses (e.g., 500) raise ``GarminAuthenticationError`` with a body
+        preview rather than calling ``.json()`` on a non-JSON body.
+        """
+
+        # Arrange.
+        verify_resp = MagicMock()
+        verify_resp.status_code = 500
+        verify_resp.ok = False
+        verify_resp.text = "Internal Server Error"
+
+        mock_session = MagicMock()
+        mock_session.post.return_value = verify_resp
+        mock_client._mfa_cffi_session = mock_session
+        mock_client._mfa_cffi_params = {}
+        mock_client._mfa_cffi_headers = {}
+
+        # Act & Assert.
+        with pytest.raises(GarminAuthenticationError, match="HTTP 500"):
+            strategies.complete_mfa_portal(mock_client, "123456")
+
+    def test_non_json_body_raises_authentication_error(
+        self, mock_client: MagicMock
+    ) -> None:
+        """
+        A 200 with a non-JSON body (e.g., a Cloudflare HTML page) is wrapped as
+        ``GarminAuthenticationError`` with the JSON decode error chained.
+        """
+
+        # Arrange.
+        verify_resp = MagicMock()
+        verify_resp.status_code = 200
+        verify_resp.ok = True
+        verify_resp.text = "<html>edge</html>"
+        verify_resp.json.side_effect = ValueError("not json")
+
+        mock_session = MagicMock()
+        mock_session.post.return_value = verify_resp
+        mock_client._mfa_cffi_session = mock_session
+        mock_client._mfa_cffi_params = {}
+        mock_client._mfa_cffi_headers = {}
+
+        # Act & Assert.
+        with pytest.raises(GarminAuthenticationError, match="invalid JSON"):
+            strategies.complete_mfa_portal(mock_client, "123456")
+
+
+class TestCompleteMfaHardening:
+    """
+    Tests for Round 3 hardening of ``complete_mfa`` (plain-requests mobile flow).
+    """
+
+    def test_429_raises_too_many_requests(self, mock_client: MagicMock) -> None:
+        """
+        A 429 from the verifyCode endpoint raises ``GarminTooManyRequestsError``.
+        """
+
+        # Arrange.
+        verify_resp = MagicMock()
+        verify_resp.status_code = 429
+        verify_resp.ok = False
+        verify_resp.text = "Too Many Requests"
+
+        mock_session = MagicMock()
+        mock_session.post.return_value = verify_resp
+        mock_client._mfa_session = mock_session
+
+        # Act & Assert.
+        with pytest.raises(GarminTooManyRequestsError):
+            strategies.complete_mfa(mock_client, "123456")
+
+    def test_non_ok_raises_authentication_error(self, mock_client: MagicMock) -> None:
+        """
+        Non-2xx responses raise ``GarminAuthenticationError`` with the status code.
+        """
+
+        # Arrange.
+        verify_resp = MagicMock()
+        verify_resp.status_code = 502
+        verify_resp.ok = False
+        verify_resp.text = "Bad Gateway"
+
+        mock_session = MagicMock()
+        mock_session.post.return_value = verify_resp
+        mock_client._mfa_session = mock_session
+
+        # Act & Assert.
+        with pytest.raises(GarminAuthenticationError, match="HTTP 502"):
+            strategies.complete_mfa(mock_client, "123456")
+
+    def test_non_json_body_raises_authentication_error(
+        self, mock_client: MagicMock
+    ) -> None:
+        """
+        A 200 with a non-JSON body wraps the JSON decode error as
+        ``GarminAuthenticationError``.
+        """
+
+        # Arrange.
+        verify_resp = MagicMock()
+        verify_resp.status_code = 200
+        verify_resp.ok = True
+        verify_resp.text = "<html>edge</html>"
+        verify_resp.json.side_effect = ValueError("not json")
+
+        mock_session = MagicMock()
+        mock_session.post.return_value = verify_resp
+        mock_client._mfa_session = mock_session
+
+        # Act & Assert.
+        with pytest.raises(GarminAuthenticationError, match="invalid JSON"):
+            strategies.complete_mfa(mock_client, "123456")

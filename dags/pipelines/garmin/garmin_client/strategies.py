@@ -24,6 +24,7 @@ argument so the file stays decoupled from the ``GarminClient`` class definition.
 The class binds them as bound methods at import time.
 """
 
+import json
 import logging
 import random
 import re
@@ -404,7 +405,7 @@ def _portal_web_login(
         "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
         "Accept-Language": "en-US,en;q=0.9",
     }
-    sess.get(
+    get_resp = sess.get(
         signin_url,
         params={
             "clientId": PORTAL_SSO_CLIENT_ID,
@@ -413,6 +414,14 @@ def _portal_web_login(
         headers=get_headers,
         timeout=30,
     )
+    if get_resp.status_code == 429:
+        raise GarminTooManyRequestsError(
+            "Portal login GET returned 429. Cloudflare is blocking this request."
+        )
+    if not get_resp.ok:
+        raise GarminConnectionError(
+            f"Portal login GET failed: HTTP {get_resp.status_code}"
+        )
 
     # Garmin's Cloudflare WAF rate-limits requests that go directly from the SSO
     # page GET to the login POST without intervening activity.
@@ -609,7 +618,10 @@ def portal_login(
     :param prompt_mfa: Callable returning a 6-digit MFA code.
     :param return_on_mfa: If True, return early on MFA challenge.
     :return: ``(None, None)`` on success, or ``("needs_mfa", session)`` on MFA.
+    :raises GarminTooManyRequestsError: On HTTP 429.
     :raises GarminAuthenticationError: On bad credentials or unexpected status.
+    :raises GarminConnectionError: If curl_cffi is unavailable, on non-OK
+        responses, or on non-JSON response bodies.
     """
 
     if not HAS_CFFI:
@@ -619,7 +631,7 @@ def portal_login(
 
     # Step 1: GET mobile sign-in page (sets SESSION cookies).
     signin_url = f"{client._sso}/mobile/sso/en_US/sign-in"
-    sess.get(
+    get_resp = sess.get(
         signin_url,
         params={
             "clientId": MOBILE_SSO_CLIENT_ID,
@@ -634,6 +646,12 @@ def portal_login(
         },
         timeout=30,
     )
+    if get_resp.status_code == 429:
+        raise GarminTooManyRequestsError("Mobile portal login GET returned 429")
+    if not get_resp.ok:
+        raise GarminConnectionError(
+            f"Mobile portal login GET failed: HTTP {get_resp.status_code}"
+        )
 
     # Same Cloudflare WAF rate-limiting protection as the browser portal flow.
     delay_s = random.uniform(LOGIN_DELAY_MIN_S, LOGIN_DELAY_MAX_S)
@@ -671,8 +689,18 @@ def portal_login(
     )
     if r.status_code == 429:
         raise GarminTooManyRequestsError("Too many requests during mobile portal login")
-    r.raise_for_status()
-    res = r.json()
+    if not r.ok:
+        raise GarminConnectionError(
+            f"Mobile portal login POST failed: HTTP {r.status_code}"
+        )
+    try:
+        res = r.json()
+    except (json.JSONDecodeError, ValueError) as err:
+        body_preview = " ".join((r.text or "").split())[:200]
+        raise GarminConnectionError(
+            f"Mobile portal login returned non-JSON (status {r.status_code}): "
+            f"{body_preview!r}"
+        ) from err
     resp_type = res.get("responseStatus", {}).get("type")
 
     if resp_type == "MFA_REQUIRED":
@@ -713,7 +741,9 @@ def complete_mfa_portal(client: Any, mfa_code: str) -> None:
 
     :param client: GarminClient instance with cffi MFA state.
     :param mfa_code: 6-digit MFA code.
-    :raises GarminAuthenticationError: On verification failure.
+    :raises GarminTooManyRequestsError: On HTTP 429.
+    :raises GarminAuthenticationError: On verification failure or non-OK / non-JSON
+        response.
     """
 
     sess = client._mfa_cffi_session
@@ -730,7 +760,22 @@ def complete_mfa_portal(client: Any, mfa_code: str) -> None:
         },
         timeout=30,
     )
-    res = r.json()
+    if r.status_code == 429:
+        raise GarminTooManyRequestsError(
+            "MFA Verification failed: HTTP 429 Too Many Requests"
+        )
+    if not r.ok:
+        body_preview = " ".join((r.text or "").split())[:200]
+        raise GarminAuthenticationError(
+            f"MFA Verification failed: HTTP {r.status_code}: {body_preview}"
+        )
+    try:
+        res = r.json()
+    except (json.JSONDecodeError, ValueError) as err:
+        body_preview = " ".join((r.text or "").split())[:200]
+        raise GarminAuthenticationError(
+            f"MFA Verification failed: invalid JSON response: {body_preview}"
+        ) from err
     if res.get("responseStatus", {}).get("type") == "SUCCESSFUL":
         ticket = res["serviceTicketId"]
         client._establish_session(ticket, sess=sess)
@@ -774,13 +819,20 @@ def mobile_login(
         }
     )
 
-    sess.get(
+    get_resp = sess.get(
         f"{client._sso}/mobile/sso/en_US/sign-in",
         params={
             "clientId": MOBILE_SSO_CLIENT_ID,
             "service": MOBILE_SSO_SERVICE_URL,
         },
+        timeout=30,
     )
+    if get_resp.status_code == 429:
+        raise GarminTooManyRequestsError("Mobile login GET returned 429")
+    if not get_resp.ok:
+        raise GarminConnectionError(
+            f"Mobile login GET failed: HTTP {get_resp.status_code}"
+        )
 
     # Same Cloudflare WAF rate-limiting protection as the browser portal flow.
     delay_s = random.uniform(LOGIN_DELAY_MIN_S, LOGIN_DELAY_MAX_S)
@@ -800,6 +852,7 @@ def mobile_login(
             "rememberMe": True,
             "captchaToken": "",
         },
+        timeout=30,
     )
 
     if r.status_code == 429:
@@ -855,7 +908,9 @@ def complete_mfa(client: Any, mfa_code: str) -> None:
 
     :param client: GarminClient instance with mobile MFA state.
     :param mfa_code: 6-digit MFA code.
-    :raises GarminAuthenticationError: On verification failure.
+    :raises GarminTooManyRequestsError: On HTTP 429.
+    :raises GarminAuthenticationError: On verification failure or non-OK / non-JSON
+        response.
     """
 
     r = client._mfa_session.post(
@@ -872,8 +927,24 @@ def complete_mfa(client: Any, mfa_code: str) -> None:
             "reconsentList": [],
             "mfaSetup": False,
         },
+        timeout=30,
     )
-    res = r.json()
+    if r.status_code == requests.codes.too_many_requests:
+        raise GarminTooManyRequestsError(
+            "MFA Verification failed: HTTP 429 Too Many Requests"
+        )
+    if not r.ok:
+        body_preview = " ".join((r.text or "").split())[:200]
+        raise GarminAuthenticationError(
+            f"MFA Verification failed: HTTP {r.status_code}: {body_preview}"
+        )
+    try:
+        res = r.json()
+    except (json.JSONDecodeError, ValueError) as err:
+        body_preview = " ".join((r.text or "").split())[:200]
+        raise GarminAuthenticationError(
+            f"MFA Verification failed: invalid JSON response: {body_preview}"
+        ) from err
     if res.get("responseStatus", {}).get("type") == "SUCCESSFUL":
         ticket = res["serviceTicketId"]
         client._establish_session(ticket)

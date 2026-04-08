@@ -462,27 +462,34 @@ class GarminClient:
             server rejects it.
         :raises GarminTooManyRequestsError: If the DI token endpoint returns
             HTTP 429.
+        :raises GarminConnectionError: On transport errors (connection,
+            timeout, SSL) or non-JSON responses.
         """
 
         if not self.di_refresh_token or not self.di_client_id:
             raise GarminAuthenticationError("No DI refresh token available")
-        r = self._http_post(
-            DI_TOKEN_URL,
-            headers=_native_headers(
-                {
-                    "Authorization": _build_basic_auth(self.di_client_id),
-                    "Accept": "application/json",
-                    "Content-Type": "application/x-www-form-urlencoded",
-                    "Cache-Control": "no-cache",
-                }
-            ),
-            data={
-                "grant_type": "refresh_token",
-                "client_id": self.di_client_id,
-                "refresh_token": self.di_refresh_token,
-            },
-            timeout=30,
-        )
+        try:
+            r = self._http_post(
+                DI_TOKEN_URL,
+                headers=_native_headers(
+                    {
+                        "Authorization": _build_basic_auth(self.di_client_id),
+                        "Accept": "application/json",
+                        "Content-Type": "application/x-www-form-urlencoded",
+                        "Cache-Control": "no-cache",
+                    }
+                ),
+                data={
+                    "grant_type": "refresh_token",
+                    "client_id": self.di_client_id,
+                    "refresh_token": self.di_refresh_token,
+                },
+                timeout=30,
+            )
+        except requests.RequestException as exc:
+            raise GarminConnectionError(
+                f"DI token refresh transport error: {exc}"
+            ) from exc
         if r.status_code == 429:
             raise GarminTooManyRequestsError(
                 f"DI token refresh rate limited: {r.text[:200]}"
@@ -491,7 +498,14 @@ class GarminClient:
             raise GarminAuthenticationError(
                 f"DI token refresh failed: {r.status_code} {r.text[:200]}"
             )
-        data = r.json()
+        try:
+            data = r.json()
+        except (json.JSONDecodeError, ValueError) as err:
+            preview = " ".join(r.text.split())[:200]
+            raise GarminConnectionError(
+                f"DI token refresh returned non-JSON (status {r.status_code}): "
+                f"{preview!r}"
+            ) from err
         self.di_token = data["access_token"]
         self.di_refresh_token = data.get("refresh_token", self.di_refresh_token)
         self.di_client_id = (
@@ -604,12 +618,21 @@ class GarminClient:
         :param kwargs: Additional kwargs forwarded to :meth:`_request` (e.g.
             ``params``).
         :return: Parsed JSON, or an empty dict on HTTP 204.
+        :raises GarminConnectionError: If the response body is not valid JSON
+            (e.g., a Cloudflare HTML edge page returned with a 200 status).
         """
 
         resp = self._request("GET", path, **kwargs)
         if resp.status_code == 204:
             return {}
-        return resp.json()
+        try:
+            return resp.json()
+        except (json.JSONDecodeError, ValueError) as err:
+            preview = " ".join(resp.text.split())[:200]
+            raise GarminConnectionError(
+                f"Invalid JSON response from Garmin (status {resp.status_code}): "
+                f"{preview!r}"
+            ) from err
 
     def _download(self, path: str, **kwargs: Any) -> bytes:
         """

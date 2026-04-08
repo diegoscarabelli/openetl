@@ -416,6 +416,50 @@ class TestRefreshDiToken:
             with pytest.raises(GarminTooManyRequestsError):
                 client._refresh_di_token()
 
+    def test_wraps_transport_exception_as_connection_error(self) -> None:
+        """
+        Network failures (timeouts, connection resets, SSL errors) raised by the HTTP
+        post are wrapped as :class:`GarminConnectionError` so callers see consistent
+        typed errors instead of bare ``RequestException`` subclasses.
+        """
+
+        # Arrange.
+        client = GarminClient()
+        client.di_refresh_token = "old_refresh"
+        client.di_client_id = "GARMIN_OLD"
+
+        with patch.object(
+            GarminClient,
+            "_http_post",
+            side_effect=requests.ConnectionError("network down"),
+        ):
+            # Act & Assert.
+            with pytest.raises(GarminConnectionError, match="network down"):
+                client._refresh_di_token()
+
+    def test_wraps_non_json_response_as_connection_error(self) -> None:
+        """
+        If the DI token endpoint returns a 2xx with a non-JSON body (e.g., a Cloudflare
+        edge HTML page), the JSON decode failure is wrapped as
+        :class:`GarminConnectionError` with a short body preview.
+        """
+
+        # Arrange.
+        client = GarminClient()
+        client.di_refresh_token = "old_refresh"
+        client.di_client_id = "GARMIN_OLD"
+
+        bad_body = MagicMock()
+        bad_body.ok = True
+        bad_body.status_code = 200
+        bad_body.text = "<html>edge cache page</html>"
+        bad_body.json.side_effect = json.JSONDecodeError("expecting value", "", 0)
+
+        with patch.object(GarminClient, "_http_post", return_value=bad_body):
+            # Act & Assert.
+            with pytest.raises(GarminConnectionError, match="non-JSON"):
+                client._refresh_di_token()
+
 
 class TestRefreshSession:
     """
@@ -649,6 +693,67 @@ class TestRequest:
             # Act & Assert.
             with pytest.raises(GarminConnectionError, match="after token refresh"):
                 client._request("GET", "/some/path")
+
+
+class TestConnectapi:
+    """
+    Tests for ``GarminClient._connectapi``.
+    """
+
+    def test_returns_parsed_json_on_success(self) -> None:
+        """
+        A 200 response with a valid JSON body returns the parsed dict.
+        """
+
+        # Arrange.
+        client = GarminClient()
+        ok_resp = MagicMock()
+        ok_resp.status_code = 200
+        ok_resp.json.return_value = {"hello": "world"}
+
+        with patch.object(client, "_request", return_value=ok_resp):
+            # Act.
+            result = client._connectapi("/some/path")
+
+            # Assert.
+            assert result == {"hello": "world"}
+
+    def test_returns_empty_dict_on_204(self) -> None:
+        """
+        HTTP 204 No Content yields an empty dict so callers don't try to parse.
+        """
+
+        # Arrange.
+        client = GarminClient()
+        empty_resp = MagicMock()
+        empty_resp.status_code = 204
+
+        with patch.object(client, "_request", return_value=empty_resp):
+            # Act.
+            result = client._connectapi("/some/path")
+
+            # Assert.
+            assert result == {}
+
+    def test_wraps_non_json_response_as_connection_error(self) -> None:
+        """
+        If Garmin returns HTML (or any non-JSON) with a 2xx status (e.g., a Cloudflare
+        edge cache page), the JSON decode failure is wrapped as
+        :class:`GarminConnectionError` with a short body preview rather than escaping as
+        a bare ``JSONDecodeError``.
+        """
+
+        # Arrange.
+        client = GarminClient()
+        html_resp = MagicMock()
+        html_resp.status_code = 200
+        html_resp.text = "<html><body>Cloudflare edge page</body></html>"
+        html_resp.json.side_effect = json.JSONDecodeError("expecting value", "", 0)
+
+        with patch.object(client, "_request", return_value=html_resp):
+            # Act & Assert.
+            with pytest.raises(GarminConnectionError, match="Invalid JSON"):
+                client._connectapi("/some/path")
 
 
 class TestFromTokens:
