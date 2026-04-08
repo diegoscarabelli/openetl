@@ -100,7 +100,8 @@ class GarminExtractor:
         LOGGER.info("🔐 Authenticating with Garmin Connect using saved tokens.")
 
         try:
-            # Load existing tokens, populate display_name/full_name from /profile.
+            # Load existing tokens, populate display_name/full_name from
+            # /userprofile-service/socialProfile.
             self.garmin_client = GarminClient.from_tokens(token_store_path)
             LOGGER.info(
                 f"✅ Authentication successful for "

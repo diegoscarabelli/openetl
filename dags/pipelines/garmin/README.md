@@ -148,7 +148,7 @@ If `accounts` is omitted, all discovered accounts are extracted. If `data_types`
 
 **Authentication Integration:**
 
-* OAuth2 Bearer token authentication via the vendored [`garmin_client/`](garmin_client/) module. The pipeline calls `GarminClient.from_tokens(token_dir)`, which loads existing tokens, populates `display_name`/`full_name` from `/userprofile-service/userprofile/profile`, and returns a client ready to make API calls.
+* OAuth2 Bearer token authentication via the vendored [`garmin_client/`](garmin_client/) module. The pipeline calls `GarminClient.from_tokens(token_dir)`, which loads existing tokens, populates `display_name`/`full_name` from `/userprofile-service/socialProfile` (the `/userprofile-service/userprofile/profile` endpoint returns 404 against DI Bearer auth), and returns a client ready to make API calls.
 * Token storage: `~/.garminconnect/<user_id>/garmin_tokens.json` per-account subdirectories. The file is a JSON object with three keys: `di_token` (~18h Bearer access token), `di_refresh_token` (~30d rotating refresh token), and `di_client_id` (DI OAuth2 client ID extracted from the JWT). The format is identical to the layout that the upstream `python-garminconnect` library used, so existing tokens migrate to the vendored client with no re-bootstrapping.
 * Token bootstrap utility: [`refresh_garmin_tokens.py`](utility_scripts/refresh_garmin_tokens.py) script for initial setup (run once per account). Walks through the five-strategy SSO login chain, prompts for an MFA code if required, auto-detects the Garmin user ID via `client.get_user_profile()`, and writes the resulting tokens to disk.
 * Multi-Factor Authentication (MFA) support with interactive prompts.

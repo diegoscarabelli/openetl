@@ -312,11 +312,15 @@ def portal_web_login_cffi(
             )
         except GarminAuthenticationError:
             raise
+        except (GarminTooManyRequestsError, GarminConnectionError):
+            raise
         except Exception as e:
             _LOGGER.debug("portal+cffi(%s) failed: %s", imp, e)
             last_err = e
             continue
-    raise last_err or GarminConnectionError("All cffi impersonations failed")
+    if last_err is not None:
+        raise GarminConnectionError("All cffi impersonations failed") from last_err
+    raise GarminConnectionError("All cffi impersonations failed")
 
 
 def portal_web_login_requests(
@@ -657,6 +661,8 @@ def portal_login(
         },
         timeout=30,
     )
+    if r.status_code == 429:
+        raise GarminTooManyRequestsError("Too many requests during mobile portal login")
     r.raise_for_status()
     res = r.json()
     resp_type = res.get("responseStatus", {}).get("type")

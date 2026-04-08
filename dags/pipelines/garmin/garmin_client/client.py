@@ -116,23 +116,19 @@ class GarminClient:
         self.display_name: Optional[str] = None
         self.full_name: Optional[str] = None
 
-        # curl_cffi (or plain requests) session used by login flows. The session
-        # holds Garmin's SSO cookies during the multi-step login dance.
-        self.cs: Any
-        if HAS_CFFI:
-            self.cs = cffi_requests.Session(impersonate="chrome")
-        else:
-            self.cs = requests.Session()
-            adapter = requests.adapters.HTTPAdapter(
-                pool_connections=kwargs.get("pool_connections", 20),
-                pool_maxsize=kwargs.get("pool_maxsize", 20),
-            )
-            self.cs.mount("https://", adapter)
-
         # Path on disk where tokens were loaded from (or are to be saved to). Used
         # by _refresh_session to persist refreshed tokens back to disk so the
         # rotating refresh chain stays alive across pipeline runs.
         self._tokenstore_path: Optional[str] = None
+
+        # Lazily-initialized requests.Session reused across all authenticated API
+        # calls so that connection pooling and keep-alive amortize TLS handshakes
+        # across the many per-day endpoint calls in the extract pipeline. Login
+        # strategies build their own short-lived sessions in strategies.py because
+        # they need TLS impersonation; this session is only for connectapi calls.
+        self._api_session: Optional[requests.Session] = None
+        self._pool_connections: int = kwargs.get("pool_connections", 20)
+        self._pool_maxsize: int = kwargs.get("pool_maxsize", 20)
 
     @classmethod
     def from_tokens(cls, token_dir: Union[str, Path]) -> "GarminClient":
@@ -654,20 +650,28 @@ class GarminClient:
         if "timeout" not in kwargs:
             kwargs["timeout"] = 15
 
-        headers = self.get_api_headers()
-        custom_headers = kwargs.pop("headers", {})
-        if custom_headers:
-            headers.update(custom_headers)
+        custom_headers = kwargs.pop("headers", {}) or {}
 
-        sess = requests.Session()
-        adapter = requests.adapters.HTTPAdapter(pool_connections=20, pool_maxsize=20)
-        sess.mount("https://", adapter)
+        def _build_headers() -> Dict[str, str]:
+            merged = self.get_api_headers()
+            if custom_headers:
+                merged.update(custom_headers)
+            return merged
 
-        resp = sess.request(method, url, headers=headers, **kwargs)
+        if self._api_session is None:
+            self._api_session = requests.Session()
+            adapter = requests.adapters.HTTPAdapter(
+                pool_connections=self._pool_connections,
+                pool_maxsize=self._pool_maxsize,
+            )
+            self._api_session.mount("https://", adapter)
+
+        sess = self._api_session
+        resp = sess.request(method, url, headers=_build_headers(), **kwargs)
 
         if resp.status_code == 401:
             self._refresh_session()
-            resp = sess.request(method, url, headers=self.get_api_headers(), **kwargs)
+            resp = sess.request(method, url, headers=_build_headers(), **kwargs)
             if resp.status_code == 401:
                 raise GarminAuthenticationError(
                     "API request unauthorized after token refresh"
