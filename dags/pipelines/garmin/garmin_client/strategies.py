@@ -5,19 +5,22 @@ Garmin's Cloudflare WAF aggressively rate-limits the SSO login endpoints, and th
 exact endpoint that gets blocked rotates over time. To stay reliable, the client
 tries five fallback strategies in order until one succeeds:
 
-1. ``_widget_login_cffi``: SSO embed widget HTML form flow with curl_cffi TLS
-   impersonation. No clientId, so not subject to per-client rate limiting.
-2. ``_portal_web_login_cffi``: ``/portal/api/login`` (the endpoint connect.garmin.com
-   itself uses) with curl_cffi, trying five browser TLS fingerprints.
-3. ``_portal_web_login_requests``: same endpoint with plain ``requests`` and a
+1. ``_portal_web_login_cffi``: ``/portal/api/login`` (the endpoint
+   connect.garmin.com itself uses) with curl_cffi, trying five browser TLS
+   fingerprints.
+2. ``_portal_web_login_requests``: same endpoint with plain ``requests`` and a
    random browser User-Agent.
-4. ``_portal_login``: mobile ``/mobile/api/login`` with curl_cffi (Safari TLS).
-5. ``_mobile_login``: mobile ``/mobile/api/login`` with plain ``requests``.
+3. ``_portal_login``: mobile ``/mobile/api/login`` with curl_cffi (Safari TLS).
+4. ``_mobile_login``: mobile ``/mobile/api/login`` with plain ``requests``.
+5. ``_widget_login_cffi``: SSO embed widget HTML form flow with curl_cffi TLS
+   impersonation. Last-resort fallback: empirically the most rate-limited path,
+   but kept in the chain because it occasionally succeeds when all four JSON
+   endpoints have been blocked.
 
-All three portal flows (``_portal_web_login``, ``_portal_login``, ``_mobile_login``)
-sleep 30-45 seconds between the SSO page GET and the credential POST. Without this
-delay Garmin's Cloudflare WAF returns 429 immediately, treating the back-to-back
-requests as bot-like.
+The portal and mobile flows (``_portal_web_login``, ``_portal_login``,
+``_mobile_login``) sleep 30-45 seconds between the SSO page GET and the credential
+POST. Without this delay Garmin's Cloudflare WAF returns 429 immediately, treating
+the back-to-back requests as bot-like.
 
 These functions are written as plain functions taking ``client`` as the first
 argument so the file stays decoupled from the ``GarminClient`` class definition.
@@ -80,9 +83,11 @@ def widget_login_cffi(
     """
     Log in via the SSO embed widget using curl_cffi TLS impersonation.
 
-    This is the classic HTML form-based flow used by ``garth`` for years. It does
-    not use a clientId parameter, so it is not subject to the per-client rate
-    limiting that affects the portal and mobile JSON API endpoints.
+    This is the classic HTML form-based flow used by ``garth`` for years. Kept
+    as the last-resort fallback in the strategy chain: empirically Cloudflare
+    rate-limits this endpoint aggressively (the chain reorder was driven by
+    repeated 429s on this path), but it occasionally still succeeds when all
+    four JSON-API strategies have been blocked on the current IP.
 
     Requires ``curl_cffi`` for TLS fingerprint impersonation to pass Cloudflare bot
     detection. Cannot run otherwise.
@@ -791,11 +796,12 @@ def mobile_login(
     return_on_mfa: bool = False,
 ) -> Tuple[Optional[str], Any]:
     """
-    Log in via the mobile SSO API using plain ``requests`` (last-resort fallback).
+    Log in via the mobile SSO API using plain ``requests``.
 
-    No TLS impersonation; this strategy is most likely to be 429'd by Cloudflare,
-    but it does occasionally work when all four other strategies have already
-    been blocked on this IP.
+    No TLS impersonation. Position 4 of 5 in the strategy chain, ahead of only
+    the widget+cffi last-resort. Likely to be 429'd by Cloudflare without TLS
+    impersonation, but occasionally succeeds when the cffi-based portal and
+    mobile flows have been blocked on the current IP.
 
     :param client: GarminClient instance.
     :param email: Garmin Connect email.
