@@ -539,6 +539,31 @@ class TestRefreshDiToken:
             with pytest.raises(GarminConnectionError, match="non-JSON"):
                 client._refresh_di_token()
 
+    def test_raises_authentication_error_when_access_token_missing(self) -> None:
+        """
+        If the DI token endpoint returns a 2xx JSON payload that doesn't contain
+        ``access_token``, raise a typed :class:`GarminAuthenticationError` instead of
+        leaking an untyped ``KeyError``.
+
+        A malformed refresh response is an auth-server problem, not a transport failure,
+        and callers that catch auth errors should see this case.
+        """
+
+        # Arrange.
+        client = GarminClient()
+        client.di_refresh_token = "old_refresh"
+        client.di_client_id = "GARMIN_OLD"
+
+        bad_response = MagicMock()
+        bad_response.ok = True
+        bad_response.status_code = 200
+        bad_response.json.return_value = {"token_type": "Bearer", "expires_in": 3600}
+
+        with patch.object(GarminClient, "_http_post", return_value=bad_response):
+            # Act & Assert.
+            with pytest.raises(GarminAuthenticationError, match="malformed"):
+                client._refresh_di_token()
+
 
 class TestRefreshSession:
     """

@@ -596,6 +596,17 @@ def complete_mfa_portal_web(client: Any, mfa_code: str) -> None:
             rate_limited_count += 1
             continue
 
+        # A non-2xx with a JSON error body (e.g. HTTP 500 returning {"error":...})
+        # is still an infrastructure failure, not a verification failure: Garmin
+        # never had a chance to judge the MFA code. Classify as transport before
+        # the JSON parse so the aggregate classifier doesn't mis-credit it as an
+        # auth failure.
+        if not r.ok:
+            body_preview = r.text[:200] if r.text else "(empty)"
+            failures.append(f"{mfa_url}: HTTP {r.status_code}: {body_preview}")
+            transport_error_count += 1
+            continue
+
         try:
             res = r.json()
         except Exception:

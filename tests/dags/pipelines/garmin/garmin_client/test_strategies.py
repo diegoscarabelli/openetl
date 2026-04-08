@@ -1071,6 +1071,7 @@ class TestCompleteMfaPortalWebAggregation:
         rate_limited.status_code = 429
         verify_failed = MagicMock()
         verify_failed.status_code = 200
+        verify_failed.ok = True
         verify_failed.json.return_value = {
             "responseStatus": {"type": "INVALID_MFA_CODE"}
         }
@@ -1080,3 +1081,32 @@ class TestCompleteMfaPortalWebAggregation:
         # Act & Assert.
         with pytest.raises(GarminAuthenticationError):
             strategies.complete_mfa_portal_web(client, "123456")
+
+    def test_non_2xx_with_json_body_counts_as_transport_error(self) -> None:
+        """
+        A non-2xx response with a JSON error body (e.g., HTTP 500 with ``{"error":
+        ...}``) means Garmin never reached the MFA verification step, so it must be
+        counted as an infrastructure failure.
+
+        Parsing the JSON and falling through to the verification-failure branch would
+        mis-credit this as an auth failure, which in turn would swallow retryable
+        backend errors behind a GarminAuthenticationError the caller cannot retry.
+        """
+
+        # Arrange.
+        client = self._make_portal_web_client()
+        server_error = MagicMock()
+        server_error.status_code = 500
+        server_error.ok = False
+        server_error.text = '{"error": "internal server error"}'
+        # ``r.json()`` would succeed on this body, so the guard must be the
+        # ``r.ok`` check rather than a try/except around .json().
+        server_error.json.return_value = {"error": "internal server error"}
+        client._mfa_portal_web_session.post.return_value = server_error
+
+        # Act & Assert.
+        with pytest.raises(GarminConnectionError) as excinfo:
+            strategies.complete_mfa_portal_web(client, "123456")
+        # Must be the base class, not the 429 subclass: no endpoint returned 429.
+        assert type(excinfo.value) is GarminConnectionError
+        assert client._mfa_portal_web_session.post.call_count == 2

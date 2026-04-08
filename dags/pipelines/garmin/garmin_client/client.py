@@ -561,7 +561,19 @@ class GarminClient:
                 f"DI token refresh returned non-JSON (status {r.status_code}): "
                 f"{preview!r}"
             ) from err
-        self.di_token = data["access_token"]
+        # A 2xx JSON response still has to contain an ``access_token``; otherwise
+        # a bare ``data["access_token"]`` would leak an untyped ``KeyError`` up
+        # the stack and look like a bug in the client rather than a malformed
+        # auth server response. ``refresh_token`` is intentionally optional here
+        # per OAuth2 RFC 6749 section 6: an omitted refresh_token means the
+        # existing one remains valid, so we fall back to it.
+        new_token = data.get("access_token")
+        if not new_token:
+            raise GarminAuthenticationError(
+                "DI token refresh response malformed: expected access_token, "
+                f"got keys {sorted(data.keys())}"
+            )
+        self.di_token = new_token
         self.di_refresh_token = data.get("refresh_token", self.di_refresh_token)
         self.di_client_id = (
             self._extract_client_id_from_jwt(self.di_token) or self.di_client_id
