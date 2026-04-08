@@ -69,7 +69,7 @@ class GarminExtractor:
         self.garmin_client = None
         self.user_id = None
 
-    def authenticate(self, token_store_dir: str = "~/.garminconnect") -> None:
+    def authenticate(self, token_store_dir: str) -> None:
         """
         Authenticate with Garmin Connect using pre-existing tokens and get user ID.
 
@@ -91,7 +91,12 @@ class GarminExtractor:
         - Pipeline idle for 30+ days (refresh token expired).
         - Authentication errors occur in the pipeline.
 
-        :param token_store_dir: Directory containing authentication tokens.
+        :param token_store_dir: Directory containing authentication tokens for a
+            single Garmin account (e.g. ``~/.garminconnect/<user_id>/``). The
+            vendored client appends ``garmin_tokens.json`` to this path when it
+            receives a directory, so the base multi-account directory
+            ``~/.garminconnect/`` is not a valid value: callers must pass the
+            per-user subdirectory for the account being extracted.
         :raises RuntimeError: If tokens are missing, expired, or invalid. Run
             refresh_garmin_tokens.py to resolve authentication issues.
         """

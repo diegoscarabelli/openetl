@@ -305,6 +305,8 @@ def portal_web_login_cffi(
 
     impersonations = ["safari", "safari_ios", "chrome120", "edge101", "chrome"]
     last_err: Optional[Exception] = None
+    last_429: Optional[GarminTooManyRequestsError] = None
+    rate_limited_count = 0
     for imp in impersonations:
         try:
             _LOGGER.debug("Trying portal+cffi with impersonation=%s", imp)
@@ -319,9 +321,15 @@ def portal_web_login_cffi(
             )
         except GarminAuthenticationError:
             raise
-        except (GarminTooManyRequestsError, GarminConnectionError) as e:
+        except GarminTooManyRequestsError as e:
             # Different TLS fingerprints can be rate-limited independently by
             # Cloudflare, so try the next impersonation before giving up.
+            _LOGGER.debug("portal+cffi(%s) 429: %s", imp, e)
+            last_err = e
+            last_429 = e
+            rate_limited_count += 1
+            continue
+        except GarminConnectionError as e:
             _LOGGER.debug("portal+cffi(%s) transient failure: %s", imp, e)
             last_err = e
             continue
@@ -329,10 +337,13 @@ def portal_web_login_cffi(
             _LOGGER.debug("portal+cffi(%s) failed: %s", imp, e)
             last_err = e
             continue
-    # Preserve the typed exception so the outer Client.login() strategy chain
-    # can detect an "all strategies were 429'd" condition.
-    if isinstance(last_err, GarminTooManyRequestsError):
-        raise last_err
+    # Classify the aggregate rather than trusting ``last_err`` alone: if every
+    # impersonation was rate-limited, surface ``GarminTooManyRequestsError`` so
+    # the outer ``Client.login()`` strategy chain can detect the all-429 case
+    # and apply backoff. A mix of 429 and non-429 failures collapses to
+    # ``GarminConnectionError`` because the rate limiter wasn't the sole cause.
+    if rate_limited_count == len(impersonations) and last_429 is not None:
+        raise last_429
     if last_err is not None:
         raise GarminConnectionError("All cffi impersonations failed") from last_err
     raise GarminConnectionError("All cffi impersonations failed")
@@ -913,6 +924,16 @@ def mobile_login(
     if r.status_code == 429:
         raise GarminTooManyRequestsError(
             "Login failed (429 Rate Limit). Try again later."
+        )
+
+    # Non-2xx with a parseable JSON error body still means the auth server
+    # never validated our credentials, so classify it as infrastructure rather
+    # than letting it fall through to the JSON-based "not SUCCESSFUL / not
+    # MFA_REQUIRED" branch where it would look like an auth failure.
+    if not r.ok:
+        body_preview = " ".join((r.text or "").split())[:200]
+        raise GarminConnectionError(
+            f"Login failed: HTTP {r.status_code}: {body_preview!r}"
         )
 
     try:

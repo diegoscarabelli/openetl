@@ -484,6 +484,69 @@ class TestPortalWebLoginCffi:
             with pytest.raises(GarminTooManyRequestsError):
                 strategies.portal_web_login_cffi(mock_client, "u", "p")
 
+    def test_mixed_429_and_transport_raises_connection_error(
+        self, mock_client: MagicMock
+    ) -> None:
+        """
+        A mix of 429 and non-429 failures across impersonations means rate limiting was
+        not the sole cause of the aggregate failure, so raising
+        :class:`GarminTooManyRequestsError` would mis-signal the outer strategy chain.
+        The classification must depend on the *count* of 429s, not on which one was
+        ``last_err`` at the end of the loop.
+
+        This test also pins that the previous logic (inspecting ``last_err`` only)
+        would have been incorrect here: the last impersonation is a 429, so a
+        ``last_err``-based classifier would have raised the 429 subclass even though
+        only 1 of 5 attempts actually hit rate limiting.
+        """
+
+        # Arrange.
+        call_count = {"n": 0}
+
+        def fake_login(*args, **kwargs):
+            call_count["n"] += 1
+            # 4 transport errors, then a 429 as the final attempt. Without the
+            # counter fix, ``last_err`` would be the 429 and the wrapper would
+            # incorrectly raise ``GarminTooManyRequestsError``.
+            if call_count["n"] < 5:
+                raise GarminConnectionError(f"transport fail {call_count['n']}")
+            raise GarminTooManyRequestsError("final 429")
+
+        with patch(
+            "dags.pipelines.garmin.garmin_client.strategies.HAS_CFFI", True
+        ), patch("dags.pipelines.garmin.garmin_client.strategies.cffi_requests"), patch(
+            "dags.pipelines.garmin.garmin_client.strategies._portal_web_login",
+            side_effect=fake_login,
+        ):
+            # Act & Assert.
+            with pytest.raises(GarminConnectionError) as excinfo:
+                strategies.portal_web_login_cffi(mock_client, "u", "p")
+            # Must be the base class, not the 429 subclass: rate limiting wasn't
+            # the sole cause of failure across the impersonations.
+            assert type(excinfo.value) is GarminConnectionError
+            assert call_count["n"] == 5
+
+    def test_raises_connection_error_when_no_impersonation_was_429(
+        self, mock_client: MagicMock
+    ) -> None:
+        """
+        When none of the impersonations were rate limited (all failed for other reasons,
+        including non-typed exceptions), the wrapper raises a generic
+        :class:`GarminConnectionError` with the last error as cause.
+        """
+
+        # Arrange.
+        with patch(
+            "dags.pipelines.garmin.garmin_client.strategies.HAS_CFFI", True
+        ), patch("dags.pipelines.garmin.garmin_client.strategies.cffi_requests"), patch(
+            "dags.pipelines.garmin.garmin_client.strategies._portal_web_login",
+            side_effect=RuntimeError("network down"),
+        ):
+            # Act & Assert.
+            with pytest.raises(GarminConnectionError) as excinfo:
+                strategies.portal_web_login_cffi(mock_client, "u", "p")
+            assert type(excinfo.value) is GarminConnectionError
+
 
 # ----------------------------------------------------------------------------------------
 # MOBILE PORTAL LOGIN (cffi)
@@ -597,6 +660,40 @@ class TestMobileLogin:
             # Act & Assert.
             with pytest.raises(GarminTooManyRequestsError):
                 strategies.mobile_login(mock_client, "u", "p")
+
+    def test_post_non_ok_raises_connection_error(self, mock_client: MagicMock) -> None:
+        """
+        A non-2xx credential POST with a parseable JSON error body is classified as
+        infrastructure (GarminConnectionError) before falling through to the JSON-based
+        ``SUCCESSFUL``/``MFA_REQUIRED`` branches.
+
+        Without this guard
+        the classifier would mis-credit a backend outage as a bad-credential
+        failure, swallowing a retryable error behind ``GarminAuthenticationError``.
+        """
+
+        # Arrange.
+        post_resp = MagicMock()
+        post_resp.status_code = 500
+        post_resp.ok = False
+        post_resp.text = '{"error": "internal server error"}'
+        # json() would succeed on this body, so the guard has to be r.ok rather
+        # than a try/except around .json().
+        post_resp.json.return_value = {"error": "internal server error"}
+
+        with patch(
+            "dags.pipelines.garmin.garmin_client.strategies.requests.Session"
+        ) as mock_session_cls, patch(
+            "dags.pipelines.garmin.garmin_client.strategies.time.sleep"
+        ):
+            mock_session = mock_session_cls.return_value
+            mock_session.post.return_value = post_resp
+
+            # Act & Assert.
+            with pytest.raises(GarminConnectionError) as excinfo:
+                strategies.mobile_login(mock_client, "u", "p")
+            # Must be the base class, not the 429 subclass.
+            assert type(excinfo.value) is GarminConnectionError
 
     def test_get_429_raises_before_sleeping(self, mock_client: MagicMock) -> None:
         """

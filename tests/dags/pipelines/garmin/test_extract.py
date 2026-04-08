@@ -115,7 +115,7 @@ class TestGarminExtractor:
         mock_garmin_client_class.from_tokens.return_value = mock_garmin_client
 
         # Act.
-        extractor.authenticate()
+        extractor.authenticate("~/.garminconnect/123456789")
 
         # Assert.
         assert extractor.garmin_client == mock_garmin_client
@@ -142,7 +142,7 @@ class TestGarminExtractor:
 
         # Act & Assert.
         with pytest.raises(RuntimeError, match="Garmin authentication"):
-            extractor.authenticate()
+            extractor.authenticate("~/.garminconnect/123456789")
 
         mock_logger.error.assert_called()
 
