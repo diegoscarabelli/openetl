@@ -213,13 +213,16 @@ class GarminClient:
         and User-Agent strings, to maximize the chance of slipping past
         Cloudflare's bot detection on any given day:
 
-        1. ``widget+cffi``: SSO embed widget HTML form (no clientId, not subject
-           to per-client rate limiting).
-        2. ``portal+cffi``: ``/portal/api/login`` with curl_cffi (5 browser TLS
-           fingerprints).
-        3. ``portal+requests``: same endpoint with plain requests.
-        4. ``mobile+cffi``: ``/mobile/api/login`` with curl_cffi (Safari).
-        5. ``mobile+requests``: same endpoint with plain requests.
+        1. ``portal+cffi``: ``/portal/api/login`` with curl_cffi (5 browser TLS
+           fingerprints). Currently the only strategy that succeeds reliably
+           in production, so it leads the chain.
+        2. ``portal+requests``: same endpoint with plain requests.
+        3. ``mobile+cffi``: ``/mobile/api/login`` with curl_cffi (Safari).
+        4. ``mobile+requests``: same endpoint with plain requests.
+        5. ``widget+cffi``: SSO embed widget HTML form (no clientId, not subject
+           to per-client rate limiting). Kept as a last-resort insurance: it
+           has 429'd reliably for months but is preserved in case Cloudflare
+           configuration changes restore it.
 
         :param email: Garmin Connect email.
         :param password: Garmin Connect password.
@@ -258,12 +261,6 @@ class GarminClient:
         if HAS_CFFI:
             strategy_chain.append(
                 (
-                    "widget+cffi",
-                    lambda *a, **k: strategies.widget_login_cffi(self, *a, **k),
-                )
-            )
-            strategy_chain.append(
-                (
                     "portal+cffi",
                     lambda *a, **k: strategies.portal_web_login_cffi(self, *a, **k),
                 )
@@ -281,6 +278,17 @@ class GarminClient:
         strategy_chain.append(
             ("mobile+requests", lambda *a, **k: strategies.mobile_login(self, *a, **k))
         )
+        # widget+cffi is kept as a last-resort fallback: it has 429'd reliably
+        # for months in production, so it's tried only after all other strategies
+        # have failed. Kept in the chain in case Cloudflare configuration changes
+        # restore it.
+        if HAS_CFFI:
+            strategy_chain.append(
+                (
+                    "widget+cffi",
+                    lambda *a, **k: strategies.widget_login_cffi(self, *a, **k),
+                )
+            )
 
         last_err: Optional[Exception] = None
         for name, method in strategy_chain:
