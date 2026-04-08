@@ -455,6 +455,34 @@ class TestGarminProcessor:
         # Now the function should return the sleep_id from the persisted instance.
         assert result == 123456789
 
+    def test_process_sleep_base_missing_calendar_date(self, processor, mock_session):
+        """
+        Test _process_sleep_base raises ValueError when calendarDate is missing.
+
+        Garmin's calendarDate is the source of truth for the sleep session day and is
+        used by the unique (user_id, calendar_date) constraint. Missing values must fail
+        loudly rather than silently insert a NULL.
+
+        :param processor: GarminProcessor fixture.
+        :param mock_session: Mock session fixture.
+        """
+
+        # Arrange.
+        sleep_data = {
+            "dailySleepDTO": {
+                "sleepStartTimestampGMT": 1641078000000,
+                "sleepEndTimestampGMT": 1641106800000,
+                "sleepStartTimestampLocal": 1641052800000,
+                "sleepTimeSeconds": 28800,
+                # Intentionally no calendarDate.
+            }
+        }
+        processor.user_id = 1
+
+        # Act & Assert.
+        with pytest.raises(ValueError, match="missing dailySleepDTO.calendarDate"):
+            processor._process_sleep_base(sleep_data, mock_session)
+
     @patch("dags.pipelines.garmin.process.upsert_model_instances")
     def test_process_sleep_movement(self, mock_upsert, processor, mock_session):
         """

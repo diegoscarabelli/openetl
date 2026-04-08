@@ -352,7 +352,7 @@ class Sleep(UpsertBase):
     timezone_offset_hours = Column(Float, nullable=False)
 
     # Sleep session metadata.
-    calendar_date = Column(String)
+    calendar_date = Column(Date, nullable=False)
     sleep_version = Column(Integer)
     age_group = Column(String)
     respiration_version = Column(Integer)

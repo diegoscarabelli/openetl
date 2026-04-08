@@ -787,7 +787,7 @@ CREATE TABLE IF NOT EXISTS garmin.sleep (
     , timezone_offset_hours FLOAT NOT NULL
 
     -- Sleep session metadata.
-    , calendar_date TEXT
+    , calendar_date DATE NOT NULL
     , sleep_version INTEGER
     , age_group TEXT
     , respiration_version INTEGER
@@ -877,6 +877,8 @@ CREATE TABLE IF NOT EXISTS garmin.sleep (
 -- Create indexes on sleep table.
 CREATE UNIQUE INDEX IF NOT EXISTS sleep_user_id_start_ts_unique_idx
 ON garmin.sleep (user_id, start_ts);
+CREATE UNIQUE INDEX IF NOT EXISTS sleep_user_id_calendar_date_unique_idx
+ON garmin.sleep (user_id, calendar_date);
 CREATE INDEX IF NOT EXISTS sleep_start_ts_brin_idx
 ON garmin.sleep USING brin (start_ts);
 CREATE INDEX IF NOT EXISTS sleep_end_ts_brin_idx

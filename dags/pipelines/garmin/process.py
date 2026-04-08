@@ -10,7 +10,7 @@ and health metrics.
 import json
 import re
 from collections import OrderedDict
-from datetime import datetime, timezone, timedelta
+from datetime import date, datetime, timezone, timedelta
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -1051,6 +1051,18 @@ class GarminProcessor(Processor):
         offset_seconds = (sleep_start_local - start_ts).total_seconds()
         timezone_offset_hours = offset_seconds / 3600
 
+        # Calendar date is required: it identifies the sleep session day and is used as
+        # the unique key (user_id, calendar_date) for upserts. Trust Garmin's value;
+        # raise if missing so the failure surfaces immediately rather than silently
+        # corrupting downstream queries.
+        calendar_date_str = daily_sleep_dto.pop("calendarDate", None)
+        if not calendar_date_str:
+            raise ValueError(
+                f"Sleep record for user_id={self.user_id} is missing "
+                f"dailySleepDTO.calendarDate; refusing to insert."
+            )
+        calendar_date = date.fromisoformat(calendar_date_str)
+
         # Start building sleep record.
         sleep_record = {
             # Foreign key field.
@@ -1059,6 +1071,9 @@ class GarminProcessor(Processor):
             "start_ts": start_ts,
             "end_ts": end_ts,
             "timezone_offset_hours": timezone_offset_hours,
+            # Non-nullable calendar date (Garmin source of truth for the sleep session
+            # day).
+            "calendar_date": calendar_date,
         }
 
         # Remove the id field from JSON (not used: sleep_id is auto-generated).
@@ -1092,7 +1107,6 @@ class GarminProcessor(Processor):
         # Auto-convert other nullable sleep fields to snake_case.
         sleep_fields_nullable = [
             # Basic sleep data.
-            "calendarDate",
             "sleepVersion",
             "ageGroup",
             "respirationVersion",
