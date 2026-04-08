@@ -29,7 +29,7 @@ import re
 import traceback
 from datetime import date, datetime, timezone
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional, Tuple
 
 from sqlalchemy.orm import Session
 
@@ -42,7 +42,9 @@ from dags.pipelines.garmin.sqla_models import Sleep, SleepLevel
 SLEEP_FILENAME_RE = re.compile(r"^(?P<user_id>\d+)_SLEEP_.*\.json$")
 
 
-def _parse_sleep_file(file_path: Path) -> Optional[tuple]:
+def _parse_sleep_file(
+    file_path: Path,
+) -> Optional[Tuple[int, date, list[dict[str, Any]]]]:
     """
     Parse a SLEEP JSON file and extract the calendar date and sleep levels.
 
@@ -114,8 +116,10 @@ def backfill_sleep_level(store_dir: Path) -> None:
     Walk store_dir for SLEEP JSON files and backfill garmin.sleep_level.
 
     For each file: parse calendar_date, look up the existing sleep row by
-    (user_id, calendar_date), delete any existing sleep_level rows for that sleep_id,
-    and insert fresh rows from the file's sleepLevels array.
+    (user_id, calendar_date), and insert sleep_level rows from the file's
+    sleepLevels array using INSERT ... ON CONFLICT DO NOTHING. Existing rows for
+    the same (sleep_id, start_ts) are left in place, so the script can be re-run
+    safely without deleting prior data.
 
     :param store_dir: Garmin store directory containing SLEEP JSON files.
     """
