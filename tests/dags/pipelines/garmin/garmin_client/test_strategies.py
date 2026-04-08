@@ -948,3 +948,135 @@ class TestCompleteMfaHardening:
         # Act & Assert.
         with pytest.raises(GarminAuthenticationError, match="invalid JSON"):
             strategies.complete_mfa(mock_client, "123456")
+
+
+class TestCompleteMfaPortalWebAggregation:
+    """
+    Tests for the aggregate failure classification in ``complete_mfa_portal_web``.
+
+    This function tries two endpoints (portal + mobile fallback) and must raise the
+    typed exception that matches the underlying cause across both attempts:
+    all-429 → GarminTooManyRequestsError, all-transport → GarminConnectionError,
+    any verification response → GarminAuthenticationError.
+    """
+
+    def _make_portal_web_client(self) -> MagicMock:
+        """
+        Build a mock client populated with the ``_mfa_portal_web_*`` attributes
+        ``complete_mfa_portal_web`` expects to read.
+        """
+
+        client = MagicMock()
+        client._sso = "https://sso.garmin.com"
+        client._mfa_portal_web_session = MagicMock()
+        client._mfa_portal_web_params = {"clientId": "GarminConnect"}
+        client._mfa_portal_web_headers = {"User-Agent": "test"}
+        client._mfa_method = "email"
+        return client
+
+    def test_all_429_raises_too_many_requests(self) -> None:
+        """
+        When every attempted MFA endpoint returns HTTP 429, the aggregate failure is
+        rate limiting and should raise ``GarminTooManyRequestsError`` so callers can
+        apply backoff instead of treating the failure as bad credentials.
+        """
+
+        # Arrange.
+        client = self._make_portal_web_client()
+        rate_limited = MagicMock()
+        rate_limited.status_code = 429
+        client._mfa_portal_web_session.post.return_value = rate_limited
+
+        # Act & Assert.
+        with pytest.raises(GarminTooManyRequestsError):
+            strategies.complete_mfa_portal_web(client, "123456")
+        # Both endpoints were tried before classification.
+        assert client._mfa_portal_web_session.post.call_count == 2
+
+    def test_all_transport_errors_raise_connection_error(self) -> None:
+        """
+        When every attempted MFA endpoint fails with a transport-level exception
+        (network down, TLS reset), the aggregate failure is infrastructure and should
+        raise ``GarminConnectionError`` rather than ``GarminAuthenticationError``.
+        """
+
+        # Arrange.
+        client = self._make_portal_web_client()
+        client._mfa_portal_web_session.post.side_effect = ConnectionError(
+            "network down"
+        )
+
+        # Act & Assert.
+        with pytest.raises(GarminConnectionError) as excinfo:
+            strategies.complete_mfa_portal_web(client, "123456")
+        # GarminTooManyRequestsError is a subclass of GarminConnectionError, so
+        # pin the exact type to make sure the wrong branch wasn't triggered.
+        assert type(excinfo.value) is GarminConnectionError
+        assert client._mfa_portal_web_session.post.call_count == 2
+
+    def test_all_non_json_responses_raise_connection_error(self) -> None:
+        """
+        Non-JSON responses (almost always Cloudflare HTML challenges) count as
+        transport-level failures for aggregate classification, so two non-JSON responses
+        map to ``GarminConnectionError``, not ``GarminAuthenticationError``.
+        """
+
+        # Arrange.
+        client = self._make_portal_web_client()
+        html_resp = MagicMock()
+        html_resp.status_code = 200
+        html_resp.text = "<html>Cloudflare challenge</html>"
+        html_resp.json.side_effect = ValueError("not json")
+        client._mfa_portal_web_session.post.return_value = html_resp
+
+        # Act & Assert.
+        with pytest.raises(GarminConnectionError) as excinfo:
+            strategies.complete_mfa_portal_web(client, "123456")
+        assert type(excinfo.value) is GarminConnectionError
+        assert client._mfa_portal_web_session.post.call_count == 2
+
+    def test_mixed_429_and_transport_raises_too_many_requests(self) -> None:
+        """
+        A mix of 429 and transport errors still means no endpoint returned a real
+        verification response, and the 429 branch wins over transport (more specific
+        signal that Garmin is throttling).
+        """
+
+        # Arrange.
+        client = self._make_portal_web_client()
+        rate_limited = MagicMock()
+        rate_limited.status_code = 429
+        # First endpoint: 429. Second endpoint: transport error.
+        client._mfa_portal_web_session.post.side_effect = [
+            rate_limited,
+            ConnectionError("tls reset"),
+        ]
+
+        # Act & Assert.
+        with pytest.raises(GarminTooManyRequestsError):
+            strategies.complete_mfa_portal_web(client, "123456")
+
+    def test_any_verification_response_raises_auth_error(self) -> None:
+        """
+        If at least one endpoint returns a parseable non-SUCCESSFUL JSON body, the
+        aggregate is classified as an auth failure regardless of the other endpoint's
+        failure mode.
+
+        A real verification response is the definitive signal.
+        """
+
+        # Arrange.
+        client = self._make_portal_web_client()
+        rate_limited = MagicMock()
+        rate_limited.status_code = 429
+        verify_failed = MagicMock()
+        verify_failed.status_code = 200
+        verify_failed.json.return_value = {
+            "responseStatus": {"type": "INVALID_MFA_CODE"}
+        }
+        # Endpoint 1: 429. Endpoint 2: real verification failure.
+        client._mfa_portal_web_session.post.side_effect = [rate_limited, verify_failed]
+
+        # Act & Assert.
+        with pytest.raises(GarminAuthenticationError):
+            strategies.complete_mfa_portal_web(client, "123456")

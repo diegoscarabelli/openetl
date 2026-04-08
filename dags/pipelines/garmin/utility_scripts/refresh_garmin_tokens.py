@@ -282,12 +282,8 @@ def refresh_tokens(email: str, password: str, base_token_dir: str = "~/.garminco
         token_path.mkdir(exist_ok=True)
         token_path.chmod(0o700)
 
+        # client.dump() writes garmin_tokens.json and locks it to 0o600.
         client.dump(str(token_path))
-
-        # Lock down token files to owner-only (client.dump uses default umask).
-        for token_file in token_path.iterdir():
-            if token_file.is_file():
-                token_file.chmod(0o600)
 
         logger.info(
             f"✅ Tokens successfully saved to {token_path}.\n"

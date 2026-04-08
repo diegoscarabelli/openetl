@@ -532,7 +532,12 @@ def complete_mfa_portal_web(client: Any, mfa_code: str) -> None:
 
     :param client: GarminClient instance with portal web MFA state.
     :param mfa_code: 6-digit MFA code.
-    :raises GarminAuthenticationError: If verification fails on all endpoints.
+    :raises GarminTooManyRequestsError: If every attempted endpoint returned HTTP 429
+        or a 429 in the JSON body (pure rate-limit aggregate).
+    :raises GarminConnectionError: If every attempted endpoint failed with a
+        transport/non-JSON error (pure infrastructure aggregate).
+    :raises GarminAuthenticationError: If at least one endpoint returned a parseable
+        non-SUCCESSFUL response (definitive verification failure).
     """
 
     sess = client._mfa_portal_web_session
@@ -561,7 +566,16 @@ def complete_mfa_portal_web(client: Any, mfa_code: str) -> None:
         ),
     ]
 
+    # Track the failure type per endpoint so the aggregate exception can match
+    # the underlying cause (rate limit vs transport vs verification failure).
+    # A pure all-rate-limit aggregate should raise GarminTooManyRequestsError so
+    # callers can apply backoff; a pure all-transport aggregate should raise
+    # GarminConnectionError so callers don't mistake infrastructure problems for
+    # bad credentials. Only actual verification responses (parsed JSON that was
+    # not SUCCESSFUL) count as auth failures.
     failures = []
+    rate_limited_count = 0
+    transport_error_count = 0
     for mfa_url, params, headers in mfa_endpoints:
         _LOGGER.debug("Trying MFA endpoint: %s", mfa_url)
         try:
@@ -574,10 +588,12 @@ def complete_mfa_portal_web(client: Any, mfa_code: str) -> None:
             )
         except Exception as e:
             failures.append(f"{mfa_url}: connection error {e}")
+            transport_error_count += 1
             continue
 
         if r.status_code == 429:
             failures.append(f"{mfa_url}: HTTP 429")
+            rate_limited_count += 1
             continue
 
         try:
@@ -585,10 +601,15 @@ def complete_mfa_portal_web(client: Any, mfa_code: str) -> None:
         except Exception:
             body_preview = r.text[:200] if r.text else "(empty)"
             failures.append(f"{mfa_url}: HTTP {r.status_code} non-JSON: {body_preview}")
+            # Non-JSON responses are almost always Cloudflare HTML challenges,
+            # which are effectively rate limiting at the infrastructure layer.
+            # Count as transport so the aggregate is classified consistently.
+            transport_error_count += 1
             continue
 
         if res.get("error", {}).get("status-code") == "429":
             failures.append(f"{mfa_url}: 429 in JSON body")
+            rate_limited_count += 1
             continue
 
         if res.get("responseStatus", {}).get("type") == "SUCCESSFUL":
@@ -603,9 +624,17 @@ def complete_mfa_portal_web(client: Any, mfa_code: str) -> None:
 
         failures.append(f"{mfa_url}: HTTP {r.status_code} => {res}")
 
-    raise GarminAuthenticationError(
-        f"MFA Verification failed on all endpoints: {'; '.join(failures)}"
-    )
+    # All endpoints exhausted. Classify the aggregate by precedence: any real
+    # verification failure wins (auth); then any rate-limit result (throttle);
+    # otherwise the aggregate is purely transport-level.
+    aggregate_msg = f"MFA Verification failed on all endpoints: {'; '.join(failures)}"
+    total = len(mfa_endpoints)
+    auth_failure_count = total - rate_limited_count - transport_error_count
+    if auth_failure_count > 0:
+        raise GarminAuthenticationError(aggregate_msg)
+    if rate_limited_count > 0:
+        raise GarminTooManyRequestsError(aggregate_msg)
+    raise GarminConnectionError(aggregate_msg)
 
 
 # ----------------------------------------------------------------------------------------
