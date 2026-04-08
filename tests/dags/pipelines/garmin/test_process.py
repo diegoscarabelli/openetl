@@ -624,16 +624,18 @@ class TestGarminProcessor:
         self, mock_upsert, processor, mock_session
     ):
         """
-        Test _process_sleep_level when every interval has an unknown stage code.
+        Test _process_sleep_level when every interval is unparseable.
 
-        Should log and return without calling upsert (no spurious empty insert).
+        Covers both unknown int stage codes (ValueError) and non-numeric activityLevel
+        values like dicts (TypeError). Should log and return without calling upsert (no
+        spurious empty insert).
 
         :param mock_upsert: Mock upsert function.
         :param processor: GarminProcessor fixture.
         :param mock_session: Mock session fixture.
         """
 
-        # Arrange: payload with only unknown stage codes.
+        # Arrange: payload with one unknown int code and one non-numeric value.
         data = {
             "sleepLevels": [
                 {
@@ -644,7 +646,7 @@ class TestGarminProcessor:
                 {
                     "startGMT": "2022-01-01T01:00:00.0",
                     "endGMT": "2022-01-01T02:00:00.0",
-                    "activityLevel": 100,
+                    "activityLevel": {"unexpected": "object"},
                 },
             ]
         }

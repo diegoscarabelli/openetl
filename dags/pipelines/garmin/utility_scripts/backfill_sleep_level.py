@@ -67,7 +67,16 @@ def _parse_sleep_file(
     if not calendar_date_str:
         LOGGER.warning(f"⚠️ Skipping {file_path.name}: no dailySleepDTO.calendarDate.")
         return None
-    calendar_date = date.fromisoformat(calendar_date_str)
+    try:
+        calendar_date = date.fromisoformat(calendar_date_str)
+    except ValueError:
+        # Treat malformed dates as a skip rather than a hard failure so one bad
+        # file does not poison the entire backfill run stats.
+        LOGGER.warning(
+            f"⚠️ Skipping {file_path.name}: invalid dailySleepDTO.calendarDate "
+            f"{calendar_date_str!r}."
+        )
+        return None
 
     sleep_levels = sleep_data.get("sleepLevels") or []
     return user_id, calendar_date, sleep_levels
@@ -91,10 +100,12 @@ def _build_sleep_level_records(sleep_id: int, sleep_levels: list) -> list:
             continue
         try:
             stage = SleepStage(int(activity_level))
-        except ValueError:
+        except (ValueError, TypeError):
+            # ValueError: unknown int code. TypeError: activity_level is not
+            # numeric/string (malformed JSON). Both treated as skip.
             LOGGER.warning(
-                f"⚠️ Unknown sleep stage code {activity_level} for sleep_id="
-                f"{sleep_id}; skipping interval."
+                f"⚠️ Unparseable sleep stage value {activity_level!r} for "
+                f"sleep_id={sleep_id}; skipping interval."
             )
             continue
         records.append(

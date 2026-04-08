@@ -1279,10 +1279,12 @@ class GarminProcessor(Processor):
                 continue
             try:
                 stage = SleepStage(int(activity_level))
-            except ValueError:
+            except (ValueError, TypeError):
+                # ValueError: unknown int code. TypeError: activity_level is not
+                # numeric/string (malformed JSON). Both treated as skip.
                 LOGGER.warning(
-                    f"⚠️ Unknown sleep stage code {activity_level} for sleep_id="
-                    f"{sleep_id}; skipping interval."
+                    f"⚠️ Unparseable sleep stage value {activity_level!r} for "
+                    f"sleep_id={sleep_id}; skipping interval."
                 )
                 continue
             level_records.append(
