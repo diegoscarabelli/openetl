@@ -1,0 +1,867 @@
+"""
+Login strategy implementations for the vendored Garmin Connect client.
+
+Garmin's Cloudflare WAF aggressively rate-limits the SSO login endpoints, and the
+exact endpoint that gets blocked rotates over time. To stay reliable, the client
+tries five fallback strategies in order until one succeeds:
+
+1. ``_widget_login_cffi``: SSO embed widget HTML form flow with curl_cffi TLS
+   impersonation. No clientId, so not subject to per-client rate limiting.
+2. ``_portal_web_login_cffi``: ``/portal/api/login`` (the endpoint connect.garmin.com
+   itself uses) with curl_cffi, trying five browser TLS fingerprints.
+3. ``_portal_web_login_requests``: same endpoint with plain ``requests`` and a
+   random browser User-Agent.
+4. ``_portal_login``: mobile ``/mobile/api/login`` with curl_cffi (Safari TLS).
+5. ``_mobile_login``: mobile ``/mobile/api/login`` with plain ``requests``.
+
+All three portal flows (``_portal_web_login``, ``_portal_login``, ``_mobile_login``)
+sleep 30-45 seconds between the SSO page GET and the credential POST. Without this
+delay Garmin's Cloudflare WAF returns 429 immediately, treating the back-to-back
+requests as bot-like.
+
+These functions are written as plain functions taking ``client`` as the first
+argument so the file stays decoupled from the ``GarminClient`` class definition.
+The class binds them as bound methods at import time.
+"""
+
+import logging
+import random
+import re
+import time
+from typing import Any, Callable, Optional, Tuple
+
+import requests
+
+try:
+    from curl_cffi import requests as cffi_requests
+
+    HAS_CFFI = True
+except ImportError:
+    HAS_CFFI = False
+
+from .constants import (
+    LOGIN_DELAY_MAX_S,
+    LOGIN_DELAY_MIN_S,
+    MOBILE_SSO_CLIENT_ID,
+    MOBILE_SSO_SERVICE_URL,
+    MOBILE_SSO_USER_AGENT,
+    PORTAL_SSO_CLIENT_ID,
+    PORTAL_SSO_SERVICE_URL,
+    _random_browser_headers,
+)
+from .exceptions import (
+    GarminAuthenticationError,
+    GarminConnectionError,
+    GarminTooManyRequestsError,
+)
+
+_LOGGER = logging.getLogger(__name__)
+
+
+# Compiled at module level to amortize regex compilation cost across many login attempts.
+_CSRF_RE = re.compile(r'name="_csrf"\s+value="(.+?)"')
+_TITLE_RE = re.compile(r"<title>(.+?)</title>")
+_TICKET_RE = re.compile(r'embed\?ticket=([^"]+)"')
+
+
+# ----------------------------------------------------------------------------------------
+# SSO EMBED WIDGET LOGIN (HTML form flow, no clientId)
+# ----------------------------------------------------------------------------------------
+
+
+def widget_login_cffi(
+    client: Any,
+    email: str,
+    password: str,
+    prompt_mfa: Optional[Callable[[], str]] = None,
+    return_on_mfa: bool = False,
+) -> Tuple[Optional[str], Any]:
+    """
+    Log in via the SSO embed widget using curl_cffi TLS impersonation.
+
+    This is the classic HTML form-based flow used by ``garth`` for years. It does
+    not use a clientId parameter, so it is not subject to the per-client rate
+    limiting that affects the portal and mobile JSON API endpoints.
+
+    Requires ``curl_cffi`` for TLS fingerprint impersonation to pass Cloudflare bot
+    detection. Cannot run otherwise.
+
+    :param client: GarminClient instance.
+    :param email: Garmin Connect email.
+    :param password: Garmin Connect password.
+    :param prompt_mfa: Callable returning a 6-digit MFA code, used when MFA is
+        required and ``return_on_mfa`` is False.
+    :param return_on_mfa: If True and MFA is required, return early with
+        ``("needs_mfa", session)`` so the caller can complete MFA later via
+        ``resume_login``.
+    :return: ``(None, None)`` on full success, or ``("needs_mfa", session)`` if
+        MFA was required and ``return_on_mfa`` is True.
+    :raises GarminTooManyRequestsError: On HTTP 429.
+    :raises GarminAuthenticationError: On invalid credentials or missing MFA prompt.
+    :raises GarminConnectionError: On HTTP errors or unexpected page contents.
+    """
+
+    if not HAS_CFFI:
+        raise GarminConnectionError("curl_cffi not installed; widget+cffi unavailable")
+
+    sess: Any = cffi_requests.Session(impersonate="chrome", timeout=30)
+
+    sso_base = f"{client._sso}/sso"
+    sso_embed = f"{sso_base}/embed"
+    embed_params = {
+        "id": "gauth-widget",
+        "embedWidget": "true",
+        "gauthHost": sso_base,
+    }
+    signin_params = {
+        **embed_params,
+        "gauthHost": sso_embed,
+        "service": sso_embed,
+        "source": sso_embed,
+        "redirectAfterAccountLoginUrl": sso_embed,
+        "redirectAfterAccountCreationUrl": sso_embed,
+    }
+
+    # Step 1: GET /sso/embed to establish session cookies.
+    r = sess.get(sso_embed, params=embed_params)
+    if r.status_code == 429:
+        raise GarminTooManyRequestsError("Widget login returned 429 on embed page")
+    if not r.ok:
+        raise GarminConnectionError(
+            f"Widget login: embed page returned HTTP {r.status_code}"
+        )
+
+    # Step 2: GET /sso/signin to obtain CSRF token.
+    r = sess.get(
+        f"{sso_base}/signin",
+        params=signin_params,
+        headers={"Referer": sso_embed},
+    )
+    if r.status_code == 429:
+        raise GarminTooManyRequestsError("Widget login returned 429 on sign-in page")
+    csrf_match = _CSRF_RE.search(r.text)
+    if not csrf_match:
+        raise GarminConnectionError(
+            "Widget login: could not find CSRF token in sign-in page"
+        )
+
+    # Step 3: POST credentials via HTML form.
+    r = sess.post(
+        f"{sso_base}/signin",
+        params=signin_params,
+        headers={"Referer": r.url},
+        data={
+            "username": email,
+            "password": password,
+            "embed": "true",
+            "_csrf": csrf_match.group(1),
+        },
+        timeout=30,
+    )
+
+    if r.status_code == 429:
+        raise GarminTooManyRequestsError("Widget login returned 429")
+    if not r.ok:
+        raise GarminConnectionError(
+            f"Widget login: credential POST returned HTTP {r.status_code}"
+        )
+
+    title_match = _TITLE_RE.search(r.text)
+    title = title_match.group(1) if title_match else ""
+
+    # Step 4: Handle MFA.
+    if "MFA" in title:
+        client._widget_session = sess
+        client._widget_signin_params = signin_params
+        client._widget_last_resp = r
+
+        if return_on_mfa:
+            return "needs_mfa", sess
+
+        if prompt_mfa:
+            mfa_code = prompt_mfa()
+            ticket = complete_mfa_widget(client, mfa_code)
+            client._establish_session(ticket, sess=sess, service_url=sso_embed)
+            del client._widget_session
+            del client._widget_signin_params
+            del client._widget_last_resp
+            return None, None
+        raise GarminAuthenticationError(
+            "MFA Required but no prompt_mfa mechanism supplied"
+        )
+
+    if title != "Success":
+        # Detect credential failures explicitly so we don't fall through to other
+        # strategies with bad credentials and waste their attempts.
+        title_lower = title.lower()
+        if any(
+            hint in title_lower for hint in ("locked", "invalid", "error", "incorrect")
+        ):
+            raise GarminAuthenticationError(
+                f"Widget login: authentication failed ('{title}')"
+            )
+        raise GarminConnectionError(f"Widget login: unexpected title '{title}'")
+
+    # Step 5: Extract service ticket from success page.
+    ticket_match = _TICKET_RE.search(r.text)
+    if not ticket_match:
+        raise GarminConnectionError(
+            "Widget login: could not find service ticket in response"
+        )
+    client._establish_session(ticket_match.group(1), sess=sess, service_url=sso_embed)
+    return None, None
+
+
+def complete_mfa_widget(client: Any, mfa_code: str) -> str:
+    """
+    Complete MFA verification for the widget flow and return the service ticket.
+
+    Uses the session, signin params, and CSRF state stashed by ``widget_login_cffi``
+    when it detected an MFA challenge.
+
+    :param client: GarminClient instance with widget MFA state.
+    :param mfa_code: 6-digit MFA code from email/SMS/authenticator app.
+    :return: Service ticket extracted from the success page.
+    :raises GarminAuthenticationError: On verification failure.
+    :raises GarminTooManyRequestsError: On HTTP 429.
+    :raises GarminConnectionError: On HTTP errors.
+    """
+
+    sess = client._widget_session
+    r = client._widget_last_resp
+
+    csrf_match = _CSRF_RE.search(r.text)
+    if not csrf_match:
+        raise GarminAuthenticationError("Widget MFA: could not find CSRF token")
+
+    r = sess.post(
+        f"{client._sso}/sso/verifyMFA/loginEnterMfaCode",
+        params=client._widget_signin_params,
+        headers={"Referer": r.url},
+        data={
+            "mfa-code": mfa_code,
+            "embed": "true",
+            "_csrf": csrf_match.group(1),
+            "fromPage": "setupEnterMfaCode",
+        },
+        timeout=30,
+    )
+
+    if r.status_code == 429:
+        raise GarminTooManyRequestsError("Widget MFA returned 429")
+    if not r.ok:
+        raise GarminConnectionError(
+            f"Widget MFA: verify endpoint returned HTTP {r.status_code}"
+        )
+
+    title_match = _TITLE_RE.search(r.text)
+    title = title_match.group(1) if title_match else ""
+
+    if title != "Success":
+        raise GarminAuthenticationError(f"Widget MFA verification failed: '{title}'")
+
+    ticket_match = _TICKET_RE.search(r.text)
+    if not ticket_match:
+        raise GarminAuthenticationError("Widget MFA: could not find service ticket")
+    return ticket_match.group(1)
+
+
+# ----------------------------------------------------------------------------------------
+# PORTAL WEB LOGIN (desktop browser flow used by connect.garmin.com)
+# ----------------------------------------------------------------------------------------
+
+
+def portal_web_login_cffi(
+    client: Any,
+    email: str,
+    password: str,
+    prompt_mfa: Optional[Callable[[], str]] = None,
+    return_on_mfa: bool = False,
+) -> Tuple[Optional[str], Any]:
+    """
+    Log in via the portal web endpoint using curl_cffi TLS impersonation.
+
+    Tries five browser TLS fingerprints in order. Safari is less likely to be
+    blocked by Cloudflare than Chrome.
+
+    :param client: GarminClient instance.
+    :param email: Garmin Connect email.
+    :param password: Garmin Connect password.
+    :param prompt_mfa: Callable returning a 6-digit MFA code (see widget flow).
+    :param return_on_mfa: If True, return early on MFA challenge.
+    :return: ``(None, None)`` on success, or ``("needs_mfa", session)`` on MFA.
+    :raises GarminConnectionError: If all five impersonations fail.
+    """
+
+    if not HAS_CFFI:
+        raise GarminConnectionError("curl_cffi not installed; portal+cffi unavailable")
+
+    impersonations = ["safari", "safari_ios", "chrome120", "edge101", "chrome"]
+    last_err: Optional[Exception] = None
+    for imp in impersonations:
+        try:
+            _LOGGER.debug("Trying portal+cffi with impersonation=%s", imp)
+            sess: Any = cffi_requests.Session(impersonate=imp)  # type: ignore[arg-type]
+            return _portal_web_login(
+                client,
+                sess,
+                email,
+                password,
+                prompt_mfa=prompt_mfa,
+                return_on_mfa=return_on_mfa,
+            )
+        except GarminAuthenticationError:
+            raise
+        except Exception as e:
+            _LOGGER.debug("portal+cffi(%s) failed: %s", imp, e)
+            last_err = e
+            continue
+    raise last_err or GarminConnectionError("All cffi impersonations failed")
+
+
+def portal_web_login_requests(
+    client: Any,
+    email: str,
+    password: str,
+    prompt_mfa: Optional[Callable[[], str]] = None,
+    return_on_mfa: bool = False,
+) -> Tuple[Optional[str], Any]:
+    """
+    Log in via the portal web endpoint using plain ``requests`` and a random browser
+    User-Agent.
+
+    Acts as a no-curl_cffi fallback for the portal flow.
+
+    :param client: GarminClient instance.
+    :param email: Garmin Connect email.
+    :param password: Garmin Connect password.
+    :param prompt_mfa: Callable returning a 6-digit MFA code.
+    :param return_on_mfa: If True, return early on MFA challenge.
+    :return: ``(None, None)`` on success, or ``("needs_mfa", session)`` on MFA.
+    """
+
+    sess = requests.Session()
+    sess.headers.update(_random_browser_headers())
+    return _portal_web_login(
+        client,
+        sess,
+        email,
+        password,
+        prompt_mfa=prompt_mfa,
+        return_on_mfa=return_on_mfa,
+    )
+
+
+def _portal_web_login(
+    client: Any,
+    sess: Any,
+    email: str,
+    password: str,
+    prompt_mfa: Optional[Callable[[], str]] = None,
+    return_on_mfa: bool = False,
+) -> Tuple[Optional[str], Any]:
+    """
+    Shared portal web login implementation used by the cffi and requests variants.
+
+    Hits ``/portal/api/login``, which is the same endpoint the Garmin Connect
+    React app uses. Cloudflare cannot block it without breaking the website
+    itself, but it does rate-limit consecutive GET+POST without intervening
+    delay. The 30-45s sleep between Step 1 and Step 2 mimics natural browser
+    behavior and consistently avoids the 429 block.
+
+    :param client: GarminClient instance.
+    :param sess: Pre-built session (cffi or plain requests).
+    :param email: Garmin Connect email.
+    :param password: Garmin Connect password.
+    :param prompt_mfa: Callable returning a 6-digit MFA code.
+    :param return_on_mfa: If True, return early on MFA challenge.
+    :return: ``(None, None)`` on success, or ``("needs_mfa", session)`` on MFA.
+    :raises GarminTooManyRequestsError: On HTTP 429.
+    :raises GarminAuthenticationError: On invalid credentials or missing MFA prompt.
+    :raises GarminConnectionError: On HTTP errors or unexpected response shape.
+    """
+
+    signin_url = f"{client._sso}/portal/sso/en-US/sign-in"
+
+    # Generate a consistent random browser identity for this login attempt.
+    browser_hdrs = _random_browser_headers()
+
+    # Step 1: GET the sign-in page to establish session cookies.
+    get_headers = {
+        **browser_hdrs,
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        "Accept-Language": "en-US,en;q=0.9",
+    }
+    sess.get(
+        signin_url,
+        params={
+            "clientId": PORTAL_SSO_CLIENT_ID,
+            "service": PORTAL_SSO_SERVICE_URL,
+        },
+        headers=get_headers,
+        timeout=30,
+    )
+
+    # Garmin's Cloudflare WAF rate-limits requests that go directly from the SSO
+    # page GET to the login POST without intervening activity.
+    delay_s = random.uniform(LOGIN_DELAY_MIN_S, LOGIN_DELAY_MAX_S)
+    _LOGGER.debug("Portal login: sleeping %.1fs before credential POST", delay_s)
+    time.sleep(delay_s)
+
+    # Step 2: POST credentials to the portal login API.
+    login_url = f"{client._sso}/portal/api/login"
+    login_params = {
+        "clientId": PORTAL_SSO_CLIENT_ID,
+        "locale": "en-US",
+        "service": PORTAL_SSO_SERVICE_URL,
+    }
+    post_headers = {
+        **browser_hdrs,
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Content-Type": "application/json",
+        "Origin": client._sso,
+        "Referer": (
+            f"{signin_url}?clientId={PORTAL_SSO_CLIENT_ID}"
+            f"&service={PORTAL_SSO_SERVICE_URL}"
+        ),
+    }
+
+    r = sess.post(
+        login_url,
+        params=login_params,
+        headers=post_headers,
+        json={
+            "username": email,
+            "password": password,
+            "rememberMe": True,
+            "captchaToken": "",
+        },
+        timeout=30,
+    )
+
+    if r.status_code == 429:
+        raise GarminTooManyRequestsError(
+            "Portal login returned 429. Cloudflare is blocking this request."
+        )
+
+    try:
+        res = r.json()
+    except Exception as err:
+        raise GarminConnectionError(
+            f"Portal login failed (non-JSON): HTTP {r.status_code}"
+        ) from err
+
+    resp_type = res.get("responseStatus", {}).get("type")
+
+    if resp_type == "MFA_REQUIRED":
+        client._mfa_method = res.get("customerMfaInfo", {}).get(
+            "mfaLastMethodUsed", "email"
+        )
+        client._mfa_portal_web_session = sess
+        client._mfa_portal_web_params = login_params
+        client._mfa_portal_web_headers = post_headers
+
+        if return_on_mfa:
+            return "needs_mfa", sess
+
+        if prompt_mfa:
+            mfa_code = prompt_mfa()
+            complete_mfa_portal_web(client, mfa_code)
+            return None, None
+        raise GarminAuthenticationError(
+            "MFA Required but no prompt_mfa mechanism supplied"
+        )
+
+    if resp_type == "SUCCESSFUL":
+        ticket = res["serviceTicketId"]
+        client._establish_session(ticket, sess=sess, service_url=PORTAL_SSO_SERVICE_URL)
+        return None, None
+
+    if resp_type == "INVALID_USERNAME_PASSWORD":
+        raise GarminAuthenticationError(
+            "401 Unauthorized (Invalid Username or Password)"
+        )
+
+    raise GarminConnectionError(f"Portal web login failed: {res}")
+
+
+def complete_mfa_portal_web(client: Any, mfa_code: str) -> None:
+    """
+    Complete MFA via the portal web flow.
+
+    Tries ``/portal/api/mfa/verifyCode`` first, then ``/mobile/api/mfa/verifyCode``
+    as a fallback. Both share the SSO session cookies, but Garmin occasionally
+    routes one or the other through a different rate limit bucket, so trying
+    both gives the best success rate.
+
+    :param client: GarminClient instance with portal web MFA state.
+    :param mfa_code: 6-digit MFA code.
+    :raises GarminAuthenticationError: If verification fails on all endpoints.
+    """
+
+    sess = client._mfa_portal_web_session
+    mfa_json = {
+        "mfaMethod": getattr(client, "_mfa_method", "email"),
+        "mfaVerificationCode": mfa_code,
+        "rememberMyBrowser": True,
+        "reconsentList": [],
+        "mfaSetup": False,
+    }
+
+    mfa_endpoints = [
+        (
+            f"{client._sso}/portal/api/mfa/verifyCode",
+            client._mfa_portal_web_params,
+            client._mfa_portal_web_headers,
+        ),
+        (
+            f"{client._sso}/mobile/api/mfa/verifyCode",
+            {
+                "clientId": MOBILE_SSO_CLIENT_ID,
+                "locale": "en-US",
+                "service": MOBILE_SSO_SERVICE_URL,
+            },
+            client._mfa_portal_web_headers,
+        ),
+    ]
+
+    failures = []
+    for mfa_url, params, headers in mfa_endpoints:
+        _LOGGER.debug("Trying MFA endpoint: %s", mfa_url)
+        try:
+            r = sess.post(
+                mfa_url,
+                params=params,
+                headers=headers,
+                json=mfa_json,
+                timeout=30,
+            )
+        except Exception as e:
+            failures.append(f"{mfa_url}: connection error {e}")
+            continue
+
+        if r.status_code == 429:
+            failures.append(f"{mfa_url}: HTTP 429")
+            continue
+
+        try:
+            res = r.json()
+        except Exception:
+            body_preview = r.text[:200] if r.text else "(empty)"
+            failures.append(f"{mfa_url}: HTTP {r.status_code} non-JSON: {body_preview}")
+            continue
+
+        if res.get("error", {}).get("status-code") == "429":
+            failures.append(f"{mfa_url}: 429 in JSON body")
+            continue
+
+        if res.get("responseStatus", {}).get("type") == "SUCCESSFUL":
+            ticket = res["serviceTicketId"]
+            svc_url = (
+                PORTAL_SSO_SERVICE_URL
+                if "/portal/" in mfa_url
+                else MOBILE_SSO_SERVICE_URL
+            )
+            client._establish_session(ticket, sess=sess, service_url=svc_url)
+            return
+
+        failures.append(f"{mfa_url}: HTTP {r.status_code} => {res}")
+
+    raise GarminAuthenticationError(
+        f"MFA Verification failed on all endpoints: {'; '.join(failures)}"
+    )
+
+
+# ----------------------------------------------------------------------------------------
+# MOBILE SSO LOGIN (Android app flow)
+# ----------------------------------------------------------------------------------------
+
+
+def portal_login(
+    client: Any,
+    email: str,
+    password: str,
+    prompt_mfa: Optional[Callable[[], str]] = None,
+    return_on_mfa: bool = False,
+) -> Tuple[Optional[str], Any]:
+    """
+    Log in via the mobile SSO API using curl_cffi for TLS impersonation.
+
+    This is the Android Garmin Connect Mobile app flow. Used as a fallback when
+    the web portal flows are blocked.
+
+    :param client: GarminClient instance.
+    :param email: Garmin Connect email.
+    :param password: Garmin Connect password.
+    :param prompt_mfa: Callable returning a 6-digit MFA code.
+    :param return_on_mfa: If True, return early on MFA challenge.
+    :return: ``(None, None)`` on success, or ``("needs_mfa", session)`` on MFA.
+    :raises GarminAuthenticationError: On bad credentials or unexpected status.
+    """
+
+    if not HAS_CFFI:
+        raise GarminConnectionError("curl_cffi not installed; mobile+cffi unavailable")
+
+    sess: Any = cffi_requests.Session(impersonate="safari")
+
+    # Step 1: GET mobile sign-in page (sets SESSION cookies).
+    signin_url = f"{client._sso}/mobile/sso/en_US/sign-in"
+    sess.get(
+        signin_url,
+        params={
+            "clientId": MOBILE_SSO_CLIENT_ID,
+            "service": MOBILE_SSO_SERVICE_URL,
+        },
+        headers={
+            "User-Agent": MOBILE_SSO_USER_AGENT,
+            "accept": (
+                "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"
+            ),
+            "accept-language": "en-US,en;q=0.9",
+        },
+        timeout=30,
+    )
+
+    # Same Cloudflare WAF rate-limiting protection as the browser portal flow.
+    delay_s = random.uniform(LOGIN_DELAY_MIN_S, LOGIN_DELAY_MAX_S)
+    _LOGGER.debug("Mobile portal login: sleeping %.1fs before credential POST", delay_s)
+    time.sleep(delay_s)
+
+    # Step 2: POST credentials.
+    login_params = {
+        "clientId": MOBILE_SSO_CLIENT_ID,
+        "locale": "en-US",
+        "service": MOBILE_SSO_SERVICE_URL,
+    }
+    post_headers = {
+        "User-Agent": MOBILE_SSO_USER_AGENT,
+        "accept": "application/json, text/plain, */*",
+        "accept-language": "en-US,en;q=0.9",
+        "content-type": "application/json",
+        "origin": client._sso,
+        "referer": (
+            f"{signin_url}?clientId={MOBILE_SSO_CLIENT_ID}"
+            f"&service={MOBILE_SSO_SERVICE_URL}"
+        ),
+    }
+    r = sess.post(
+        f"{client._sso}/mobile/api/login",
+        params=login_params,
+        headers=post_headers,
+        json={
+            "username": email,
+            "password": password,
+            "rememberMe": True,
+            "captchaToken": "",
+        },
+        timeout=30,
+    )
+    r.raise_for_status()
+    res = r.json()
+    resp_type = res.get("responseStatus", {}).get("type")
+
+    if resp_type == "MFA_REQUIRED":
+        client._mfa_method = res.get("customerMfaInfo", {}).get(
+            "mfaLastMethodUsed", "email"
+        )
+        client._mfa_cffi_session = sess
+        client._mfa_cffi_params = login_params
+        client._mfa_cffi_headers = post_headers
+
+        if return_on_mfa:
+            return "needs_mfa", sess
+
+        if prompt_mfa:
+            mfa_code = prompt_mfa()
+            complete_mfa_portal(client, mfa_code)
+            return None, None
+        raise GarminAuthenticationError(
+            "MFA Required but no prompt_mfa mechanism supplied"
+        )
+
+    if resp_type == "SUCCESSFUL":
+        ticket = res["serviceTicketId"]
+        client._establish_session(ticket, sess=sess)
+        return None, None
+
+    if resp_type == "INVALID_USERNAME_PASSWORD":
+        raise GarminAuthenticationError(
+            "401 Unauthorized (Invalid Username or Password)"
+        )
+
+    raise GarminAuthenticationError(f"Portal login failed: {res}")
+
+
+def complete_mfa_portal(client: Any, mfa_code: str) -> None:
+    """
+    Complete MFA verification for the mobile portal cffi flow.
+
+    :param client: GarminClient instance with cffi MFA state.
+    :param mfa_code: 6-digit MFA code.
+    :raises GarminAuthenticationError: On verification failure.
+    """
+
+    sess = client._mfa_cffi_session
+    r = sess.post(
+        f"{client._sso}/mobile/api/mfa/verifyCode",
+        params=client._mfa_cffi_params,
+        headers=client._mfa_cffi_headers,
+        json={
+            "mfaMethod": getattr(client, "_mfa_method", "email"),
+            "mfaVerificationCode": mfa_code,
+            "rememberMyBrowser": True,
+            "reconsentList": [],
+            "mfaSetup": False,
+        },
+        timeout=30,
+    )
+    res = r.json()
+    if res.get("responseStatus", {}).get("type") == "SUCCESSFUL":
+        ticket = res["serviceTicketId"]
+        client._establish_session(ticket, sess=sess)
+        return
+    raise GarminAuthenticationError(f"MFA Verification failed: {res}")
+
+
+def mobile_login(
+    client: Any,
+    email: str,
+    password: str,
+    prompt_mfa: Optional[Callable[[], str]] = None,
+    return_on_mfa: bool = False,
+) -> Tuple[Optional[str], Any]:
+    """
+    Log in via the mobile SSO API using plain ``requests`` (last-resort fallback).
+
+    No TLS impersonation; this strategy is most likely to be 429'd by Cloudflare,
+    but it does occasionally work when all four other strategies have already
+    been blocked on this IP.
+
+    :param client: GarminClient instance.
+    :param email: Garmin Connect email.
+    :param password: Garmin Connect password.
+    :param prompt_mfa: Callable returning a 6-digit MFA code.
+    :param return_on_mfa: If True, return early on MFA challenge.
+    :return: ``(None, None)`` on success, or ``("needs_mfa", session)`` on MFA.
+    :raises GarminTooManyRequestsError: On HTTP 429.
+    :raises GarminAuthenticationError: On bad credentials.
+    :raises GarminConnectionError: On non-JSON response.
+    """
+
+    sess = requests.Session()
+    sess.headers.update(
+        {
+            "User-Agent": MOBILE_SSO_USER_AGENT,
+            "Accept": (
+                "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"
+            ),
+            "Accept-Language": "en-US,en;q=0.9",
+        }
+    )
+
+    sess.get(
+        f"{client._sso}/mobile/sso/en_US/sign-in",
+        params={
+            "clientId": MOBILE_SSO_CLIENT_ID,
+            "service": MOBILE_SSO_SERVICE_URL,
+        },
+    )
+
+    # Same Cloudflare WAF rate-limiting protection as the browser portal flow.
+    delay_s = random.uniform(LOGIN_DELAY_MIN_S, LOGIN_DELAY_MAX_S)
+    _LOGGER.debug("Mobile login: sleeping %.1fs before credential POST", delay_s)
+    time.sleep(delay_s)
+
+    r = sess.post(
+        f"{client._sso}/mobile/api/login",
+        params={
+            "clientId": MOBILE_SSO_CLIENT_ID,
+            "locale": "en-US",
+            "service": MOBILE_SSO_SERVICE_URL,
+        },
+        json={
+            "username": email,
+            "password": password,
+            "rememberMe": True,
+            "captchaToken": "",
+        },
+    )
+
+    if r.status_code == 429:
+        raise GarminTooManyRequestsError(
+            "Login failed (429 Rate Limit). Try again later."
+        )
+
+    try:
+        res = r.json()
+    except Exception as err:
+        raise GarminConnectionError(
+            f"Login failed (Not JSON): HTTP {r.status_code}"
+        ) from err
+
+    resp_type = res.get("responseStatus", {}).get("type")
+
+    if resp_type == "MFA_REQUIRED":
+        client._mfa_method = res.get("customerMfaInfo", {}).get(
+            "mfaLastMethodUsed", "email"
+        )
+        client._mfa_session = sess
+
+        if return_on_mfa:
+            return "needs_mfa", client._mfa_session
+
+        if prompt_mfa:
+            mfa_code = prompt_mfa()
+            complete_mfa(client, mfa_code)
+            return None, None
+        raise GarminAuthenticationError(
+            "MFA Required but no prompt_mfa mechanism supplied"
+        )
+
+    if resp_type == "SUCCESSFUL":
+        ticket = res["serviceTicketId"]
+        client._establish_session(ticket)
+        return None, None
+
+    if "status-code" in res.get("error", {}) and res["error"]["status-code"] == "429":
+        raise GarminTooManyRequestsError("429 Rate Limit")
+
+    if resp_type == "INVALID_USERNAME_PASSWORD":
+        raise GarminAuthenticationError(
+            "401 Unauthorized (Invalid Username or Password)"
+        )
+
+    raise GarminAuthenticationError(f"Unhandled Garmin Login JSON, Login failed: {res}")
+
+
+def complete_mfa(client: Any, mfa_code: str) -> None:
+    """
+    Complete MFA verification for the plain-requests mobile flow.
+
+    :param client: GarminClient instance with mobile MFA state.
+    :param mfa_code: 6-digit MFA code.
+    :raises GarminAuthenticationError: On verification failure.
+    """
+
+    r = client._mfa_session.post(
+        f"{client._sso}/mobile/api/mfa/verifyCode",
+        params={
+            "clientId": MOBILE_SSO_CLIENT_ID,
+            "locale": "en-US",
+            "service": MOBILE_SSO_SERVICE_URL,
+        },
+        json={
+            "mfaMethod": getattr(client, "_mfa_method", "email"),
+            "mfaVerificationCode": mfa_code,
+            "rememberMyBrowser": True,
+            "reconsentList": [],
+            "mfaSetup": False,
+        },
+    )
+    res = r.json()
+    if res.get("responseStatus", {}).get("type") == "SUCCESSFUL":
+        ticket = res["serviceTicketId"]
+        client._establish_session(ticket)
+        return
+    raise GarminAuthenticationError(f"MFA Verification failed: {res}")

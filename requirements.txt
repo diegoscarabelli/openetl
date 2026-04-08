@@ -22,5 +22,10 @@ requests
 fire
 
 # Garmin data processing
-garminconnect>=0.3.0
+# garminconnect is replaced by the vendored garmin_client/ module under
+# dags/pipelines/garmin/. The two transitive deps it brought in (curl-cffi for
+# TLS impersonation, ua-generator for browser User-Agent rotation) are now
+# explicit because the vendored auth strategies depend on them directly.
+curl-cffi
 fitdecode
+ua-generator

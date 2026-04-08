@@ -60,24 +60,29 @@ Common Issues:
    - Check if Garmin Connect services are operational.
 
 TOKEN STORAGE:
-Tokens are saved to ~/.garminconnect/<user_id>/ where <user_id> is the Garmin
-Connect numeric user ID, automatically detected after authentication. This
-location is used by:
+Tokens are saved to ~/.garminconnect/<user_id>/garmin_tokens.json where
+<user_id> is the Garmin Connect numeric user ID, automatically detected after
+authentication. The file is a JSON object with three keys:
+``di_token`` (~18h Bearer access token), ``di_refresh_token`` (~30d rotating
+refresh token), and ``di_client_id`` (DI OAuth2 client ID extracted from the
+JWT). This location is used by:
 - The Airflow pipeline (extract.py) for multi-account data extraction.
-- The python-garminconnect library.
-- The garminconnect library's native OAuth2 engine.
+- The vendored ``GarminClient`` (dags/pipelines/garmin/garmin_client/).
 
 TOKEN REFRESH:
-The garminconnect library uses two OAuth2 tokens:
-- Access token (~18 hours): used in API call headers, refreshed automatically.
-- Refresh token (30 days): used to obtain new access tokens without credentials.
-  Rotates on each use (each refresh response includes a new refresh token).
+The vendored ``GarminClient`` uses two OAuth2 tokens:
+- Access token (~18 hours): used in the ``Authorization: Bearer`` header for
+  API calls. Auto-refreshed transparently when within 15 minutes of expiry, or
+  on a 401 retry.
+- Refresh token (~30 days): used to obtain new access tokens without
+  credentials. Rotates on each use; each refresh response includes a new
+  refresh token, which the client writes back to ``garmin_tokens.json``
+  immediately.
 
-The library automatically refreshes tokens before each API call and persists
-the updated tokens back to disk. As long as the pipeline runs at least once
-within 30 days, the token chain stays alive indefinitely. If the pipeline is
-idle for more than 30 days, the refresh token expires and this script must be
-re-run with username + password + MFA to bootstrap fresh tokens.
+As long as the pipeline runs at least once every 30 days, the token chain
+stays alive indefinitely. If the pipeline is idle for more than 30 days, the
+refresh token expires and this script must be re-run with email + password
+(+ MFA) to bootstrap a fresh pair.
 
 This script is only needed for:
 - Initial setup (first-time authentication per account).
@@ -85,7 +90,7 @@ This script is only needed for:
 
 SECURITY NOTES:
 - Tokens are stored locally in your home directory with 0700/0600 permissions.
-- The token directory must be mounted read-write so the library can persist
+- The token directory must be mounted read-write so the client can persist
   refreshed tokens.
 - The script does not store your password or MFA codes.
 - Only OAuth tokens are persisted for future authentication.
@@ -97,9 +102,8 @@ import traceback
 from pathlib import Path
 from typing import Tuple
 
-from garminconnect import Garmin
-
 from dags.lib.logging_utils import LOGGER
+from dags.pipelines.garmin.garmin_client import GarminClient
 
 # Use the global logger instance.
 logger = LOGGER
@@ -182,11 +186,11 @@ def get_mfa_code() -> str:
     return mfa_code
 
 
-def _handle_mfa_authentication(garmin, result2) -> None:
+def _handle_mfa_authentication(client: GarminClient, result2) -> None:
     """
     Handle MFA authentication with one retry attempt.
 
-    :param garmin: Garmin client instance.
+    :param client: GarminClient instance.
     :param result2: MFA continuation token from login result.
     """
 
@@ -196,7 +200,7 @@ def _handle_mfa_authentication(garmin, result2) -> None:
         try:
             mfa_code = get_mfa_code()
             logger.info("🔢 Completing MFA authentication...")
-            garmin.resume_login(result2, mfa_code)
+            client.resume_login(result2, mfa_code)
             logger.info("✅ MFA authentication successful.")
             return  # Success, exit function
 
@@ -237,13 +241,12 @@ def refresh_tokens(email: str, password: str, base_token_dir: str = "~/.garminco
     )
 
     try:
-        # Initialize Garmin client with MFA support.
-        # is_cn=False connects to international servers (garmin.com).
-        # vs Chinese (garmin.cn).
-        garmin = Garmin(email=email, password=password, is_cn=False, return_on_mfa=True)
+        # Initialize the vendored Garmin client.
+        client = GarminClient()
 
-        # Attempt login.
-        login_result = garmin.login()
+        # Attempt login. return_on_mfa=True pauses the flow if MFA is required
+        # so we can prompt the user for a code via _handle_mfa_authentication.
+        login_result = client.login(email, password, return_on_mfa=True)
 
         # Handle different return value formats.
         if isinstance(login_result, tuple) and len(login_result) == 2:
@@ -251,7 +254,7 @@ def refresh_tokens(email: str, password: str, base_token_dir: str = "~/.garminco
 
             # Handle MFA if required.
             if result1 == "needs_mfa":
-                _handle_mfa_authentication(garmin, result2)
+                _handle_mfa_authentication(client, result2)
             else:
                 logger.info("✅ Authentication successful (no MFA required).")
         else:
@@ -259,7 +262,7 @@ def refresh_tokens(email: str, password: str, base_token_dir: str = "~/.garminco
             logger.info("✅ Authentication successful (no MFA required).")
 
         # Auto-detect user ID from the authenticated profile.
-        user_id = garmin.get_user_profile().get("id")
+        user_id = client.get_user_profile().get("id")
         if not user_id:
             raise RuntimeError(
                 "Could not determine user ID from Garmin profile. "
@@ -279,7 +282,7 @@ def refresh_tokens(email: str, password: str, base_token_dir: str = "~/.garminco
         token_path.mkdir(exist_ok=True)
         token_path.chmod(0o700)
 
-        garmin.client.dump(str(token_path))
+        client.dump(str(token_path))
 
         # Lock down token files to owner-only (client.dump uses default umask).
         for token_file in token_path.iterdir():

@@ -97,22 +97,22 @@ class TestGarminExtractor:
         assert extractor.garmin_client is None
         assert extractor.user_id is None
 
-    @patch("dags.pipelines.garmin.extract.Garmin")
+    @patch("dags.pipelines.garmin.extract.GarminClient")
     @patch("dags.pipelines.garmin.extract.LOGGER")
     def test_authenticate_success(
-        self, mock_logger, mock_garmin_class, extractor, mock_garmin_client
+        self, mock_logger, mock_garmin_client_class, extractor, mock_garmin_client
     ) -> None:
         """
         Test successful authentication.
 
         :param mock_logger: Mock logger.
-        :param mock_garmin_class: Mock Garmin class.
+        :param mock_garmin_client_class: Mock GarminClient class.
         :param extractor: GarminExtractor fixture.
-        :param mock_garmin_client: Mock Garmin client fixture.
+        :param mock_garmin_client: Mock GarminClient instance fixture.
         """
 
         # Arrange.
-        mock_garmin_class.return_value = mock_garmin_client
+        mock_garmin_client_class.from_tokens.return_value = mock_garmin_client
 
         # Act.
         extractor.authenticate()
@@ -120,28 +120,25 @@ class TestGarminExtractor:
         # Assert.
         assert extractor.garmin_client == mock_garmin_client
         assert extractor.user_id == "123456789"
-        mock_garmin_class.assert_called_once()
-        mock_garmin_client.login.assert_called_once()
+        mock_garmin_client_class.from_tokens.assert_called_once()
         mock_garmin_client.get_user_profile.assert_called_once()
         mock_logger.info.assert_called()
 
-    @patch("dags.pipelines.garmin.extract.Garmin")
+    @patch("dags.pipelines.garmin.extract.GarminClient")
     @patch("dags.pipelines.garmin.extract.LOGGER")
     def test_authenticate_failure(
-        self, mock_logger, mock_garmin_class, extractor
+        self, mock_logger, mock_garmin_client_class, extractor
     ) -> None:
         """
         Test authentication failure.
 
         :param mock_logger: Mock logger.
-        :param mock_garmin_class: Mock Garmin class.
+        :param mock_garmin_client_class: Mock GarminClient class.
         :param extractor: GarminExtractor fixture.
         """
 
         # Arrange.
-        mock_garmin_client = MagicMock()
-        mock_garmin_client.login.side_effect = Exception("401 Unauthorized")
-        mock_garmin_class.return_value = mock_garmin_client
+        mock_garmin_client_class.from_tokens.side_effect = Exception("401 Unauthorized")
 
         # Act & Assert.
         with pytest.raises(RuntimeError, match="Garmin authentication"):
