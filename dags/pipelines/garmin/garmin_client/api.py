@@ -162,13 +162,13 @@ def get_heart_rates(client: "GarminClient", cdate: str) -> Dict[str, Any]:
     return client._connectapi(url, params=params)
 
 
-def get_training_readiness(client: "GarminClient", cdate: str) -> Dict[str, Any]:
+def get_training_readiness(client: "GarminClient", cdate: str) -> List[Dict[str, Any]]:
     """
     Fetch training readiness scores for the given date.
 
     :param client: GarminClient instance.
     :param cdate: Date in ``YYYY-MM-DD`` format.
-    :return: Training readiness dictionary with multiple intra-day scores.
+    :return: List of training readiness score dictionaries for the day.
     """
 
     cdate = _validate_date_format(cdate, "cdate")
@@ -368,7 +368,7 @@ def get_race_predictions(
 
     valid = {"daily", "monthly", None}
     if _type not in valid:
-        raise ValueError(f"results: _type must be one of {valid!r}.")
+        raise ValueError(f"_type must be one of {valid!r}")
 
     if _type is None and startdate is None and enddate is None:
         url = f"{RACE_PREDICTOR_URL}/latest/{client.display_name}"

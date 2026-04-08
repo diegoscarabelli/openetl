@@ -807,8 +807,9 @@ def complete_mfa_portal(client: Any, mfa_code: str) -> None:
     :param client: GarminClient instance with cffi MFA state.
     :param mfa_code: 6-digit MFA code.
     :raises GarminTooManyRequestsError: On HTTP 429.
-    :raises GarminAuthenticationError: On verification failure or non-OK / non-JSON
-        response.
+    :raises GarminConnectionError: On non-2xx response or non-JSON body
+        (server/transport error, not a verification failure).
+    :raises GarminAuthenticationError: On a parsed non-SUCCESSFUL verification response.
     """
 
     sess = client._mfa_cffi_session
@@ -829,16 +830,18 @@ def complete_mfa_portal(client: Any, mfa_code: str) -> None:
         raise GarminTooManyRequestsError(
             "MFA Verification failed: HTTP 429 Too Many Requests"
         )
+    # Non-2xx with any body is a server/transport error; Garmin never had a
+    # chance to evaluate the MFA code, so GarminConnectionError is correct here.
     if not r.ok:
         body_preview = " ".join((r.text or "").split())[:200]
-        raise GarminAuthenticationError(
+        raise GarminConnectionError(
             f"MFA Verification failed: HTTP {r.status_code}: {body_preview}"
         )
     try:
         res = r.json()
     except (json.JSONDecodeError, ValueError) as err:
         body_preview = " ".join((r.text or "").split())[:200]
-        raise GarminAuthenticationError(
+        raise GarminConnectionError(
             f"MFA Verification failed: invalid JSON response: {body_preview}"
         ) from err
     if res.get("responseStatus", {}).get("type") == "SUCCESSFUL":
@@ -985,8 +988,9 @@ def complete_mfa(client: Any, mfa_code: str) -> None:
     :param client: GarminClient instance with mobile MFA state.
     :param mfa_code: 6-digit MFA code.
     :raises GarminTooManyRequestsError: On HTTP 429.
-    :raises GarminAuthenticationError: On verification failure or non-OK / non-JSON
-        response.
+    :raises GarminConnectionError: On non-2xx response or non-JSON body
+        (server/transport error, not a verification failure).
+    :raises GarminAuthenticationError: On a parsed non-SUCCESSFUL verification response.
     """
 
     r = client._mfa_session.post(
@@ -1009,16 +1013,18 @@ def complete_mfa(client: Any, mfa_code: str) -> None:
         raise GarminTooManyRequestsError(
             "MFA Verification failed: HTTP 429 Too Many Requests"
         )
+    # Non-2xx with any body is a server/transport error; Garmin never had a
+    # chance to evaluate the MFA code, so GarminConnectionError is correct here.
     if not r.ok:
         body_preview = " ".join((r.text or "").split())[:200]
-        raise GarminAuthenticationError(
+        raise GarminConnectionError(
             f"MFA Verification failed: HTTP {r.status_code}: {body_preview}"
         )
     try:
         res = r.json()
     except (json.JSONDecodeError, ValueError) as err:
         body_preview = " ".join((r.text or "").split())[:200]
-        raise GarminAuthenticationError(
+        raise GarminConnectionError(
             f"MFA Verification failed: invalid JSON response: {body_preview}"
         ) from err
     if res.get("responseStatus", {}).get("type") == "SUCCESSFUL":

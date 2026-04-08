@@ -880,7 +880,7 @@ class GarminClient:
         """
         return api.get_heart_rates(self, cdate)
 
-    def get_training_readiness(self, cdate: str) -> Dict[str, Any]:
+    def get_training_readiness(self, cdate: str) -> List[Dict[str, Any]]:
         """
         See :func:`api.get_training_readiness`.
         """

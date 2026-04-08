@@ -932,10 +932,11 @@ class TestCompleteMfaPortalHardening:
         with pytest.raises(GarminTooManyRequestsError):
             strategies.complete_mfa_portal(mock_client, "123456")
 
-    def test_non_ok_raises_authentication_error(self, mock_client: MagicMock) -> None:
+    def test_non_ok_raises_connection_error(self, mock_client: MagicMock) -> None:
         """
-        Non-2xx responses (e.g., 500) raise ``GarminAuthenticationError`` with a body
-        preview rather than calling ``.json()`` on a non-JSON body.
+        Non-2xx responses (e.g., 500) raise ``GarminConnectionError`` because the server
+        failed before it could evaluate the MFA code; this is a transport error, not a
+        verification failure.
         """
 
         # Arrange.
@@ -951,15 +952,16 @@ class TestCompleteMfaPortalHardening:
         mock_client._mfa_cffi_headers = {}
 
         # Act & Assert.
-        with pytest.raises(GarminAuthenticationError, match="HTTP 500"):
+        with pytest.raises(GarminConnectionError, match="HTTP 500"):
             strategies.complete_mfa_portal(mock_client, "123456")
 
-    def test_non_json_body_raises_authentication_error(
+    def test_non_json_body_raises_connection_error(
         self, mock_client: MagicMock
     ) -> None:
         """
-        A 200 with a non-JSON body (e.g., a Cloudflare HTML page) is wrapped as
-        ``GarminAuthenticationError`` with the JSON decode error chained.
+        A 200 with a non-JSON body (e.g., a Cloudflare HTML page) raises
+        ``GarminConnectionError`` because the response is a transport/infra failure, not
+        a definitive verification failure.
         """
 
         # Arrange.
@@ -976,7 +978,7 @@ class TestCompleteMfaPortalHardening:
         mock_client._mfa_cffi_headers = {}
 
         # Act & Assert.
-        with pytest.raises(GarminAuthenticationError, match="invalid JSON"):
+        with pytest.raises(GarminConnectionError, match="invalid JSON"):
             strategies.complete_mfa_portal(mock_client, "123456")
 
 
@@ -1004,9 +1006,11 @@ class TestCompleteMfaHardening:
         with pytest.raises(GarminTooManyRequestsError):
             strategies.complete_mfa(mock_client, "123456")
 
-    def test_non_ok_raises_authentication_error(self, mock_client: MagicMock) -> None:
+    def test_non_ok_raises_connection_error(self, mock_client: MagicMock) -> None:
         """
-        Non-2xx responses raise ``GarminAuthenticationError`` with the status code.
+        Non-2xx responses raise ``GarminConnectionError`` because the server failed
+        before evaluating the MFA code; this is a transport error, not a verification
+        failure.
         """
 
         # Arrange.
@@ -1020,15 +1024,15 @@ class TestCompleteMfaHardening:
         mock_client._mfa_session = mock_session
 
         # Act & Assert.
-        with pytest.raises(GarminAuthenticationError, match="HTTP 502"):
+        with pytest.raises(GarminConnectionError, match="HTTP 502"):
             strategies.complete_mfa(mock_client, "123456")
 
-    def test_non_json_body_raises_authentication_error(
+    def test_non_json_body_raises_connection_error(
         self, mock_client: MagicMock
     ) -> None:
         """
-        A 200 with a non-JSON body wraps the JSON decode error as
-        ``GarminAuthenticationError``.
+        A 200 with a non-JSON body raises ``GarminConnectionError`` because the response
+        is a transport/infra failure, not a verification failure.
         """
 
         # Arrange.
@@ -1043,7 +1047,7 @@ class TestCompleteMfaHardening:
         mock_client._mfa_session = mock_session
 
         # Act & Assert.
-        with pytest.raises(GarminAuthenticationError, match="invalid JSON"):
+        with pytest.raises(GarminConnectionError, match="invalid JSON"):
             strategies.complete_mfa(mock_client, "123456")
 
 
