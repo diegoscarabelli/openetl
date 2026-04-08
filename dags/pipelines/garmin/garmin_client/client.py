@@ -37,10 +37,26 @@ import requests
 
 try:
     from curl_cffi import requests as cffi_requests
+    from curl_cffi.requests.exceptions import RequestException as _CffiRequestException
 
     HAS_CFFI = True
 except ImportError:
     HAS_CFFI = False
+    _CffiRequestException = None  # type: ignore[assignment,misc]
+
+# Transport-level exception classes raised by the underlying HTTP libraries.
+# ``_http_post`` routes to curl_cffi when available, so we must catch
+# ``curl_cffi.requests.exceptions.RequestException`` in addition to
+# ``requests.RequestException``: the two hierarchies are unrelated
+# (curl_cffi's RequestException inherits from ``OSError`` via ``CurlError``,
+# not from ``requests.RequestException``).
+if HAS_CFFI:
+    _TRANSPORT_EXCEPTIONS: Tuple[type, ...] = (
+        requests.RequestException,
+        _CffiRequestException,
+    )
+else:
+    _TRANSPORT_EXCEPTIONS = (requests.RequestException,)
 
 from . import api, strategies, tokens
 from .api import ActivityDownloadFormat
@@ -486,7 +502,7 @@ class GarminClient:
                 },
                 timeout=30,
             )
-        except requests.RequestException as exc:
+        except _TRANSPORT_EXCEPTIONS as exc:
             raise GarminConnectionError(
                 f"DI token refresh transport error: {exc}"
             ) from exc

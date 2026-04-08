@@ -10,6 +10,7 @@ import base64
 import json
 import time
 from pathlib import Path
+from typing import Callable
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -416,11 +417,33 @@ class TestRefreshDiToken:
             with pytest.raises(GarminTooManyRequestsError):
                 client._refresh_di_token()
 
-    def test_wraps_transport_exception_as_connection_error(self) -> None:
+    @pytest.mark.parametrize(
+        "exc_factory",
+        [
+            pytest.param(
+                lambda: requests.ConnectionError("network down"),
+                id="requests-connection-error",
+            ),
+            pytest.param(
+                lambda: __import__(
+                    "curl_cffi.requests.exceptions", fromlist=["RequestException"]
+                ).RequestException("cffi network down"),
+                id="curl-cffi-request-exception",
+            ),
+        ],
+    )
+    def test_wraps_transport_exception_as_connection_error(
+        self, exc_factory: Callable[[], Exception]
+    ) -> None:
         """
         Network failures (timeouts, connection resets, SSL errors) raised by the HTTP
         post are wrapped as :class:`GarminConnectionError` so callers see consistent
-        typed errors instead of bare ``RequestException`` subclasses.
+        typed errors.
+
+        Both ``requests.RequestException`` (the requests-only fallback
+        path) and ``curl_cffi.requests.exceptions.RequestException`` (the production
+        cffi path) must be caught: the two hierarchies are unrelated, so a single
+        ``except requests.RequestException`` would silently leak the cffi case.
         """
 
         # Arrange.
@@ -431,10 +454,10 @@ class TestRefreshDiToken:
         with patch.object(
             GarminClient,
             "_http_post",
-            side_effect=requests.ConnectionError("network down"),
+            side_effect=exc_factory(),
         ):
             # Act & Assert.
-            with pytest.raises(GarminConnectionError, match="network down"):
+            with pytest.raises(GarminConnectionError, match="transport error"):
                 client._refresh_di_token()
 
     def test_wraps_non_json_response_as_connection_error(self) -> None:
