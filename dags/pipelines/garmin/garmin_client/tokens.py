@@ -103,10 +103,12 @@ def load(client: "GarminClient", path: Union[str, Path]) -> None:
     """
 
     try:
-        client._tokenstore_path = str(path)
         p = Path(path).expanduser()
         if p.is_dir() or not p.name.endswith(".json"):
             p = p / "garmin_tokens.json"
+        # Record the resolved file path (after expansion + directory->json
+        # normalization) so refresh persistence writes back to the same file.
+        client._tokenstore_path = str(p)
         loads(client, p.read_text())
     except (GarminAuthenticationError, GarminConnectionError):
         raise

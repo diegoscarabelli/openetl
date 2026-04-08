@@ -312,12 +312,20 @@ def portal_web_login_cffi(
             )
         except GarminAuthenticationError:
             raise
-        except (GarminTooManyRequestsError, GarminConnectionError):
-            raise
+        except (GarminTooManyRequestsError, GarminConnectionError) as e:
+            # Different TLS fingerprints can be rate-limited independently by
+            # Cloudflare, so try the next impersonation before giving up.
+            _LOGGER.debug("portal+cffi(%s) transient failure: %s", imp, e)
+            last_err = e
+            continue
         except Exception as e:
             _LOGGER.debug("portal+cffi(%s) failed: %s", imp, e)
             last_err = e
             continue
+    # Preserve the typed exception so the outer Client.login() strategy chain
+    # can detect an "all strategies were 429'd" condition.
+    if isinstance(last_err, GarminTooManyRequestsError):
+        raise last_err
     if last_err is not None:
         raise GarminConnectionError("All cffi impersonations failed") from last_err
     raise GarminConnectionError("All cffi impersonations failed")

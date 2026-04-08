@@ -13,6 +13,7 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
+import requests
 
 from dags.pipelines.garmin.garmin_client.client import GarminClient
 from dags.pipelines.garmin.garmin_client.exceptions import (
@@ -395,6 +396,26 @@ class TestRefreshDiToken:
             with pytest.raises(GarminAuthenticationError):
                 client._refresh_di_token()
 
+    def test_raises_too_many_requests_on_429(self) -> None:
+        """
+        A 429 from the DI token endpoint maps to GarminTooManyRequestsError so callers
+        can distinguish rate limiting from auth failure.
+        """
+
+        # Arrange.
+        client = GarminClient()
+        client.di_refresh_token = "old_refresh"
+        client.di_client_id = "GARMIN_OLD"
+        rate_limited = MagicMock()
+        rate_limited.ok = False
+        rate_limited.status_code = 429
+        rate_limited.text = "rate limited"
+
+        with patch.object(GarminClient, "_http_post", return_value=rate_limited):
+            # Act & Assert.
+            with pytest.raises(GarminTooManyRequestsError):
+                client._refresh_di_token()
+
 
 class TestRefreshSession:
     """
@@ -579,6 +600,54 @@ class TestRequest:
         ):
             # Act & Assert.
             with pytest.raises(GarminConnectionError):
+                client._request("GET", "/some/path")
+
+    def test_maps_request_exception_to_connection_error(self) -> None:
+        """
+        Transport-layer exceptions (timeouts, connection errors, SSL failures) raised by
+        ``requests`` are wrapped as :class:`GarminConnectionError` so callers see
+        consistent typed errors instead of bare ``RequestException`` subclasses.
+        """
+
+        # Arrange.
+        client = self._build_client_with_token()
+
+        mock_session = MagicMock()
+        mock_session.request.side_effect = requests.ConnectionError("network down")
+
+        with patch(
+            "dags.pipelines.garmin.garmin_client.client.requests.Session",
+            return_value=mock_session,
+        ):
+            # Act & Assert.
+            with pytest.raises(GarminConnectionError, match="network down"):
+                client._request("GET", "/some/path")
+
+    def test_wraps_request_exception_on_401_retry(self) -> None:
+        """
+        If the second (post-refresh) attempt raises a transport exception, it is also
+        wrapped as :class:`GarminConnectionError` and references the retry phase
+        explicitly.
+        """
+
+        # Arrange.
+        client = self._build_client_with_token()
+
+        unauthorized = MagicMock()
+        unauthorized.status_code = 401
+
+        mock_session = MagicMock()
+        mock_session.request.side_effect = [
+            unauthorized,
+            requests.Timeout("retry timed out"),
+        ]
+
+        with patch(
+            "dags.pipelines.garmin.garmin_client.client.requests.Session",
+            return_value=mock_session,
+        ), patch.object(client, "_refresh_session"):
+            # Act & Assert.
+            with pytest.raises(GarminConnectionError, match="after token refresh"):
                 client._request("GET", "/some/path")
 
 

@@ -121,8 +121,10 @@ class TestLoad:
         assert new_client.di_token == "stub_access_token"
         assert new_client.di_refresh_token == "stub_refresh_token"
         assert new_client.di_client_id == "STUB_CLIENT_ID"
-        # ``load`` records the source path so refresh can persist back.
-        assert new_client._tokenstore_path == str(tmp_path)
+        # ``load`` records the resolved JSON file path (after directory ->
+        # ``garmin_tokens.json`` normalization) so refresh persistence writes
+        # back to the same file.
+        assert new_client._tokenstore_path == str(tmp_path / "garmin_tokens.json")
 
     def test_loads_raises_on_malformed_json(self) -> None:
         """

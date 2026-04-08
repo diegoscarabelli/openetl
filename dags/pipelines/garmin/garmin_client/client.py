@@ -460,6 +460,8 @@ class GarminClient:
 
         :raises GarminAuthenticationError: If no refresh token is held, or the
             server rejects it.
+        :raises GarminTooManyRequestsError: If the DI token endpoint returns
+            HTTP 429.
         """
 
         if not self.di_refresh_token or not self.di_client_id:
@@ -481,6 +483,10 @@ class GarminClient:
             },
             timeout=30,
         )
+        if r.status_code == 429:
+            raise GarminTooManyRequestsError(
+                f"DI token refresh rate limited: {r.text[:200]}"
+            )
         if not r.ok:
             raise GarminAuthenticationError(
                 f"DI token refresh failed: {r.status_code} {r.text[:200]}"
@@ -634,6 +640,8 @@ class GarminClient:
         - 429 -> :class:`GarminTooManyRequestsError`
         - 401 (after retry) -> :class:`GarminAuthenticationError`
         - other 4xx/5xx -> :class:`GarminConnectionError`
+        - transport errors (connection, timeout, SSL) ->
+          :class:`GarminConnectionError`
 
         :param method: HTTP method (``GET``, ``POST``, etc).
         :param path: API path. Leading slash optional.
@@ -667,11 +675,19 @@ class GarminClient:
             self._api_session.mount("https://", adapter)
 
         sess = self._api_session
-        resp = sess.request(method, url, headers=_build_headers(), **kwargs)
+        try:
+            resp = sess.request(method, url, headers=_build_headers(), **kwargs)
+        except requests.RequestException as exc:
+            raise GarminConnectionError(f"API request failed: {exc}") from exc
 
         if resp.status_code == 401:
             self._refresh_session()
-            resp = sess.request(method, url, headers=_build_headers(), **kwargs)
+            try:
+                resp = sess.request(method, url, headers=_build_headers(), **kwargs)
+            except requests.RequestException as exc:
+                raise GarminConnectionError(
+                    f"API request failed after token refresh: {exc}"
+                ) from exc
             if resp.status_code == 401:
                 raise GarminAuthenticationError(
                     "API request unauthorized after token refresh"

@@ -375,6 +375,59 @@ class TestPortalWebLoginCffi:
             assert result == successful_result
             assert call_count["n"] == 5
 
+    def test_continues_on_429_until_one_succeeds(self, mock_client: MagicMock) -> None:
+        """
+        Different curl_cffi impersonations have distinct TLS fingerprints and may be
+        rate-limited independently by Cloudflare.
+
+        If the first impersonation gets 429'd, the wrapper must try the next one (rather
+        than re-raising immediately).
+        """
+
+        # Arrange.
+        successful_result = (None, None)
+        call_count = {"n": 0}
+
+        def fake_login(*args, **kwargs):
+            call_count["n"] += 1
+            if call_count["n"] == 1:
+                raise GarminTooManyRequestsError("first impersonation 429'd")
+            return successful_result
+
+        with patch(
+            "dags.pipelines.garmin.garmin_client.strategies.HAS_CFFI", True
+        ), patch("dags.pipelines.garmin.garmin_client.strategies.cffi_requests"), patch(
+            "dags.pipelines.garmin.garmin_client.strategies._portal_web_login",
+            side_effect=fake_login,
+        ):
+            # Act.
+            result = strategies.portal_web_login_cffi(mock_client, "u", "p")
+
+            # Assert.
+            assert result == successful_result
+            assert call_count["n"] == 2
+
+    def test_propagates_too_many_requests_when_all_429(
+        self, mock_client: MagicMock
+    ) -> None:
+        """
+        When every impersonation is 429'd, the typed :class:`GarminTooManyRequestsError`
+        must propagate (rather than being wrapped as a generic
+        ``GarminConnectionError``) so the outer ``Client.login()`` strategy chain can
+        detect the all-429 case and choose the right final error to surface.
+        """
+
+        # Arrange.
+        with patch(
+            "dags.pipelines.garmin.garmin_client.strategies.HAS_CFFI", True
+        ), patch("dags.pipelines.garmin.garmin_client.strategies.cffi_requests"), patch(
+            "dags.pipelines.garmin.garmin_client.strategies._portal_web_login",
+            side_effect=GarminTooManyRequestsError("rate limited"),
+        ):
+            # Act & Assert.
+            with pytest.raises(GarminTooManyRequestsError):
+                strategies.portal_web_login_cffi(mock_client, "u", "p")
+
 
 # ----------------------------------------------------------------------------------------
 # MOBILE PORTAL LOGIN (cffi)
