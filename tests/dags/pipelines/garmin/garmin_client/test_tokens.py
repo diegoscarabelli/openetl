@@ -188,6 +188,38 @@ class TestLoad:
         with pytest.raises(GarminAuthenticationError):
             tokens.loads(client, "{}")
 
+    def test_loads_raises_when_refresh_token_missing(self) -> None:
+        """
+        Valid JSON that omits ``di_refresh_token`` raises ``GarminAuthenticationError``,
+        because the client cannot refresh without it and the error would surface much
+        later as a confusing KeyError.
+        """
+
+        # Arrange.
+        client = GarminClient()
+        tokenstore = json.dumps({"di_token": "stub_access", "di_client_id": "STUB_ID"})
+
+        # Act & Assert.
+        with pytest.raises(GarminAuthenticationError, match="di_refresh_token"):
+            tokens.loads(client, tokenstore)
+
+    def test_loads_raises_when_client_id_missing(self) -> None:
+        """
+        Valid JSON that omits ``di_client_id`` raises ``GarminAuthenticationError``,
+        because the token refresh request requires the client ID in both the
+        Authorization header and body.
+        """
+
+        # Arrange.
+        client = GarminClient()
+        tokenstore = json.dumps(
+            {"di_token": "stub_access", "di_refresh_token": "stub_refresh"}
+        )
+
+        # Act & Assert.
+        with pytest.raises(GarminAuthenticationError, match="di_client_id"):
+            tokens.loads(client, tokenstore)
+
     def test_load_raises_on_missing_file(self, tmp_path: Path) -> None:
         """
         A missing file path raises ``GarminConnectionError``.

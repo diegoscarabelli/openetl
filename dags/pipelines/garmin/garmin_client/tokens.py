@@ -19,6 +19,7 @@ client class can stay slim and delegate persistence here.
 """
 
 import json
+import os
 from pathlib import Path
 from typing import TYPE_CHECKING, Union
 
@@ -62,8 +63,18 @@ def dump(client: "GarminClient", path: Union[str, Path]) -> None:
     if p.is_dir() or not p.name.endswith(".json"):
         p = p / "garmin_tokens.json"
     p.parent.mkdir(parents=True, exist_ok=True)
-    p.write_text(dumps(client))
-    p.chmod(0o600)
+    content = dumps(client).encode()
+    # Use os.open with an explicit mode so new files are created with 0o600
+    # from the start, eliminating the write-then-chmod TOCTOU window where a
+    # freshly created file briefly has umask-derived permissions (often 0o644).
+    # os.fchmod re-asserts 0o600 on the open fd before any bytes are written,
+    # which also covers pre-existing files whose permissions may have drifted.
+    fd = os.open(str(p), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    try:
+        os.fchmod(fd, 0o600)
+        os.write(fd, content)
+    finally:
+        os.close(fd)
 
 
 def loads(client: "GarminClient", tokenstore: str) -> None:
@@ -87,8 +98,19 @@ def loads(client: "GarminClient", tokenstore: str) -> None:
     client.di_token = data.get("di_token")
     client.di_refresh_token = data.get("di_refresh_token")
     client.di_client_id = data.get("di_client_id")
-    if not client.is_authenticated:
-        raise GarminAuthenticationError("Missing tokens from dict load")
+    # Validate all three fields up front so a corrupt or truncated tokenstore
+    # raises a clear GarminAuthenticationError at load time rather than a
+    # confusing KeyError or silent failure during a later token refresh.
+    # di_refresh_token is required because _refresh_di_token() cannot run
+    # without it. di_client_id is required because the refresh request uses
+    # it to build the Authorization header and request body.
+    missing = [
+        k for k in ("di_token", "di_refresh_token", "di_client_id") if not data.get(k)
+    ]
+    if missing:
+        raise GarminAuthenticationError(
+            f"Token store missing required fields: {missing!r}"
+        )
 
 
 def load(client: "GarminClient", path: Union[str, Path]) -> None:
