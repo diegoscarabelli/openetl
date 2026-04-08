@@ -7,6 +7,7 @@ URL/header/payload shape, the 30-45s Cloudflare-evading delay invocation, and th
 mapping for credential failures vs rate limiting.
 """
 
+import json
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -328,6 +329,61 @@ class TestPortalWebLogin:
             assert hasattr(mock_client, "_mfa_portal_web_session")
             assert hasattr(mock_client, "_mfa_portal_web_params")
             assert hasattr(mock_client, "_mfa_portal_web_headers")
+
+    def test_non_ok_post_raises_with_body_preview(self, mock_client: MagicMock) -> None:
+        """
+        A non-2xx (but not 429) POST response surfaces as ``GarminConnectionError`` with
+        a sanitized body preview, matching the pattern used by the mobile portal and MFA
+        flows.
+
+        This is the Cloudflare HTML challenge path: the
+        response is non-JSON HTML, so checking ``r.ok`` first gives a better
+        error message than letting ``r.json()`` fail.
+        """
+
+        # Arrange.
+        post_resp = MagicMock()
+        post_resp.status_code = 403
+        post_resp.ok = False
+        post_resp.text = "<html><body>Cloudflare challenge</body></html>"
+        mock_session = MagicMock()
+        mock_session.post.return_value = post_resp
+
+        with patch("dags.pipelines.garmin.garmin_client.strategies.time.sleep"):
+            # Act & Assert.
+            with pytest.raises(GarminConnectionError) as excinfo:
+                strategies._portal_web_login(mock_client, mock_session, "u", "p")
+
+        msg = str(excinfo.value)
+        assert "HTTP 403" in msg
+        assert "Cloudflare challenge" in msg
+
+    def test_non_json_body_raises_with_body_preview(
+        self, mock_client: MagicMock
+    ) -> None:
+        """
+        A 200 response whose body is not JSON (e.g., truncated HTML) surfaces as
+        ``GarminConnectionError`` with the body preview included so the failure is
+        debuggable from logs.
+        """
+
+        # Arrange.
+        post_resp = MagicMock()
+        post_resp.status_code = 200
+        post_resp.ok = True
+        post_resp.text = "<html>unexpected maintenance page</html>"
+        post_resp.json.side_effect = json.JSONDecodeError("no json", "doc", 0)
+        mock_session = MagicMock()
+        mock_session.post.return_value = post_resp
+
+        with patch("dags.pipelines.garmin.garmin_client.strategies.time.sleep"):
+            # Act & Assert.
+            with pytest.raises(GarminConnectionError) as excinfo:
+                strategies._portal_web_login(mock_client, mock_session, "u", "p")
+
+        msg = str(excinfo.value)
+        assert "non-JSON" in msg
+        assert "unexpected maintenance page" in msg
 
 
 class TestPortalWebLoginCffi:

@@ -49,8 +49,10 @@ def dump(client: "GarminClient", path: Union[str, Path]) -> None:
     Write a client's DI tokens to disk as ``garmin_tokens.json``.
 
     Accepts either a directory (in which case ``garmin_tokens.json`` is appended)
-    or a ``.json`` file path. Creates parent directories as needed. The caller is
-    responsible for setting directory permissions appropriate for storing secrets.
+    or a ``.json`` file path. Creates parent directories as needed. The file mode
+    is forced to ``0o600`` on every write so the secret tokens are never readable
+    by other users, even if the file is freshly created (umask) or if a caller
+    forgets to chmod after the initial bootstrap.
 
     :param client: GarminClient with populated DI fields.
     :param path: Directory or ``.json`` file path.
@@ -61,6 +63,7 @@ def dump(client: "GarminClient", path: Union[str, Path]) -> None:
         p = p / "garmin_tokens.json"
     p.parent.mkdir(parents=True, exist_ok=True)
     p.write_text(dumps(client))
+    p.chmod(0o600)
 
 
 def loads(client: "GarminClient", tokenstore: str) -> None:

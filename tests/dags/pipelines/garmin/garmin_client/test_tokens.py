@@ -6,6 +6,7 @@ the persistence helpers perform on behalf of ``GarminClient``.
 """
 
 import json
+import stat
 from pathlib import Path
 
 import pytest
@@ -96,6 +97,43 @@ class TestDump:
         assert target.exists()
         data = json.loads(target.read_text())
         assert data["di_refresh_token"] == "stub_refresh_token"
+
+    def test_sets_file_mode_to_0o600(
+        self, populated_client: GarminClient, tmp_path: Path
+    ) -> None:
+        """
+        Token files are written with mode ``0o600`` so the secret tokens are never
+        readable by other users, regardless of the caller's umask.
+        """
+
+        # Act.
+        tokens.dump(populated_client, tmp_path)
+
+        # Assert.
+        token_file = tmp_path / "garmin_tokens.json"
+        mode = stat.S_IMODE(token_file.stat().st_mode)
+        assert mode == 0o600
+
+    def test_restores_0o600_when_file_has_been_chmoded_open(
+        self, populated_client: GarminClient, tmp_path: Path
+    ) -> None:
+        """
+        Every dump re-asserts the ``0o600`` mode, so an existing file whose permissions
+        have drifted (e.g., a manual chmod or a stale file from a buggy older version)
+        is locked back down on the next refresh.
+        """
+
+        # Arrange: pre-create the token file with world-readable permissions.
+        token_file = tmp_path / "garmin_tokens.json"
+        token_file.write_text("{}")
+        token_file.chmod(0o644)
+
+        # Act.
+        tokens.dump(populated_client, tmp_path)
+
+        # Assert.
+        mode = stat.S_IMODE(token_file.stat().st_mode)
+        assert mode == 0o600
 
 
 class TestLoad:

@@ -472,12 +472,19 @@ def _portal_web_login(
         raise GarminTooManyRequestsError(
             "Portal login returned 429. Cloudflare is blocking this request."
         )
+    if not r.ok:
+        body_preview = " ".join((r.text or "").split())[:200]
+        raise GarminConnectionError(
+            f"Portal login POST failed: HTTP {r.status_code}: {body_preview!r}"
+        )
 
     try:
         res = r.json()
-    except Exception as err:
+    except (json.JSONDecodeError, ValueError) as err:
+        body_preview = " ".join((r.text or "").split())[:200]
         raise GarminConnectionError(
-            f"Portal login failed (non-JSON): HTTP {r.status_code}"
+            f"Portal login returned non-JSON (status {r.status_code}): "
+            f"{body_preview!r}"
         ) from err
 
     resp_type = res.get("responseStatus", {}).get("type")

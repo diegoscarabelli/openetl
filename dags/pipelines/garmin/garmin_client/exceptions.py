@@ -18,11 +18,15 @@ class GarminAuthenticationError(Exception):
 
 class GarminConnectionError(Exception):
     """
-    Network or HTTP error talking to Garmin Connect.
+    Network, HTTP, or local token-store error.
 
     Raised when the Garmin API returns a non-success status code that does not indicate
-    an authentication or rate-limit problem, or when a transport-level error prevents
-    the request from completing.
+    an authentication or rate-limit problem, when a transport-level error prevents the
+    request from completing, or when the local token-store helpers in ``tokens.py``
+    cannot read/write ``garmin_tokens.json`` (missing file, malformed JSON, unreadable
+    path). Local-I/O failures share this exception class so callers that wrap the whole
+    ``from_tokens`` bootstrap in a single ``except GarminConnectionError`` still catch
+    filesystem problems.
     """
 
 
