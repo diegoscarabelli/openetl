@@ -210,7 +210,7 @@ The hooks are configured in the [`.pre-commit-config.yaml`](.pre-commit-config.y
 - **Two blank lines**: After imports, before first class/function.
 - **Two blank lines**: Between classes and top-level functions.
 - **One blank line**: Between methods within a class.
-- **One blank line**: After docstrings, before code.
+- **One blank line**: After class docstrings, before first attribute or method (PEP 257).
 
 ##### File Structure Example
 
