@@ -16,8 +16,9 @@ Connection:
     psql -h localhost -U postgres -d postgres -f dags/database.ddl
 
 Notes:
-  - Uses IF NOT EXISTS for idempotent execution (safe to run multiple times).
   - Character encoding and collation are set for UTF-8 support.
+  - Re-running this script will fail if the database already exists; drop it
+    first or skip this step.
 ========================================================================================
 */
 
@@ -29,16 +30,12 @@ SET standard_conforming_strings = on;
 -- DATABASE CREATION
 ----------------------------------------------------------------------------------------
 
--- Note: IF NOT EXISTS requires PostgreSQL 9.5+
--- SQLFluff linter doesn't support this syntax, but PostgreSQL does.
--- noqa: disable=CP02
-CREATE DATABASE IF NOT EXISTS lens
+CREATE DATABASE lens
     WITH
     ENCODING = 'UTF8'
     LC_COLLATE = 'en_US.UTF-8'
     LC_CTYPE = 'en_US.UTF-8'
     TEMPLATE = template0;
--- noqa: enable=CP02
 
 COMMENT ON DATABASE lens IS
     'Data pipeline analytics database.';
