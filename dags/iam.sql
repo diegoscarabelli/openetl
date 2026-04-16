@@ -10,9 +10,11 @@ Description:  This script creates users, roles, and permissions associated with
 Prerequisites:
   - The lens database must exist (created by database.ddl).
   - Schemas must be created (created by schemas.ddl).
-  - Must have superuser privileges (typically postgres user)..
+  - Must have superuser privileges (typically postgres user).
   - IMPORTANT: Replace all <REDACTED> password placeholders with actual passwords
-    before running this script
+    before running this script.
+  - Re-running this script will fail if roles or users already exist; drop
+    them first or skip this step.
 
 Optional Components:
   - Superset roles and permissions (see SUPERSET ROLES AND PERMISSIONS section).
@@ -39,20 +41,20 @@ Connection:
 SET client_encoding = 'UTF8';
 
 -- Read-only access role for data consumers.
-CREATE ROLE IF NOT EXISTS readers;
+CREATE ROLE readers;
 
 ----------------------------------------------------------------------------------------
 -- AIRFLOW SERVICE USERS
 ----------------------------------------------------------------------------------------
 
 -- Airflow service user for Garmin data pipeline operations.
-CREATE USER IF NOT EXISTS airflow_garmin
+CREATE USER airflow_garmin
     WITH PASSWORD '<REDACTED>';
 COMMENT ON ROLE airflow_garmin IS
     'Service user for Airflow Garmin data pipeline operations.';
 
 -- Airflow service user for LinkedIn data pipeline operations.
-CREATE USER IF NOT EXISTS airflow_linkedin
+CREATE USER airflow_linkedin
     WITH PASSWORD '<REDACTED>';
 COMMENT ON ROLE airflow_linkedin IS
     'Service user for Airflow LinkedIn data pipeline operations.';
@@ -67,7 +69,7 @@ GRANT readers TO airflow_linkedin;
 ----------------------------------------------------------------------------------------
 
 -- Create specialized role for infrastructure monitoring operations.
-CREATE ROLE IF NOT EXISTS infra_monitor_role;
+CREATE ROLE infra_monitor_role;
 COMMENT ON ROLE infra_monitor_role IS
     'Role for infrastructure monitoring data operations including metrics ingestion '
     'and alerting.';
@@ -173,11 +175,11 @@ ALTER DEFAULT PRIVILEGES IN SCHEMA linkedin
 ----------------------------------------------------------------------------------------
 
 -- Create user for Superset service
-CREATE USER IF NOT EXISTS superset_user WITH PASSWORD '<REDACTED>';
+CREATE USER superset_user WITH PASSWORD '<REDACTED>';
 GRANT readers TO superset_user;
 
 -- Create role for Superset data upload operations.
-CREATE ROLE IF NOT EXISTS superset_upload_role;
+CREATE ROLE superset_upload_role;
 COMMENT ON ROLE superset_upload_role IS
     'Role for Apache Superset users to upload and manage ad-hoc datasets.';
 

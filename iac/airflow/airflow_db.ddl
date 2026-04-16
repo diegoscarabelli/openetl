@@ -39,14 +39,14 @@ REVOKE ALL ON FUNCTION pg_cancel_backend FROM public;
 REVOKE ALL ON FUNCTION pg_terminate_backend FROM public;
 
 -- Create read-only role for analytics.
-CREATE ROLE IF NOT EXISTS readers;
+CREATE ROLE readers;
 
 ----------------------------------------------------------------------------------------
 -- AIRFLOW METADATA DATABASE AND USER
 ----------------------------------------------------------------------------------------
 
 CREATE DATABASE airflow_db;
-CREATE USER IF NOT EXISTS airflow WITH PASSWORD '<REDACTED>';
+CREATE USER airflow WITH PASSWORD '<REDACTED>';
 GRANT ALL PRIVILEGES ON DATABASE airflow_db TO airflow;
 
 ----------------------------------------------------------------------------------------
