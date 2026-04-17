@@ -293,13 +293,13 @@ The ETL pipeline uses four complementary methods to populate the Garmin schema t
 - **Purpose**: Insert new records after explicit state transitions on existing data.
 - **When used**: Tables requiring pre-insert updates (e.g., `user_profile` where previous `latest=True` must become `latest=False`).
 - **Why**: Provides explicit control over insertion order when state management is critical.
-- **Pattern**: Typically follows `session.query().update()` to modify existing records before inserting new ones.
+- **Pattern**: Typically follows `session.execute(update())` to modify existing records before inserting new ones.
 
 **3b. Delete+Insert (`session.execute(delete())` + `session.add_all()`). Used for 5 tables.**
 - **Purpose**: Full replacement of records for an activity to handle reprocessing where rows can be added, removed, or changed.
 - **When used**: Strength training tables (`strength_exercise`, `strength_set`) and FIT metric tables (`activity_ts_metric`, `activity_lap_metric`, `activity_split_metric`).
 - **Why**: Standard upsert cannot handle removed rows (orphaned records persist). Delete+insert ensures a clean slate on each reprocessing.
-- **Pattern**: Delete all rows for a given `activity_id`, then insert fresh rows within the same transaction. FIT metric tables use `add_all` for performance (10,000+ ts_metric rows per activity).
+- **Pattern**: Delete all rows for a given `activity_id`, then insert fresh rows within the same transaction. FIT metric tables use `add_all()` for straightforward ORM inserts. For very large row counts, a bulk insert approach could offer better performance.
 
 The method selection balances three factors: **performance** (bulk operations preferred), **data integrity** (conflict handling when needed), and **code clarity** (ORM methods for complex relationships).
 

@@ -816,7 +816,9 @@ class GarminProcessor(Processor):
         # Always delete existing rows for reprocessing (cleans stale data even
         # when the activity no longer has exercise sets).
         session.execute(
-            delete(StrengthExercise).where(StrengthExercise.activity_id == activity_id)
+            delete(StrengthExercise)
+            .where(StrengthExercise.activity_id == activity_id)
+            .execution_options(synchronize_session=False)
         )
 
         if not summarized_sets:
@@ -879,7 +881,9 @@ class GarminProcessor(Processor):
         # Always delete existing rows for reprocessing (cleans stale data even
         # when the activity no longer has exercise sets).
         session.execute(
-            delete(StrengthSet).where(StrengthSet.activity_id == activity_id)
+            delete(StrengthSet)
+            .where(StrengthSet.activity_id == activity_id)
+            .execution_options(synchronize_session=False)
         )
 
         if not exercise_sets:
@@ -2643,20 +2647,24 @@ class GarminProcessor(Processor):
         # Delete existing FIT metric rows for this activity before re-inserting.
         # This handles added/removed laps, splits, or records between reprocesses.
         session.execute(
-            delete(ActivityTsMetric).where(ActivityTsMetric.activity_id == activity_id)
+            delete(ActivityTsMetric)
+            .where(ActivityTsMetric.activity_id == activity_id)
+            .execution_options(synchronize_session=False)
         )
         session.execute(
-            delete(ActivitySplitMetric).where(
-                ActivitySplitMetric.activity_id == activity_id
-            )
+            delete(ActivitySplitMetric)
+            .where(ActivitySplitMetric.activity_id == activity_id)
+            .execution_options(synchronize_session=False)
         )
         session.execute(
-            delete(ActivityLapMetric).where(
-                ActivityLapMetric.activity_id == activity_id
-            )
+            delete(ActivityLapMetric)
+            .where(ActivityLapMetric.activity_id == activity_id)
+            .execution_options(synchronize_session=False)
         )
         session.execute(
-            delete(ActivityPath).where(ActivityPath.activity_id == activity_id)
+            delete(ActivityPath)
+            .where(ActivityPath.activity_id == activity_id)
+            .execution_options(synchronize_session=False)
         )
 
         # Bulk insert all metrics.

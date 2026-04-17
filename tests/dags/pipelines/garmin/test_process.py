@@ -5368,9 +5368,21 @@ class TestGarminProcessor:
         assert len(ts_metrics) == 1
         assert ts_metrics[0].name == "heart_rate"
 
-        # Assert: execute(delete(...)) was called at least four times
-        # (ts_metric, split_metric, lap_metric, activity_path).
-        assert mock_session.execute.call_count >= 4
+        # Assert: delete was called for each dependent table.
+        delete_stmts = [
+            str(c[0][0])
+            for c in mock_session.execute.call_args_list
+            if "DELETE FROM" in str(c[0][0])
+        ]
+        for table in [
+            "activity_ts_metric",
+            "activity_split_metric",
+            "activity_lap_metric",
+            "activity_path",
+        ]:
+            assert any(
+                table in stmt for stmt in delete_stmts
+            ), f"Expected delete for {table}, got: {delete_stmts}"
 
     def test_process_fit_file_partial_gps_sample_filtered(
         self, processor, mock_session, temp_dir
@@ -5589,8 +5601,15 @@ class TestGarminProcessor:
         assert "totalReps" not in activity_data
         assert "otherField" in activity_data
 
-        # Assert - delete was called for reprocessing.
-        mock_session.execute.assert_called()
+        # Assert - delete targeted StrengthExercise for reprocessing.
+        delete_stmts = [
+            str(c[0][0])
+            for c in mock_session.execute.call_args_list
+            if "DELETE FROM" in str(c[0][0])
+        ]
+        assert any(
+            "strength_exercise" in s for s in delete_stmts
+        ), f"Expected delete for strength_exercise, got: {delete_stmts}"
 
         # Assert - records were added.
         mock_session.add_all.assert_called_once()
@@ -5677,8 +5696,15 @@ class TestGarminProcessor:
         assert "activeSets" not in activity_data
         assert "totalReps" not in activity_data
 
-        # Assert - delete was called (cleans stale data on reprocessing).
-        mock_session.execute.assert_called()
+        # Assert - delete targeted StrengthExercise (cleans stale data on reprocessing).
+        delete_stmts = [
+            str(c[0][0])
+            for c in mock_session.execute.call_args_list
+            if "DELETE FROM" in str(c[0][0])
+        ]
+        assert any(
+            "strength_exercise" in s for s in delete_stmts
+        ), f"Expected delete for strength_exercise, got: {delete_stmts}"
 
         # Assert - no insert since sets are empty.
         mock_session.add_all.assert_not_called()
@@ -5815,8 +5841,15 @@ class TestGarminProcessor:
         # Act.
         processor._process_exercise_sets(file_path, mock_session)
 
-        # Assert - delete was called for reprocessing.
-        mock_session.execute.assert_called()
+        # Assert - delete targeted StrengthSet for reprocessing.
+        delete_stmts = [
+            str(c[0][0])
+            for c in mock_session.execute.call_args_list
+            if "DELETE FROM" in str(c[0][0])
+        ]
+        assert any(
+            "strength_set" in s for s in delete_stmts
+        ), f"Expected delete for strength_set, got: {delete_stmts}"
 
         # Assert - records were added.
         mock_session.add_all.assert_called_once()

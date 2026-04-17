@@ -254,5 +254,6 @@ class LinkedInProcessor(Processor):
                     capture_date=capture_date,
                     update_ts=datetime.now(timezone.utc),
                 )
+                .execution_options(synchronize_session=False)
             )
             LOGGER.info(f"Marked {len(urls_to_deactivate)} connections as inactive.")
