@@ -555,6 +555,8 @@ First Name,Last Name,URL,Email Address,Company,Position,Connected On
         params = compiled.params
         assert params["active_connection"] is False
         assert params["capture_date"] == capture_date
+        # SQLAlchemy may generate dialect-dependent key names for IN-bound URL
+        # parameters, so assert by URL-related key pattern rather than one exact key.
         assert any(
             value == url_to_deactivate
             for key, value in params.items()

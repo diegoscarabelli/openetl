@@ -5374,6 +5374,7 @@ class TestGarminProcessor:
             for c in mock_session.execute.call_args_list
             if getattr(c[0][0], "is_delete", False)
         ]
+        # Keep explicit loop (instead of comprehension) to compile each statement once.
         compiled_delete_stmts = []
         for stmt in delete_stmts:
             compiled_stmt = stmt.compile(compile_kwargs={"render_postcompile": True})
