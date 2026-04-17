@@ -16,8 +16,9 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
-from airflow.exceptions import AirflowSkipException
-from airflow.models import DAG
+from airflow.sdk import DAG
+from airflow.sdk.exceptions import AirflowSkipException
+from sqlalchemy import select
 
 from dags.lib.dag_utils import (
     ingest,
@@ -433,7 +434,9 @@ class TestProcessorIntegration:
             etl_result_session.commit()
             # Query the session for ETLResultRecord.
             try:
-                results = etl_result_session.query(ETLResultRecord).all()
+                results = (
+                    etl_result_session.execute(select(ETLResultRecord)).scalars().all()
+                )
                 names = [r.file_name for r in results]
                 assert set(names) == {"file1.csv", "file2.csv"}
             except Exception:

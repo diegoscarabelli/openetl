@@ -295,11 +295,11 @@ The ETL pipeline uses four complementary methods to populate the Garmin schema t
 - **Why**: Provides explicit control over insertion order when state management is critical.
 - **Pattern**: Typically follows `session.query().update()` to modify existing records before inserting new ones.
 
-**3b. Delete+Insert (`session.query().delete()` + `session.bulk_save_objects()`/`session.add_all()`). Used for 5 tables.**
+**3b. Delete+Insert (`session.execute(delete())` + `session.add_all()`). Used for 5 tables.**
 - **Purpose**: Full replacement of records for an activity to handle reprocessing where rows can be added, removed, or changed.
 - **When used**: Strength training tables (`strength_exercise`, `strength_set`) and FIT metric tables (`activity_ts_metric`, `activity_lap_metric`, `activity_split_metric`).
 - **Why**: Standard upsert cannot handle removed rows (orphaned records persist). Delete+insert ensures a clean slate on each reprocessing.
-- **Pattern**: Delete all rows for a given `activity_id`, then insert fresh rows within the same transaction. FIT metric tables use `bulk_save_objects` for performance (10,000+ ts_metric rows per activity).
+- **Pattern**: Delete all rows for a given `activity_id`, then insert fresh rows within the same transaction. FIT metric tables use `add_all` for performance (10,000+ ts_metric rows per activity).
 
 The method selection balances three factors: **performance** (bulk operations preferred), **data integrity** (conflict handling when needed), and **code clarity** (ORM methods for complex relationships).
 
@@ -434,7 +434,7 @@ The system processes 13 different JSON data types from [`GARMIN_DATA_REGISTRY`](
 FIT file processing occurs after JSON wellness data processing and handles detailed time-series activity data. Each activity present in the Activities List JSON file should have a corresponding FIT file containing granular sensor measurements, lap metrics, and split data. FIT files provide the detailed temporal data that complements the aggregate metrics already stored from the Activities List processing.
 
 * **Target tables**: `garmin.activity_ts_metric` (hypertable), `activity_lap_metric`, `activity_split_metric`.
-* **Database method**: Delete+insert strategy for idempotent reprocessing. Deletes all existing rows for the activity across all three FIT metric tables, then inserts fresh data via `session.bulk_save_objects()`. This approach handles added/removed laps, splits, or records between reprocesses without UNIQUE constraint violations. After insertion, sets `activity.ts_data_available` to reflect whether time-series records were found in the FIT file.
+* **Database method**: Delete+insert strategy for idempotent reprocessing. Deletes all existing rows for the activity across all three FIT metric tables, then inserts fresh data via `session.add_all()`. This approach handles added/removed laps, splits, or records between reprocesses without UNIQUE constraint violations. After insertion, sets `activity.ts_data_available` to reflect whether time-series records were found in the FIT file.
 * **Data processing**: Uses [`fitdecode`](https://pypi.org/project/fitdecode/) library for binary FIT file parsing with frame-based processing. Processes three frame types: Record frames (time-series sensor data with two-pass timestamp processing → `activity_ts_metric`), Lap frames (device-triggered segments with metric extraction → `activity_lap_metric`), Split frames (algorithmic intervals with type classification: rwd_run, rwd_walk, rwd_stand, interval_active → `activity_split_metric`). Handles array fields using suffix indexing (`_1`, `_2`, etc.) for multiple values per timestamp with field name validation (`field.name is not None`), "unknown" field filtering, and null value checking. Includes binary format validation, type conversion error handling (ValueError, TypeError), and graceful degradation for corrupt data.
 * **Data excluded**: "Unknown" field names, null values, fields with invalid field names (`field.name is None`), and corrupted binary data that fails parsing.
 

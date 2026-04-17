@@ -1,7 +1,7 @@
 # syntax=docker/dockerfile:1
 
 # 1. Use the specific Airflow version
-FROM apache/airflow:3.1.0
+FROM apache/airflow:3.2.0
 
 # 2. Set USER airflow for initial steps that don't require root
 USER airflow

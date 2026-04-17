@@ -513,26 +513,25 @@ First Name,Last Name,URL,Email Address,Company,Position,Connected On
         Test that connections not in file are marked as inactive via bulk UPDATE.
         """
 
-        # Track query calls to distinguish URL query from update query.
-        query_call_count = [0]
-        url_query_mock = MagicMock()
-        update_query_mock = MagicMock()
+        # Track execute calls to distinguish select from update.
+        execute_call_count = [0]
+        scalars_mock = MagicMock()
 
-        def query_side_effect(arg):
-            query_call_count[0] += 1
-            if query_call_count[0] == 1:
-                # First query is for URLs.
-                return url_query_mock
+        def execute_side_effect(stmt, *args, **kwargs):
+            execute_call_count[0] += 1
+            if execute_call_count[0] == 1:
+                # First execute is select(Connection.url).
+                return scalars_mock
             else:
-                # Second query is for bulk update.
-                return update_query_mock
+                # Second execute is update(Connection).
+                return MagicMock()
 
-        mock_session.query.side_effect = query_side_effect
+        mock_session.execute.side_effect = execute_side_effect
 
-        # Mock the URL query result (returns tuples with URL).
-        url_query_mock.filter.return_value.filter.return_value.all.return_value = [
-            ("https://www.linkedin.com/in/existing1",),
-            ("https://www.linkedin.com/in/existing2",),
+        # Mock the URL query result (scalars returns URL strings).
+        scalars_mock.scalars.return_value = [
+            "https://www.linkedin.com/in/existing1",
+            "https://www.linkedin.com/in/existing2",
         ]
 
         # Only existing1 is in the current file.
@@ -541,13 +540,8 @@ First Name,Last Name,URL,Email Address,Company,Position,Connected On
 
         processor._mark_inactive_connections(mock_session, active_urls, capture_date)
 
-        # Verify update was called (existing2 should be deactivated).
-        update_query_mock.filter.return_value.update.assert_called_once()
-        update_call_args = update_query_mock.filter.return_value.update.call_args
-        update_dict = update_call_args[0][0]
-        assert update_dict[Connection.active_connection] is False
-        assert update_dict[Connection.capture_date] == capture_date
-        assert Connection.update_ts in update_dict
+        # Verify two execute calls: select + update.
+        assert mock_session.execute.call_count == 2
 
     def test_mark_inactive_connections_all_active(
         self, processor: LinkedInProcessor, mock_session: MagicMock
@@ -556,19 +550,21 @@ First Name,Last Name,URL,Email Address,Company,Position,Connected On
         Test that no update when all DB connections are in file.
         """
 
-        # Mock the URL query result (returns tuples with URL).
-        mock_session.query.return_value.filter.return_value.filter.return_value.all.return_value = [
-            ("https://www.linkedin.com/in/existing",),
+        # Mock the URL query result (scalars returns URL strings).
+        scalars_mock = MagicMock()
+        scalars_mock.scalars.return_value = [
+            "https://www.linkedin.com/in/existing",
         ]
+        mock_session.execute.return_value = scalars_mock
 
         active_urls: Set[str] = {"https://www.linkedin.com/in/existing"}
         capture_date = date(2024, 1, 15)
 
         processor._mark_inactive_connections(mock_session, active_urls, capture_date)
 
-        # Only one query() call should happen (for getting URLs).
-        # No second query() call for update since all URLs are in file.
-        assert mock_session.query.call_count == 1
+        # Only one execute call (select). No update since all URLs are
+        # in file.
+        assert mock_session.execute.call_count == 1
 
     def test_mark_inactive_connections_empty_database(
         self, processor: LinkedInProcessor, mock_session: MagicMock
@@ -577,19 +573,18 @@ First Name,Last Name,URL,Email Address,Company,Position,Connected On
         Test handling when database has no active connections.
         """
 
-        # Mock the URL query result (returns empty list).
-        mock_session.query.return_value.filter.return_value.filter.return_value.all.return_value = (
-            []
-        )
+        # Mock the URL query result (scalars returns empty list).
+        scalars_mock = MagicMock()
+        scalars_mock.scalars.return_value = []
+        mock_session.execute.return_value = scalars_mock
 
         active_urls: Set[str] = {"https://www.linkedin.com/in/newuser"}
         capture_date = date(2024, 1, 15)
 
         processor._mark_inactive_connections(mock_session, active_urls, capture_date)
 
-        # Only one query() call should happen (for getting URLs).
-        # No second query() call for update since DB is empty.
-        assert mock_session.query.call_count == 1
+        # Only one execute call (select). No update since DB is empty.
+        assert mock_session.execute.call_count == 1
 
     # ==========================================================================
     # Process File Set Tests

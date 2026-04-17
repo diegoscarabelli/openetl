@@ -20,8 +20,8 @@ from shutil import move
 from typing import Union
 
 import pendulum
-from airflow.exceptions import AirflowSkipException
-from airflow.models import DAG
+from airflow.sdk import DAG
+from airflow.sdk.exceptions import AirflowSkipException
 from airflow.providers.standard.operators.python import PythonOperator
 from sqlalchemy.orm import Session
 

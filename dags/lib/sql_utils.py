@@ -18,19 +18,24 @@ import socket
 import urllib.parse
 
 from datetime import datetime, timezone
-from typing import List, Optional, Type, Dict, Any
+from typing import Any, Dict, List, Optional, Type
 
-from sqlalchemy import Column, create_engine, DateTime, ForeignKey, MetaData
+from sqlalchemy import create_engine, DateTime, ForeignKey, MetaData, select
 from sqlalchemy.dialects.postgresql import insert
-from sqlalchemy.sql import and_, or_
 from sqlalchemy.engine import Engine
-from sqlalchemy.orm import DeclarativeMeta, declarative_base
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import (
+    DeclarativeBase,
+    Mapped,
+    Session,
+    declared_attr,
+    mapped_column,
+)
+from sqlalchemy.sql import and_, or_
 
 from dags.lib.logging_utils import LOGGER
 
 
-# Enum for query types used in upsert logic
+# Enum for query types used in upsert logic.
 class QueryType:
     """
     Enumeration of query types for upsert operations.
@@ -45,7 +50,7 @@ def make_base(
     schema: Optional[str] = None,
     include_update_ts: bool = False,
     metadata: Optional[MetaData] = None,
-) -> Type[DeclarativeMeta]:
+) -> Type:
     """
     Create a custom base class for SQLAlchemy ORM models representing SQL database
     tables.
@@ -56,31 +61,53 @@ def make_base(
     :return: Declarative base class for ORM models.
     """
 
-    metadata = metadata or MetaData()
-    Base = declarative_base(metadata=metadata)
+    _metadata = metadata or MetaData()
 
-    class CustomBase(Base):
+    class _Base(DeclarativeBase):
+        metadata = _metadata  # type: ignore[assignment]
+
+    class _CustomBase(_Base):
         """
         Custom SQLAlchemy ORM base class with optional schema and timestamp columns.
         """
 
         __abstract__ = True
-        create_ts = Column(
-            DateTime(timezone=True),
-            default=datetime.now,
-            nullable=False,
-        )
-        if include_update_ts:
-            update_ts = Column(
+
+        @declared_attr
+        def create_ts(cls) -> Mapped[datetime]:
+            """
+            Auto-populated creation timestamp.
+            """
+            return mapped_column(
                 DateTime(timezone=True),
                 default=datetime.now,
-                onupdate=datetime.now,
                 nullable=False,
             )
 
+    if include_update_ts:
+
+        class _CustomBaseWithTs(_CustomBase):
+            __abstract__ = True
+
+            @declared_attr
+            def update_ts(cls) -> Mapped[datetime]:
+                """
+                Auto-populated update timestamp.
+                """
+                return mapped_column(
+                    DateTime(timezone=True),
+                    default=datetime.now,
+                    onupdate=datetime.now,
+                    nullable=False,
+                )
+
+        result_base = _CustomBaseWithTs
+    else:
+        result_base = _CustomBase
+
     if schema:
-        CustomBase.__table_args__ = {"schema": schema}
-    return CustomBase
+        result_base.__table_args__ = {"schema": schema}
+    return result_base
 
 
 def fkey(schema: str, table_name: str, column_name: str = None) -> ForeignKey:
@@ -130,7 +157,6 @@ def get_engine(
         f"{protocol}://{username}{password}@{host}/{db_name}",
         execution_options=execution_options,
         echo=echo,
-        future=True,
     )
 
 
@@ -222,14 +248,14 @@ def get_lens_engine(user: str, echo: bool = False) -> Engine:
 
 def upsert_model_instances(
     session: Session,
-    model_instances: List[DeclarativeMeta],
+    model_instances: List[Any],
     update_columns: Optional[List[str]] = None,
     conflict_columns: Optional[List[str]] = None,
     on_conflict_update: bool = False,
     latest_check_column: str = None,
     latest_check_inclusive: bool = False,
     returning_columns: Optional[List[str]] = None,
-) -> Optional[List[DeclarativeMeta]]:
+) -> Optional[List[Any]]:
     """
     Bulk upsert SQLAlchemy ORM model instances into SQL database tables, handling
     conflicts and optionally updating existing rows. This function converts model
@@ -296,7 +322,7 @@ def upsert_model_instances(
 
 
 def _upsert_values(
-    model: Type[Type[DeclarativeMeta]],
+    model: Type,
     values: List[dict],
     session: Session,
     update_columns: Optional[List[str]] = None,
@@ -434,12 +460,12 @@ def _upsert_values(
                 )
                 for value in values
             ]
-            query = (
-                session.query(model)
-                .with_entities(*[getattr(model, col) for col in returning_columns])
-                .filter(or_(*conflict_conditions))
+            stmt = select(*[getattr(model, col) for col in returning_columns]).where(
+                or_(*conflict_conditions)
             )
-            returned_values.extend([row._asdict() for row in query.all()])
+            returned_values.extend(
+                [row._asdict() for row in session.execute(stmt).all()]
+            )
 
         else:
             raise ValueError(f"Invalid query type: {query_type}")

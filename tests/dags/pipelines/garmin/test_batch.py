@@ -17,7 +17,7 @@ from pathlib import Path
 from unittest.mock import MagicMock
 
 import pytest
-from airflow.exceptions import AirflowSkipException
+from airflow.sdk.exceptions import AirflowSkipException
 
 from dags.pipelines.garmin.batch import batch
 

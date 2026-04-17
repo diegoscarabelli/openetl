@@ -31,6 +31,7 @@ from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Any, Optional, Tuple
 
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from dags.lib.logging_utils import LOGGER
@@ -153,8 +154,13 @@ def backfill_sleep_level(store_dir: Path) -> None:
                     continue
 
                 sleep = (
-                    session.query(Sleep)
-                    .filter_by(user_id=user_id, calendar_date=calendar_date)
+                    session.execute(
+                        select(Sleep).where(
+                            Sleep.user_id == user_id,
+                            Sleep.calendar_date == calendar_date,
+                        )
+                    )
+                    .scalars()
                     .one_or_none()
                 )
                 if sleep is None:

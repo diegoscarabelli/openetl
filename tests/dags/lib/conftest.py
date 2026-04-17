@@ -8,7 +8,7 @@ from dotenv import load_dotenv
 
 from sqlalchemy import Boolean, create_engine, Column, Integer, String, text
 from sqlalchemy.engine import Engine
-from sqlalchemy.orm import sessionmaker, declarative_base, Session
+from sqlalchemy.orm import DeclarativeBase, Session
 
 from dags.lib.etl_monitor_utils import InfraMonitorBase, ETLResultSqla
 
@@ -62,7 +62,11 @@ if not TEST_DB_URL:
         f"postgresql+psycopg2://postgres:{POSTGRES_PASSWORD}@localhost:5432/postgres"
     )
 
-Base = declarative_base()
+
+class Base(DeclarativeBase):
+    """
+    Test declarative base.
+    """
 
 
 class MyTest(Base):
@@ -133,7 +137,7 @@ def db_session(db_engine: Engine) -> Generator[Session, None, None]:
     :return: The SQLAlchemy session instance.
     """
 
-    session = sessionmaker(bind=db_engine)()
+    session = Session(db_engine)
     yield session
     session.close()
 
@@ -167,6 +171,6 @@ def etl_result_session(etl_result_engine: Engine) -> Generator[Session, None, No
     :return: The SQLAlchemy session instance for reporting.
     """
 
-    session = sessionmaker(bind=etl_result_engine)()
+    session = Session(etl_result_engine)
     yield session
     session.close()

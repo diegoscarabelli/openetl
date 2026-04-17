@@ -17,7 +17,7 @@ from typing import List, Optional, Tuple, Union
 
 import fire
 import pendulum
-from airflow.exceptions import AirflowSkipException
+from airflow.sdk.exceptions import AirflowSkipException
 
 from dags.lib.logging_utils import LOGGER
 from dags.pipelines.garmin.constants import (

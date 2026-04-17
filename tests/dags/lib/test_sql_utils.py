@@ -6,8 +6,8 @@ from datetime import datetime, timezone
 from unittest.mock import patch
 
 import pytest
-from sqlalchemy import Column, Integer, String, DateTime, text
-from sqlalchemy.orm import declarative_base
+from sqlalchemy import Column, Integer, String, DateTime, delete, func, select, text
+from sqlalchemy.orm import DeclarativeBase
 
 from dags.lib.sql_utils import make_base, upsert_model_instances, _upsert_values
 from tests.dags.lib.conftest import MyTest
@@ -118,7 +118,7 @@ class TestUpsertModelInstances:
         db_session.commit()
         assert result is None
         # Row should still exist.
-        row = db_session.query(MyTest).filter_by(id=1).first()
+        row = db_session.execute(select(MyTest).where(MyTest.id == 1)).scalars().first()
         assert row.col_a == "A"
 
     def test_upsert_values_missing_conflict_columns_raises(self, db_session):
@@ -156,7 +156,9 @@ class TestUpsertModelInstances:
         }
         _upsert_values(MyTest, [{"id": 1, "col_a": "B"}], db_session, **kwargs)
         db_session.commit()
-        result = db_session.query(MyTest).filter_by(id=1).first()
+        result = (
+            db_session.execute(select(MyTest).where(MyTest.id == 1)).scalars().first()
+        )
         assert result.col_a == "B"
 
     def test_upsert_values_insert_ignore(self, db_session):
@@ -185,7 +187,9 @@ class TestUpsertModelInstances:
             returning_columns=["id", "col_a"],
         )
         db_session.commit()
-        result = db_session.query(MyTest).filter_by(id=1).first()
+        result = (
+            db_session.execute(select(MyTest).where(MyTest.id == 1)).scalars().first()
+        )
         assert result.col_a == "A"
 
     def test_upsert_values_insert(self, db_session):
@@ -210,8 +214,12 @@ class TestUpsertModelInstances:
         }
         _upsert_values(MyTest, [{"id": 2, "col_a": "B"}], db_session, **kwargs)
         db_session.commit()
-        result1 = db_session.query(MyTest).filter_by(id=1).first()
-        result2 = db_session.query(MyTest).filter_by(id=2).first()
+        result1 = (
+            db_session.execute(select(MyTest).where(MyTest.id == 1)).scalars().first()
+        )
+        result2 = (
+            db_session.execute(select(MyTest).where(MyTest.id == 2)).scalars().first()
+        )
         assert result1.col_a == "A"
         assert result2.col_a == "B"
 
@@ -229,11 +237,13 @@ class TestUpsertModelInstances:
         _upsert_values(MyTest, [{"id": 1, "col_a": "A"}], db_session, **kwargs)
         _upsert_values(MyTest, [{"id": 2, "col_a": "B"}], db_session, **kwargs)
         db_session.commit()
-        assert db_session.query(MyTest).count() == 2
+        count = db_session.execute(select(func.count()).select_from(MyTest)).scalar()
+        assert count == 2
         db_session.rollback()
-        db_session.query(MyTest).delete()
+        db_session.execute(delete(MyTest))
         db_session.commit()
-        assert db_session.query(MyTest).count() == 0
+        count = db_session.execute(select(func.count()).select_from(MyTest)).scalar()
+        assert count == 0
 
     def test_upsert_values_auto_update_ts(self, db_session):
         """
@@ -252,9 +262,10 @@ class TestUpsertModelInstances:
         """))
 
         # Create a simple mock model for this test.
-        temp_base = declarative_base()
+        class TempBase(DeclarativeBase):
+            pass
 
-        class TempTestModel(temp_base):
+        class TempTestModel(TempBase):
             """
             Temporary test model with update_ts column.
             """
@@ -276,7 +287,11 @@ class TestUpsertModelInstances:
         db_session.commit()
 
         # Get the record and check timestamps.
-        record = db_session.query(TempTestModel).filter_by(id=1).first()
+        record = (
+            db_session.execute(select(TempTestModel).where(TempTestModel.id == 1))
+            .scalars()
+            .first()
+        )
         assert record is not None
         assert record.create_ts is not None
         assert record.update_ts is not None
@@ -293,7 +308,11 @@ class TestUpsertModelInstances:
         db_session.commit()
 
         # Verify update_ts was automatically updated.
-        updated_record = db_session.query(TempTestModel).filter_by(id=1).first()
+        updated_record = (
+            db_session.execute(select(TempTestModel).where(TempTestModel.id == 1))
+            .scalars()
+            .first()
+        )
         assert updated_record.name == "updated"
         # The update_ts should be updated (different from initial).
         assert updated_record.update_ts != initial_update_ts
@@ -313,7 +332,9 @@ class TestUpsertModelInstances:
         )
         db_session.commit()
 
-        record = db_session.query(MyTest).filter_by(id=1).first()
+        record = (
+            db_session.execute(select(MyTest).where(MyTest.id == 1)).scalars().first()
+        )
         assert record is not None
         assert record.col_a == "test"
         assert not hasattr(record, "update_ts")  # Verify no update_ts column.
@@ -334,9 +355,10 @@ class TestUpsertModelInstances:
         """))
 
         # Create a simple mock model for this test.
-        temp_base = declarative_base()
+        class TempBase(DeclarativeBase):
+            pass
 
-        class TempExplicitModel(temp_base):
+        class TempExplicitModel(TempBase):
             """
             Temporary test model for explicit update_ts testing.
             """
@@ -372,7 +394,13 @@ class TestUpsertModelInstances:
         db_session.commit()
 
         # Verify the explicit update_ts was used, not auto-generated.
-        updated_record = db_session.query(TempExplicitModel).filter_by(id=1).first()
+        updated_record = (
+            db_session.execute(
+                select(TempExplicitModel).where(TempExplicitModel.id == 1)
+            )
+            .scalars()
+            .first()
+        )
         assert updated_record.name == "updated"
         assert updated_record.update_ts == explicit_update_ts
 
@@ -390,9 +418,10 @@ class TestUpsertModelInstances:
             )
         """))
 
-        temp_base = declarative_base()
+        class TempBase(DeclarativeBase):
+            pass
 
-        class TempVersionModel(temp_base):
+        class TempVersionModel(TempBase):
             """
             Temporary test model with version column.
             """
@@ -414,7 +443,11 @@ class TestUpsertModelInstances:
         )
         db_session.commit()
 
-        record = db_session.query(TempVersionModel).filter_by(id=1).first()
+        record = (
+            db_session.execute(select(TempVersionModel).where(TempVersionModel.id == 1))
+            .scalars()
+            .first()
+        )
         assert record.name == "initial"
         assert record.version == 5
 
@@ -430,7 +463,11 @@ class TestUpsertModelInstances:
         )
         db_session.commit()
 
-        record = db_session.query(TempVersionModel).filter_by(id=1).first()
+        record = (
+            db_session.execute(select(TempVersionModel).where(TempVersionModel.id == 1))
+            .scalars()
+            .first()
+        )
         assert record.name == "initial"  # Should NOT be updated.
         assert record.version == 5
 
@@ -446,7 +483,11 @@ class TestUpsertModelInstances:
         )
         db_session.commit()
 
-        record = db_session.query(TempVersionModel).filter_by(id=1).first()
+        record = (
+            db_session.execute(select(TempVersionModel).where(TempVersionModel.id == 1))
+            .scalars()
+            .first()
+        )
         assert record.name == "newer_version"  # Should be updated.
         assert record.version == 6
 
@@ -464,9 +505,10 @@ class TestUpsertModelInstances:
             )
         """))
 
-        temp_base = declarative_base()
+        class TempBase(DeclarativeBase):
+            pass
 
-        class TempVersionInclusiveModel(temp_base):
+        class TempVersionInclusiveModel(TempBase):
             """
             Temporary test model with version column for inclusive test.
             """
@@ -488,7 +530,15 @@ class TestUpsertModelInstances:
         )
         db_session.commit()
 
-        record = db_session.query(TempVersionInclusiveModel).filter_by(id=1).first()
+        record = (
+            db_session.execute(
+                select(TempVersionInclusiveModel).where(
+                    TempVersionInclusiveModel.id == 1
+                )
+            )
+            .scalars()
+            .first()
+        )
         assert record.name == "initial"
         assert record.version == 5
 
@@ -504,7 +554,15 @@ class TestUpsertModelInstances:
         )
         db_session.commit()
 
-        record = db_session.query(TempVersionInclusiveModel).filter_by(id=1).first()
+        record = (
+            db_session.execute(
+                select(TempVersionInclusiveModel).where(
+                    TempVersionInclusiveModel.id == 1
+                )
+            )
+            .scalars()
+            .first()
+        )
         assert (
             record.name == "same_version_updated"
         )  # Should be updated with inclusive.
@@ -528,9 +586,10 @@ class TestUpsertModelInstances:
             )
         """))
 
-        temp_base = declarative_base()
+        class TempBase(DeclarativeBase):
+            pass
 
-        class TempVersionUpdateTsModel(temp_base):
+        class TempVersionUpdateTsModel(TempBase):
             """
             Temporary test model with version and update_ts columns.
             """
@@ -553,7 +612,13 @@ class TestUpsertModelInstances:
         )
         db_session.commit()
 
-        record = db_session.query(TempVersionUpdateTsModel).filter_by(id=1).first()
+        record = (
+            db_session.execute(
+                select(TempVersionUpdateTsModel).where(TempVersionUpdateTsModel.id == 1)
+            )
+            .scalars()
+            .first()
+        )
         initial_update_ts = record.update_ts
 
         # Wait briefly to ensure timestamp difference.
@@ -571,7 +636,11 @@ class TestUpsertModelInstances:
         db_session.commit()
 
         updated_record = (
-            db_session.query(TempVersionUpdateTsModel).filter_by(id=1).first()
+            db_session.execute(
+                select(TempVersionUpdateTsModel).where(TempVersionUpdateTsModel.id == 1)
+            )
+            .scalars()
+            .first()
         )
         assert updated_record.name == "updated"
         assert updated_record.version == 2

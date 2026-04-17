@@ -10,7 +10,7 @@ import random
 import re
 
 import pendulum
-from airflow.exceptions import AirflowSkipException
+from airflow.sdk.exceptions import AirflowSkipException
 
 from dags.lib.etl_config import ETLConfig
 from dags.lib.filesystem_utils import FileSet
