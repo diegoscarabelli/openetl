@@ -536,7 +536,7 @@ First Name,Last Name,URL,Email Address,Company,Position,Connected On
 
         # Only existing1 is in the current file.
         active_urls: Set[str] = {"https://www.linkedin.com/in/existing1"}
-        missing_url = "https://www.linkedin.com/in/existing2"
+        url_to_deactivate = "https://www.linkedin.com/in/existing2"
         capture_date = date(2024, 1, 15)
 
         processor._mark_inactive_connections(mock_session, active_urls, capture_date)
@@ -555,7 +555,11 @@ First Name,Last Name,URL,Email Address,Company,Position,Connected On
         params = compiled.params
         assert params["active_connection"] is False
         assert params["capture_date"] == capture_date
-        assert missing_url in params.values()
+        assert any(
+            value == url_to_deactivate
+            for key, value in params.items()
+            if "url" in key.lower()
+        )
         assert isinstance(params["update_ts"], datetime)
 
     def test_mark_inactive_connections_all_active(
