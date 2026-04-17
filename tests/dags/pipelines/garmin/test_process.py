@@ -5700,9 +5700,10 @@ class TestGarminProcessor:
             "activeSets": 0,
             "totalReps": 0,
         }
+        activity_id = 12345
 
         # Act.
-        processor._process_strength_metrics(activity_data, 12345, mock_session)
+        processor._process_strength_metrics(activity_data, activity_id, mock_session)
 
         # Assert - scalars were still popped.
         assert "totalSets" not in activity_data
@@ -5725,7 +5726,7 @@ class TestGarminProcessor:
             None,
         )
         assert strength_delete is not None
-        assert "= 12345" in str(
+        assert f"= {activity_id}" in str(
             strength_delete.compile(compile_kwargs={"literal_binds": True})
         )
 
