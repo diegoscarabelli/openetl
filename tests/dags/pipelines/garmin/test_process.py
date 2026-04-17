@@ -5369,12 +5369,12 @@ class TestGarminProcessor:
         assert ts_metrics[0].name == "heart_rate"
 
         # Assert: delete was called for each dependent table and activity_id.
+        # Compile each delete statement once to assert both SQL target and params.
         delete_stmts = [
             c[0][0]
             for c in mock_session.execute.call_args_list
             if getattr(c[0][0], "is_delete", False)
         ]
-        # Keep explicit loop (instead of comprehension) to compile each statement once.
         compiled_delete_stmts = []
         for stmt in delete_stmts:
             compiled_stmt = stmt.compile(compile_kwargs={"render_postcompile": True})
@@ -5613,19 +5613,19 @@ class TestGarminProcessor:
             for c in mock_session.execute.call_args_list
             if getattr(c[0][0], "is_delete", False)
         ]
-        strength_delete = next(
+        compiled_delete_stmts = [
+            stmt.compile(compile_kwargs={"render_postcompile": True})
+            for stmt in delete_stmts
+        ]
+        strength_delete_compiled = next(
             (
-                stmt
-                for stmt in delete_stmts
-                if "strength_exercise"
-                in str(stmt.compile(compile_kwargs={"render_postcompile": True}))
+                compiled_stmt
+                for compiled_stmt in compiled_delete_stmts
+                if "strength_exercise" in str(compiled_stmt)
             ),
             None,
         )
-        assert strength_delete is not None
-        strength_delete_compiled = strength_delete.compile(
-            compile_kwargs={"render_postcompile": True}
-        )
+        assert strength_delete_compiled is not None
         assert activity_id in strength_delete_compiled.params.values()
 
         # Assert - records were added.
@@ -5720,19 +5720,19 @@ class TestGarminProcessor:
             for c in mock_session.execute.call_args_list
             if getattr(c[0][0], "is_delete", False)
         ]
-        strength_delete = next(
+        compiled_delete_stmts = [
+            stmt.compile(compile_kwargs={"render_postcompile": True})
+            for stmt in delete_stmts
+        ]
+        strength_delete_compiled = next(
             (
-                stmt
-                for stmt in delete_stmts
-                if "strength_exercise"
-                in str(stmt.compile(compile_kwargs={"render_postcompile": True}))
+                compiled_stmt
+                for compiled_stmt in compiled_delete_stmts
+                if "strength_exercise" in str(compiled_stmt)
             ),
             None,
         )
-        assert strength_delete is not None
-        strength_delete_compiled = strength_delete.compile(
-            compile_kwargs={"render_postcompile": True}
-        )
+        assert strength_delete_compiled is not None
         assert activity_id in strength_delete_compiled.params.values()
 
         # Assert - no insert since sets are empty.
@@ -5877,19 +5877,19 @@ class TestGarminProcessor:
             for c in mock_session.execute.call_args_list
             if getattr(c[0][0], "is_delete", False)
         ]
-        strength_set_delete = next(
+        compiled_delete_stmts = [
+            stmt.compile(compile_kwargs={"render_postcompile": True})
+            for stmt in delete_stmts
+        ]
+        strength_set_delete_compiled = next(
             (
-                stmt
-                for stmt in delete_stmts
-                if "strength_set"
-                in str(stmt.compile(compile_kwargs={"render_postcompile": True}))
+                compiled_stmt
+                for compiled_stmt in compiled_delete_stmts
+                if "strength_set" in str(compiled_stmt)
             ),
             None,
         )
-        assert strength_set_delete is not None
-        strength_set_delete_compiled = strength_set_delete.compile(
-            compile_kwargs={"render_postcompile": True}
-        )
+        assert strength_set_delete_compiled is not None
         assert activity_id in strength_set_delete_compiled.params.values()
 
         # Assert - records were added.
