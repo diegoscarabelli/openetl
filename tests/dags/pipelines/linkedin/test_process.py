@@ -543,16 +543,18 @@ First Name,Last Name,URL,Email Address,Company,Position,Connected On
         # Verify two execute calls: select + update.
         assert mock_session.execute.call_count == 2
 
-        # Verify the UPDATE statement targets the right table with expected values.
+        # Verify the UPDATE statement targets only the missing URL and sets
+        # expected values.
         update_stmt = mock_session.execute.call_args_list[1][0][0]
         assert update_stmt.is_dml
-        compiled = update_stmt.compile()
+        compiled = update_stmt.compile(compile_kwargs={"render_postcompile": True})
         compiled_str = str(compiled)
         assert "UPDATE" in compiled_str
         assert "connection" in compiled_str
         params = compiled.params
         assert params["active_connection"] is False
         assert params["capture_date"] == capture_date
+        assert "https://www.linkedin.com/in/existing2" in params.values()
         assert isinstance(params["update_ts"], datetime)
 
     def test_mark_inactive_connections_all_active(

@@ -5368,11 +5368,11 @@ class TestGarminProcessor:
         assert len(ts_metrics) == 1
         assert ts_metrics[0].name == "heart_rate"
 
-        # Assert: delete was called for each dependent table.
+        # Assert: delete was called for each dependent table and activity_id.
         delete_stmts = [
-            str(c[0][0])
+            c[0][0]
             for c in mock_session.execute.call_args_list
-            if "DELETE FROM" in str(c[0][0])
+            if getattr(c[0][0], "is_delete", False)
         ]
         for table in [
             "activity_ts_metric",
@@ -5381,8 +5381,11 @@ class TestGarminProcessor:
             "activity_path",
         ]:
             assert any(
-                table in stmt for stmt in delete_stmts
-            ), f"Expected delete for {table}, got: {delete_stmts}"
+                table in str(stmt.compile(compile_kwargs={"literal_binds": True}))
+                and f"= {activity_id}"
+                in str(stmt.compile(compile_kwargs={"literal_binds": True}))
+                for stmt in delete_stmts
+            ), f"Expected delete for {table} and activity_id={activity_id}"
 
     def test_process_fit_file_partial_gps_sample_filtered(
         self, processor, mock_session, temp_dir
@@ -5601,15 +5604,25 @@ class TestGarminProcessor:
         assert "totalReps" not in activity_data
         assert "otherField" in activity_data
 
-        # Assert - delete targeted StrengthExercise for reprocessing.
+        # Assert - delete targeted StrengthExercise for correct activity.
         delete_stmts = [
-            str(c[0][0])
+            c[0][0]
             for c in mock_session.execute.call_args_list
-            if "DELETE FROM" in str(c[0][0])
+            if getattr(c[0][0], "is_delete", False)
         ]
-        assert any(
-            "strength_exercise" in s for s in delete_stmts
-        ), f"Expected delete for strength_exercise, got: {delete_stmts}"
+        strength_delete = next(
+            (
+                stmt
+                for stmt in delete_stmts
+                if "strength_exercise"
+                in str(stmt.compile(compile_kwargs={"literal_binds": True}))
+            ),
+            None,
+        )
+        assert strength_delete is not None
+        assert f"= {activity_id}" in str(
+            strength_delete.compile(compile_kwargs={"literal_binds": True})
+        )
 
         # Assert - records were added.
         mock_session.add_all.assert_called_once()
@@ -5696,15 +5709,25 @@ class TestGarminProcessor:
         assert "activeSets" not in activity_data
         assert "totalReps" not in activity_data
 
-        # Assert - delete targeted StrengthExercise (cleans stale data on reprocessing).
+        # Assert - delete targeted StrengthExercise for correct activity_id.
         delete_stmts = [
-            str(c[0][0])
+            c[0][0]
             for c in mock_session.execute.call_args_list
-            if "DELETE FROM" in str(c[0][0])
+            if getattr(c[0][0], "is_delete", False)
         ]
-        assert any(
-            "strength_exercise" in s for s in delete_stmts
-        ), f"Expected delete for strength_exercise, got: {delete_stmts}"
+        strength_delete = next(
+            (
+                stmt
+                for stmt in delete_stmts
+                if "strength_exercise"
+                in str(stmt.compile(compile_kwargs={"literal_binds": True}))
+            ),
+            None,
+        )
+        assert strength_delete is not None
+        assert "= 12345" in str(
+            strength_delete.compile(compile_kwargs={"literal_binds": True})
+        )
 
         # Assert - no insert since sets are empty.
         mock_session.add_all.assert_not_called()
@@ -5841,15 +5864,25 @@ class TestGarminProcessor:
         # Act.
         processor._process_exercise_sets(file_path, mock_session)
 
-        # Assert - delete targeted StrengthSet for reprocessing.
+        # Assert - delete targeted StrengthSet for correct activity_id.
         delete_stmts = [
-            str(c[0][0])
+            c[0][0]
             for c in mock_session.execute.call_args_list
-            if "DELETE FROM" in str(c[0][0])
+            if getattr(c[0][0], "is_delete", False)
         ]
-        assert any(
-            "strength_set" in s for s in delete_stmts
-        ), f"Expected delete for strength_set, got: {delete_stmts}"
+        strength_set_delete = next(
+            (
+                stmt
+                for stmt in delete_stmts
+                if "strength_set"
+                in str(stmt.compile(compile_kwargs={"literal_binds": True}))
+            ),
+            None,
+        )
+        assert strength_set_delete is not None
+        assert "= 22320029355" in str(
+            strength_set_delete.compile(compile_kwargs={"literal_binds": True})
+        )
 
         # Assert - records were added.
         mock_session.add_all.assert_called_once()
