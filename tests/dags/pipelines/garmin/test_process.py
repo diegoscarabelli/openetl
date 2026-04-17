@@ -5374,6 +5374,10 @@ class TestGarminProcessor:
             for c in mock_session.execute.call_args_list
             if getattr(c[0][0], "is_delete", False)
         ]
+        compiled_delete_stmts = []
+        for stmt in delete_stmts:
+            compiled_stmt = stmt.compile(compile_kwargs={"render_postcompile": True})
+            compiled_delete_stmts.append((str(compiled_stmt), compiled_stmt.params))
         for table in [
             "activity_ts_metric",
             "activity_split_metric",
@@ -5381,10 +5385,8 @@ class TestGarminProcessor:
             "activity_path",
         ]:
             assert any(
-                table in str(stmt.compile(compile_kwargs={"literal_binds": True}))
-                and f"= {activity_id}"
-                in str(stmt.compile(compile_kwargs={"literal_binds": True}))
-                for stmt in delete_stmts
+                table in compiled_sql and activity_id in compiled_params.values()
+                for compiled_sql, compiled_params in compiled_delete_stmts
             ), f"Expected delete for {table} and activity_id={activity_id}"
 
     def test_process_fit_file_partial_gps_sample_filtered(
@@ -5615,14 +5617,15 @@ class TestGarminProcessor:
                 stmt
                 for stmt in delete_stmts
                 if "strength_exercise"
-                in str(stmt.compile(compile_kwargs={"literal_binds": True}))
+                in str(stmt.compile(compile_kwargs={"render_postcompile": True}))
             ),
             None,
         )
         assert strength_delete is not None
-        assert f"= {activity_id}" in str(
-            strength_delete.compile(compile_kwargs={"literal_binds": True})
+        strength_delete_compiled = strength_delete.compile(
+            compile_kwargs={"render_postcompile": True}
         )
+        assert activity_id in strength_delete_compiled.params.values()
 
         # Assert - records were added.
         mock_session.add_all.assert_called_once()
@@ -5721,14 +5724,15 @@ class TestGarminProcessor:
                 stmt
                 for stmt in delete_stmts
                 if "strength_exercise"
-                in str(stmt.compile(compile_kwargs={"literal_binds": True}))
+                in str(stmt.compile(compile_kwargs={"render_postcompile": True}))
             ),
             None,
         )
         assert strength_delete is not None
-        assert f"= {activity_id}" in str(
-            strength_delete.compile(compile_kwargs={"literal_binds": True})
+        strength_delete_compiled = strength_delete.compile(
+            compile_kwargs={"render_postcompile": True}
         )
+        assert activity_id in strength_delete_compiled.params.values()
 
         # Assert - no insert since sets are empty.
         mock_session.add_all.assert_not_called()
@@ -5864,6 +5868,7 @@ class TestGarminProcessor:
 
         # Act.
         processor._process_exercise_sets(file_path, mock_session)
+        activity_id = exercise_sets_data["activityId"]
 
         # Assert - delete targeted StrengthSet for correct activity_id.
         delete_stmts = [
@@ -5876,14 +5881,15 @@ class TestGarminProcessor:
                 stmt
                 for stmt in delete_stmts
                 if "strength_set"
-                in str(stmt.compile(compile_kwargs={"literal_binds": True}))
+                in str(stmt.compile(compile_kwargs={"render_postcompile": True}))
             ),
             None,
         )
         assert strength_set_delete is not None
-        assert "= 22320029355" in str(
-            strength_set_delete.compile(compile_kwargs={"literal_binds": True})
+        strength_set_delete_compiled = strength_set_delete.compile(
+            compile_kwargs={"render_postcompile": True}
         )
+        assert activity_id in strength_set_delete_compiled.params.values()
 
         # Assert - records were added.
         mock_session.add_all.assert_called_once()
