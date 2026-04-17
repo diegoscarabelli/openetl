@@ -77,7 +77,7 @@ x-airflow-common:
 
     # Webserver configurations.
     AIRFLOW__WEBSERVER__BASE_URL: ${AIRFLOW__WEBSERVER__BASE_URL}
-    AIRFLOW__WEBSERVER__SECRET_KEY: ${AIRFLOW__WEBSERVER__SECRET_KEY}
+    AIRFLOW__API__SECRET_KEY: ${AIRFLOW__API__SECRET_KEY}
     AIRFLOW__WEBSERVER__SESSION_SECURE: 'False'
     AIRFLOW__WEBSERVER__SESSION_COOKIE_SECURE: 'False'
 
@@ -106,7 +106,7 @@ x-airflow-common:
     # used and the initial admin user will not be created and the UI can't be
     # accessed.
     AIRFLOW__CORE__AUTH_MANAGER: airflow.providers.fab.auth_manager.fab_auth_manager.FabAuthManager
-    AIRFLOW__API_AUTH__JWT_SECRET: ${AIRFLOW__WEBSERVER__SECRET_KEY}
+    AIRFLOW__API_AUTH__JWT_SECRET: ${AIRFLOW__API__SECRET_KEY}
 
     # API configurations
     AIRFLOW__API__AUTH_BACKENDS: airflow.api.auth.backend.basic_auth,airflow.api.auth.backend.session
