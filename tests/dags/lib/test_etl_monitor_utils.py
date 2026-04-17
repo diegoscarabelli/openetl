@@ -6,6 +6,7 @@ from datetime import datetime
 from unittest.mock import patch, MagicMock
 
 import pytest
+from sqlalchemy import select
 
 from dags.lib.etl_monitor_utils import ETLResult, ETLResultRecord
 
@@ -105,7 +106,9 @@ def test_etl_result_equality(
     assert etl_result1 != etl_result2
 
 
-def test_submit_writes_to_database(etl_result_session: object) -> None:
+def test_submit_writes_to_database(
+    etl_result_session: object, etl_result_engine: object
+) -> None:
     """
     Test that submit() writes ETL results to the database.
     """
@@ -119,7 +122,7 @@ def test_submit_writes_to_database(etl_result_session: object) -> None:
     # Create ETLResult with real database engine.
     with patch(
         "dags.lib.etl_monitor_utils.get_lens_engine",
-        return_value=etl_result_session.get_bind(),
+        return_value=etl_result_engine,
     ):
         etl_result = ETLResult(config, dag_start_date, dag_run_id)
         etl_result.set_result_record("file.csv", True)
@@ -132,11 +135,13 @@ def test_submit_writes_to_database(etl_result_session: object) -> None:
 
     # Query database to verify records were written.
     results = (
-        etl_result_session.query(ETLResultSqla)
-        .filter(
-            ETLResultSqla.dag_id == config.dag_id,
-            ETLResultSqla.dag_run_id == dag_run_id,
+        etl_result_session.execute(
+            select(ETLResultSqla).where(
+                ETLResultSqla.dag_id == config.dag_id,
+                ETLResultSqla.dag_run_id == dag_run_id,
+            )
         )
+        .scalars()
         .all()
     )
 

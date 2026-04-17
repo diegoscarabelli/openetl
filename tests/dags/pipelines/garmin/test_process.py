@@ -99,7 +99,7 @@ class TestGarminProcessor:
         """
 
         session = MagicMock()
-        session.query.return_value.filter.return_value.first.return_value = None
+        session.execute.return_value.scalars.return_value.first.return_value = None
         session.merge.return_value = None
         session.add.return_value = None
         return session
@@ -318,13 +318,13 @@ class TestGarminProcessor:
         """
 
         # Arrange.
-        mock_session.query.return_value.filter.return_value.first.return_value = None
+        mock_session.execute.return_value.scalars.return_value.first.return_value = None
 
         # Act.
         processor._ensure_user_exists("123456789", mock_session)
 
         # Assert.
-        mock_session.execute.assert_called_once()
+        assert mock_session.execute.call_count == 2  # select + raw SQL insert.
         mock_session.flush.assert_called_once()
         assert processor.must_update_user is True
 
@@ -338,7 +338,7 @@ class TestGarminProcessor:
 
         # Arrange.
         existing_user = User(user_id=123456789, full_name="Test User")
-        mock_session.query.return_value.filter.return_value.first.return_value = (
+        mock_session.execute.return_value.scalars.return_value.first.return_value = (
             existing_user
         )
 
@@ -830,7 +830,7 @@ class TestGarminProcessor:
             json.dump(sample_user_profile_data, f)
 
         # Mock existing user check.
-        mock_session.query.return_value.filter.return_value.first.return_value = None
+        mock_session.execute.return_value.scalars.return_value.first.return_value = None
 
         # Act.
         processor.user_id = 123456789
@@ -1331,7 +1331,7 @@ class TestGarminProcessor:
         file_set = FileSet(files={GARMIN_FILE_TYPES.SLEEP: [sleep_file]})
 
         # Mock user existence check.
-        mock_session.query.return_value.filter.return_value.first.return_value = None
+        mock_session.execute.return_value.scalars.return_value.first.return_value = None
 
         # Act.
         with patch.object(
@@ -1518,7 +1518,7 @@ class TestGarminProcessor:
         # Create FileSet with STEPS files.
         file_set = FileSet(files={GARMIN_FILE_TYPES.STEPS: [steps_file]})
         # Mock user existence check.
-        mock_session.query.return_value.filter.return_value.first.return_value = None
+        mock_session.execute.return_value.scalars.return_value.first.return_value = None
         # Act.
         with patch.object(
             processor, "_process_steps"
@@ -2021,7 +2021,7 @@ class TestGarminProcessor:
         )
 
         # Mock user existence check.
-        mock_session.query.return_value.filter.return_value.first.return_value = None
+        mock_session.execute.return_value.scalars.return_value.first.return_value = None
 
         # Act.
         with patch.object(
@@ -2320,7 +2320,7 @@ class TestGarminProcessor:
         )
 
         # Mock user existence check.
-        mock_session.query.return_value.filter.return_value.first.return_value = None
+        mock_session.execute.return_value.scalars.return_value.first.return_value = None
 
         # Act.
         with patch.object(
@@ -2690,7 +2690,7 @@ class TestGarminProcessor:
         file_set = FileSet(files={GARMIN_FILE_TYPES.STRESS: [stress_file]})
 
         # Mock user existence check.
-        mock_session.query.return_value.filter.return_value.first.return_value = None
+        mock_session.execute.return_value.scalars.return_value.first.return_value = None
 
         # Act.
         with patch.object(
@@ -2929,7 +2929,7 @@ class TestGarminProcessor:
         file_set = FileSet(files={GARMIN_FILE_TYPES.HEART_RATE: [heart_rate_file]})
 
         # Mock user existence check.
-        mock_session.query.return_value.filter.return_value.first.return_value = None
+        mock_session.execute.return_value.scalars.return_value.first.return_value = None
 
         # Act.
         with patch.object(
@@ -3658,23 +3658,24 @@ class TestGarminProcessor:
         user_id = 1
         processor.user_id = user_id
 
-        # Mock session queries.
-        def mock_query_side_effect(model):
-            query_mock = MagicMock()
+        # Mock session.execute for select() statements.
+        def mock_execute_side_effect(stmt):
+            result_mock = MagicMock()
+            entity = stmt.column_descriptions[0]["entity"]
 
-            if model == Activity:
+            if entity == Activity:
                 # Mock Activity queries - all activities exist for this test.
-                query_mock.filter.return_value.first.return_value = (
+                result_mock.scalars.return_value.first.return_value = (
                     MagicMock()
                 )  # Activity exists.
 
-            elif model == PersonalRecord:
+            elif entity == PersonalRecord:
                 # Mock PersonalRecord queries - no existing records.
-                query_mock.filter.return_value.all.return_value = []
+                result_mock.scalars.return_value.all.return_value = []
 
-            return query_mock
+            return result_mock
 
-        mock_session.query.side_effect = mock_query_side_effect
+        mock_session.execute.side_effect = mock_execute_side_effect
 
         # Act.
         processor._process_personal_records(pr_file, mock_session)
@@ -3743,10 +3744,22 @@ class TestGarminProcessor:
         existing_record2.latest = True
         existing_records = [existing_record1, existing_record2]
 
-        # Mock the query to return existing records for each type_id.
-        mock_query = MagicMock()
-        mock_query.filter.return_value.all.return_value = existing_records
-        mock_session.query.return_value = mock_query
+        # Mock session.execute for select() statements.
+        def mock_execute_side_effect(stmt):
+            result_mock = MagicMock()
+            entity = stmt.column_descriptions[0]["entity"]
+
+            if entity == Activity:
+                # Activity exists for this test.
+                result_mock.scalars.return_value.first.return_value = MagicMock()
+
+            elif entity == PersonalRecord:
+                # Return existing latest records.
+                result_mock.scalars.return_value.all.return_value = existing_records
+
+            return result_mock
+
+        mock_session.execute.side_effect = mock_execute_side_effect
 
         # Act.
         processor._process_personal_records(pr_file, mock_session)
@@ -3832,23 +3845,24 @@ class TestGarminProcessor:
         user_id = 1
         processor.user_id = user_id
 
-        # Mock session queries.
-        def mock_query_side_effect(model):
-            query_mock = MagicMock()
+        # Mock session.execute for select() statements.
+        def mock_execute_side_effect(stmt):
+            result_mock = MagicMock()
+            entity = stmt.column_descriptions[0]["entity"]
 
-            if model == Activity:
+            if entity == Activity:
                 # Mock Activity queries - activity exists for this test.
-                query_mock.filter.return_value.first.return_value = (
+                result_mock.scalars.return_value.first.return_value = (
                     MagicMock()
                 )  # Activity exists.
 
-            elif model == PersonalRecord:
+            elif entity == PersonalRecord:
                 # Mock PersonalRecord queries - no existing records.
-                query_mock.filter.return_value.all.return_value = []
+                result_mock.scalars.return_value.all.return_value = []
 
-            return query_mock
+            return result_mock
 
-        mock_session.query.side_effect = mock_query_side_effect
+        mock_session.execute.side_effect = mock_execute_side_effect
 
         # Act.
         with patch(
@@ -3940,33 +3954,34 @@ class TestGarminProcessor:
         with open(pr_file, "w", encoding="utf-8") as f:
             json.dump(sample_data, f)
 
-        # Mock session queries.
-        def mock_query_side_effect(model):
-            query_mock = MagicMock()
+        # Mock session.execute for select() statements.
+        def mock_execute_side_effect(stmt):
+            result_mock = MagicMock()
+            entity = stmt.column_descriptions[0]["entity"]
 
-            if model == Activity:
+            if entity == Activity:
                 # Mock Activity queries - only 54321 exists.
-                def activity_filter_side_effect(condition):
-                    # Check the actual activity_id value in the condition.
-                    if (
-                        hasattr(condition, "right")
-                        and hasattr(condition.right, "value")
-                        and condition.right.value == 54321
-                    ):
-                        query_mock.first.return_value = MagicMock()  # Activity exists.
-                    else:
-                        query_mock.first.return_value = None  # Activity doesn't exist.
-                    return query_mock
+                clause = stmt.whereclause
+                if (
+                    hasattr(clause, "right")
+                    and hasattr(clause.right, "value")
+                    and clause.right.value == 54321
+                ):
+                    result_mock.scalars.return_value.first.return_value = (
+                        MagicMock()
+                    )  # Activity exists.
+                else:
+                    result_mock.scalars.return_value.first.return_value = (
+                        None  # Activity doesn't exist.
+                    )
 
-                query_mock.filter.side_effect = activity_filter_side_effect
-
-            elif model == PersonalRecord:
+            elif entity == PersonalRecord:
                 # Mock PersonalRecord queries - no existing records.
-                query_mock.filter.return_value.all.return_value = []
+                result_mock.scalars.return_value.all.return_value = []
 
-            return query_mock
+            return result_mock
 
-        mock_session.query.side_effect = mock_query_side_effect
+        mock_session.execute.side_effect = mock_execute_side_effect
 
         # Set processor user_id.
         processor.user_id = "123456789"
@@ -4032,21 +4047,22 @@ class TestGarminProcessor:
         with open(pr_file, "w", encoding="utf-8") as f:
             json.dump(sample_data, f)
 
-        # Mock session queries.
-        def mock_query_side_effect(model):
-            query_mock = MagicMock()
+        # Mock session.execute for select() statements.
+        def mock_execute_side_effect(stmt):
+            result_mock = MagicMock()
+            entity = stmt.column_descriptions[0]["entity"]
 
-            if model == Activity:
+            if entity == Activity:
                 # Mock Activity queries - no activities exist.
-                query_mock.filter.return_value.first.return_value = None
+                result_mock.scalars.return_value.first.return_value = None
 
-            elif model == PersonalRecord:
+            elif entity == PersonalRecord:
                 # Mock PersonalRecord queries - no existing records.
-                query_mock.filter.return_value.all.return_value = []
+                result_mock.scalars.return_value.all.return_value = []
 
-            return query_mock
+            return result_mock
 
-        mock_session.query.side_effect = mock_query_side_effect
+        mock_session.execute.side_effect = mock_execute_side_effect
 
         # Set processor user_id.
         processor.user_id = "123456789"
@@ -4117,32 +4133,34 @@ class TestGarminProcessor:
         with open(pr_file, "w", encoding="utf-8") as f:
             json.dump(sample_data, f)
 
-        # Mock session queries.
-        def mock_query_side_effect(model):
-            query_mock = MagicMock()
+        # Mock session.execute for select() statements.
+        def mock_execute_side_effect(stmt):
+            result_mock = MagicMock()
+            entity = stmt.column_descriptions[0]["entity"]
 
-            if model == Activity:
+            if entity == Activity:
                 # Mock Activity queries - activity 12345 exists.
-                def activity_filter_side_effect(condition):
-                    if (
-                        hasattr(condition, "right")
-                        and hasattr(condition.right, "value")
-                        and condition.right.value == 12345
-                    ):
-                        query_mock.first.return_value = MagicMock()  # Activity exists.
-                    else:
-                        query_mock.first.return_value = None  # Activity doesn't exist.
-                    return query_mock
+                clause = stmt.whereclause
+                if (
+                    hasattr(clause, "right")
+                    and hasattr(clause.right, "value")
+                    and clause.right.value == 12345
+                ):
+                    result_mock.scalars.return_value.first.return_value = (
+                        MagicMock()
+                    )  # Activity exists.
+                else:
+                    result_mock.scalars.return_value.first.return_value = (
+                        None  # Activity doesn't exist.
+                    )
 
-                query_mock.filter.side_effect = activity_filter_side_effect
-
-            elif model == PersonalRecord:
+            elif entity == PersonalRecord:
                 # Mock PersonalRecord queries - no existing records.
-                query_mock.filter.return_value.all.return_value = []
+                result_mock.scalars.return_value.all.return_value = []
 
-            return query_mock
+            return result_mock
 
-        mock_session.query.side_effect = mock_query_side_effect
+        mock_session.execute.side_effect = mock_execute_side_effect
 
         # Set processor user_id.
         processor.user_id = "123456789"
@@ -4221,15 +4239,8 @@ class TestGarminProcessor:
         user_id = 1
         processor.user_id = user_id
 
-        # Mock the user_id query.
-        mock_session.query.return_value.filter.return_value.scalar.return_value = (
-            123456789
-        )
-
         # Mock no existing latest records.
-        joined_query = mock_session.query.return_value.join.return_value
-        filtered_query = joined_query.filter.return_value
-        filtered_query.all.return_value = []
+        mock_session.execute.return_value.scalars.return_value.all.return_value = []
 
         # Act.
         processor._process_race_predictions(rp_file, mock_session)
@@ -4285,10 +4296,10 @@ class TestGarminProcessor:
         existing_record2.latest = True
         existing_records = [existing_record1, existing_record2]
 
-        # Mock the query to return existing records.
-        mock_query = MagicMock()
-        mock_query.filter.return_value.all.return_value = existing_records
-        mock_session.query.return_value = mock_query
+        # Mock session.execute to return existing records.
+        mock_session.execute.return_value.scalars.return_value.all.return_value = (
+            existing_records
+        )
 
         # Act.
         processor._process_race_predictions(rp_file, mock_session)
@@ -4381,12 +4392,7 @@ class TestGarminProcessor:
         processor.user_id = user_id
 
         # Mock no existing records.
-        mock_session.query.return_value.filter.return_value.scalar.return_value = (
-            123456789
-        )
-        joined_query = mock_session.query.return_value.join.return_value
-        filtered_query = joined_query.filter.return_value
-        filtered_query.all.return_value = []
+        mock_session.execute.return_value.scalars.return_value.all.return_value = []
 
         # Act.
         processor._process_race_predictions(rp_file, mock_session)
@@ -4447,7 +4453,9 @@ class TestGarminProcessor:
         mock_activity = MagicMock()
         mock_activity.activity_id = activity_id
 
-        mock_session.query().filter().first.return_value = mock_activity
+        mock_session.execute.return_value.scalars.return_value.first.return_value = (
+            mock_activity
+        )
 
         # Mock FIT frame and fields.
         mock_timestamp_field = MagicMock()
@@ -4473,8 +4481,8 @@ class TestGarminProcessor:
                 processor._process_fit_file(fit_file, mock_session)
 
         # Assert.
-        mock_session.bulk_save_objects.assert_called_once()
-        ts_metrics = mock_session.bulk_save_objects.call_args[0][0]
+        mock_session.add_all.assert_called_once()
+        ts_metrics = mock_session.add_all.call_args[0][0]
         assert len(ts_metrics) == 1
         assert ts_metrics[0].activity_id == activity_id
         assert ts_metrics[0].name == "heart_rate"
@@ -4499,7 +4507,9 @@ class TestGarminProcessor:
 
         mock_activity = MagicMock()
         mock_activity.activity_id = activity_id
-        mock_session.query().filter().first.return_value = mock_activity
+        mock_session.execute.return_value.scalars.return_value.first.return_value = (
+            mock_activity
+        )
 
         # Mock FIT frames: record + lap.
         mock_timestamp_field = MagicMock()
@@ -4534,11 +4544,11 @@ class TestGarminProcessor:
                 # Act.
                 processor._process_fit_file(fit_file, mock_session)
 
-        # Assert - deletes happen (via filter_by chain on the mock).
+        # Assert - deletes happen (via execute(delete(...)) on the mock).
         # Both ts_metrics and lap_metrics are re-inserted.
-        assert mock_session.bulk_save_objects.call_count == 2
-        ts_metrics = mock_session.bulk_save_objects.call_args_list[0][0][0]
-        lap_metrics = mock_session.bulk_save_objects.call_args_list[1][0][0]
+        assert mock_session.add_all.call_count == 2
+        ts_metrics = mock_session.add_all.call_args_list[0][0][0]
+        lap_metrics = mock_session.add_all.call_args_list[1][0][0]
         assert len(ts_metrics) == 1
         assert ts_metrics[0].name == "heart_rate"
         assert len(lap_metrics) == 1
@@ -4558,7 +4568,7 @@ class TestGarminProcessor:
         )
         fit_file.write_bytes(b"dummy fit data")
 
-        mock_session.query().filter().first.return_value = None
+        mock_session.execute.return_value.scalars.return_value.first.return_value = None
 
         # Act & Assert.
         with pytest.raises(ValueError, match="Activity 12345 not found in database"):
@@ -4595,7 +4605,9 @@ class TestGarminProcessor:
 
         mock_activity = MagicMock()
         mock_activity.activity_id = activity_id
-        mock_session.query().filter().first.return_value = mock_activity
+        mock_session.execute.return_value.scalars.return_value.first.return_value = (
+            mock_activity
+        )
 
         # Mock fields with one UNKNOWN field.
         mock_timestamp_field = MagicMock()
@@ -4626,8 +4638,8 @@ class TestGarminProcessor:
                 processor._process_fit_file(fit_file, mock_session)
 
         # Assert - only valid field should be processed.
-        mock_session.bulk_save_objects.assert_called_once()
-        ts_metrics = mock_session.bulk_save_objects.call_args[0][0]
+        mock_session.add_all.assert_called_once()
+        ts_metrics = mock_session.add_all.call_args[0][0]
         assert len(ts_metrics) == 1
         assert ts_metrics[0].name == "heart_rate"
 
@@ -4647,7 +4659,9 @@ class TestGarminProcessor:
 
         mock_activity = MagicMock()
         mock_activity.activity_id = activity_id
-        mock_session.query().filter().first.return_value = mock_activity
+        mock_session.execute.return_value.scalars.return_value.first.return_value = (
+            mock_activity
+        )
 
         with patch("fitdecode.FitReader", side_effect=Exception("FIT decode error")):
             # Act & Assert.
@@ -4681,7 +4695,9 @@ class TestGarminProcessor:
         # Mock existing activity.
         mock_activity = MagicMock()
         mock_activity.activity_id = 12345
-        mock_session.query().filter().first.return_value = mock_activity
+        mock_session.execute.return_value.scalars.return_value.first.return_value = (
+            mock_activity
+        )
 
         # Mock FIT processing.
         with patch.object(processor, "_process_fit_file") as mock_process_fit:
@@ -4706,7 +4722,9 @@ class TestGarminProcessor:
         # Mock existing activity.
         mock_activity = MagicMock()
         mock_activity.activity_id = activity_id
-        mock_session.query().filter().first.return_value = mock_activity
+        mock_session.execute.return_value.scalars.return_value.first.return_value = (
+            mock_activity
+        )
 
         # Mock FIT lap frame and fields.
         mock_total_distance_field = MagicMock()
@@ -4742,8 +4760,8 @@ class TestGarminProcessor:
                 processor._process_fit_file(fit_file, mock_session)
 
         # Assert.
-        mock_session.bulk_save_objects.assert_called_once()
-        lap_metrics = mock_session.bulk_save_objects.call_args[0][0]
+        mock_session.add_all.assert_called_once()
+        lap_metrics = mock_session.add_all.call_args[0][0]
 
         assert len(lap_metrics) == 2
 
@@ -4777,7 +4795,9 @@ class TestGarminProcessor:
         # Mock existing activity.
         mock_activity = MagicMock()
         mock_activity.activity_id = activity_id
-        mock_session.query().filter().first.return_value = mock_activity
+        mock_session.execute.return_value.scalars.return_value.first.return_value = (
+            mock_activity
+        )
 
         # Mock FIT split frame and fields.
         mock_split_type_field = MagicMock()
@@ -4819,8 +4839,8 @@ class TestGarminProcessor:
                 processor._process_fit_file(fit_file, mock_session)
 
         # Assert.
-        mock_session.bulk_save_objects.assert_called_once()
-        split_metrics = mock_session.bulk_save_objects.call_args[0][0]
+        mock_session.add_all.assert_called_once()
+        split_metrics = mock_session.add_all.call_args[0][0]
 
         assert len(split_metrics) == 2
 
@@ -4858,7 +4878,9 @@ class TestGarminProcessor:
         # Mock existing activity.
         mock_activity = MagicMock()
         mock_activity.activity_id = activity_id
-        mock_session.query().filter().first.return_value = mock_activity
+        mock_session.execute.return_value.scalars.return_value.first.return_value = (
+            mock_activity
+        )
 
         # Mock FIT lap frame with array field.
         mock_array_field = MagicMock()
@@ -4885,8 +4907,8 @@ class TestGarminProcessor:
                 processor._process_fit_file(fit_file, mock_session)
 
         # Assert.
-        mock_session.bulk_save_objects.assert_called_once()
-        lap_metrics = mock_session.bulk_save_objects.call_args[0][0]
+        mock_session.add_all.assert_called_once()
+        lap_metrics = mock_session.add_all.call_args[0][0]
 
         assert len(lap_metrics) == 4  # 3 array elements + 1 regular field
 
@@ -4923,7 +4945,9 @@ class TestGarminProcessor:
         # Mock existing activity.
         mock_activity = MagicMock()
         mock_activity.activity_id = activity_id
-        mock_session.query().filter().first.return_value = mock_activity
+        mock_session.execute.return_value.scalars.return_value.first.return_value = (
+            mock_activity
+        )
 
         # Mock FIT split frame with array field.
         mock_split_type_field = MagicMock()
@@ -4950,8 +4974,8 @@ class TestGarminProcessor:
                 processor._process_fit_file(fit_file, mock_session)
 
         # Assert.
-        mock_session.bulk_save_objects.assert_called_once()
-        split_metrics = mock_session.bulk_save_objects.call_args[0][0]
+        mock_session.add_all.assert_called_once()
+        split_metrics = mock_session.add_all.call_args[0][0]
 
         assert len(split_metrics) == 3  # 3 array elements
 
@@ -4984,7 +5008,9 @@ class TestGarminProcessor:
         # Mock existing activity.
         mock_activity = MagicMock()
         mock_activity.activity_id = activity_id
-        mock_session.query().filter().first.return_value = mock_activity
+        mock_session.execute.return_value.scalars.return_value.first.return_value = (
+            mock_activity
+        )
 
         # Mock first lap frame.
         mock_lap1_field = MagicMock()
@@ -5054,8 +5080,8 @@ class TestGarminProcessor:
                 processor._process_fit_file(fit_file, mock_session)
 
         # Assert.
-        assert mock_session.bulk_save_objects.call_count == 2
-        calls = mock_session.bulk_save_objects.call_args_list
+        assert mock_session.add_all.call_count == 2
+        calls = mock_session.add_all.call_args_list
 
         # Check that split_metrics and lap_metrics were saved.
         split_metrics = calls[0][0][0]
@@ -5109,7 +5135,9 @@ class TestGarminProcessor:
         # Mock existing activity.
         mock_activity = MagicMock()
         mock_activity.activity_id = activity_id
-        mock_session.query().filter().first.return_value = mock_activity
+        mock_session.execute.return_value.scalars.return_value.first.return_value = (
+            mock_activity
+        )
 
         # Mock lap frame with unconvertible value.
         mock_invalid_field = MagicMock()
@@ -5136,8 +5164,8 @@ class TestGarminProcessor:
                 processor._process_fit_file(fit_file, mock_session)
 
         # Assert - should skip invalid field but process valid one.
-        mock_session.bulk_save_objects.assert_called_once()
-        lap_metrics = mock_session.bulk_save_objects.call_args[0][0]
+        mock_session.add_all.assert_called_once()
+        lap_metrics = mock_session.add_all.call_args[0][0]
 
         assert len(lap_metrics) == 1
 
@@ -5167,7 +5195,9 @@ class TestGarminProcessor:
 
         mock_activity = MagicMock()
         mock_activity.activity_id = activity_id
-        mock_session.query().filter().first.return_value = mock_activity
+        mock_session.execute.return_value.scalars.return_value.first.return_value = (
+            mock_activity
+        )
 
         # Mock FIT lap frame (no record frames).
         mock_lap_field = MagicMock()
@@ -5189,8 +5219,8 @@ class TestGarminProcessor:
                 processor._process_fit_file(fit_file, mock_session)
 
         # Assert - laps inserted despite no record frames.
-        mock_session.bulk_save_objects.assert_called_once()
-        lap_metrics = mock_session.bulk_save_objects.call_args[0][0]
+        mock_session.add_all.assert_called_once()
+        lap_metrics = mock_session.add_all.call_args[0][0]
         assert len(lap_metrics) == 1
         assert lap_metrics[0].name == "total_distance"
         assert mock_activity.ts_data_available is False
@@ -5216,7 +5246,9 @@ class TestGarminProcessor:
 
         mock_activity = MagicMock()
         mock_activity.activity_id = activity_id
-        mock_session.query().filter().first.return_value = mock_activity
+        mock_session.execute.return_value.scalars.return_value.first.return_value = (
+            mock_activity
+        )
 
         # Two record frames with GPS data, emitted out of timestamp order to
         # verify the explicit sort. Each frame supplies position_lat,
@@ -5255,13 +5287,13 @@ class TestGarminProcessor:
                 # Act.
                 processor._process_fit_file(fit_file, mock_session)
 
-        # Assert: two bulk_save_objects calls (ts_metrics, then activity_path).
-        assert mock_session.bulk_save_objects.call_count == 2
-        ts_metrics = mock_session.bulk_save_objects.call_args_list[0][0][0]
+        # Assert: two add_all calls (ts_metrics, then activity_path).
+        assert mock_session.add_all.call_count == 2
+        ts_metrics = mock_session.add_all.call_args_list[0][0][0]
         # Two timestamps x two coords each = 4 ts_metric rows.
         assert len(ts_metrics) == 4
 
-        activity_paths = mock_session.bulk_save_objects.call_args_list[1][0][0]
+        activity_paths = mock_session.add_all.call_args_list[1][0][0]
         assert len(activity_paths) == 1
         path_row = activity_paths[0]
         assert path_row.activity_id == activity_id
@@ -5304,7 +5336,9 @@ class TestGarminProcessor:
 
         mock_activity = MagicMock()
         mock_activity.activity_id = activity_id
-        mock_session.query().filter().first.return_value = mock_activity
+        mock_session.execute.return_value.scalars.return_value.first.return_value = (
+            mock_activity
+        )
 
         # Record frame with only heart_rate (no position fields).
         ts_field = MagicMock()
@@ -5329,17 +5363,32 @@ class TestGarminProcessor:
                 processor._process_fit_file(fit_file, mock_session)
 
         # Assert: only ts_metrics insert happened, no activity_path insert.
-        assert mock_session.bulk_save_objects.call_count == 1
-        ts_metrics = mock_session.bulk_save_objects.call_args_list[0][0][0]
+        assert mock_session.add_all.call_count == 1
+        ts_metrics = mock_session.add_all.call_args_list[0][0][0]
         assert len(ts_metrics) == 1
         assert ts_metrics[0].name == "heart_rate"
 
-        # Assert: delete chain (query().filter_by().delete()) was called at
-        # least four times (ts_metric, split_metric, lap_metric, activity_path).
-        delete_call_count = (
-            mock_session.query.return_value.filter_by.return_value.delete.call_count
-        )
-        assert delete_call_count >= 4
+        # Assert: delete was called for each dependent table and activity_id.
+        # Compile each delete statement once to assert both SQL target and params.
+        delete_stmts = [
+            c[0][0]
+            for c in mock_session.execute.call_args_list
+            if getattr(c[0][0], "is_delete", False)
+        ]
+        compiled_delete_stmts = []
+        for stmt in delete_stmts:
+            compiled_stmt = stmt.compile(compile_kwargs={"render_postcompile": True})
+            compiled_delete_stmts.append((str(compiled_stmt), compiled_stmt.params))
+        for table in [
+            "activity_ts_metric",
+            "activity_split_metric",
+            "activity_lap_metric",
+            "activity_path",
+        ]:
+            assert any(
+                table in compiled_sql and activity_id in compiled_params.values()
+                for compiled_sql, compiled_params in compiled_delete_stmts
+            ), f"Expected delete for {table} and activity_id={activity_id}"
 
     def test_process_fit_file_partial_gps_sample_filtered(
         self, processor, mock_session, temp_dir
@@ -5360,7 +5409,9 @@ class TestGarminProcessor:
 
         mock_activity = MagicMock()
         mock_activity.activity_id = activity_id
-        mock_session.query().filter().first.return_value = mock_activity
+        mock_session.execute.return_value.scalars.return_value.first.return_value = (
+            mock_activity
+        )
 
         # Timestamp 1: full sample (both lat and lon).
         ts1 = datetime(2025, 8, 7, 14, 30, tzinfo=timezone.utc)
@@ -5406,11 +5457,11 @@ class TestGarminProcessor:
 
         # Assert: ts_metrics has 3 rows (lat+lon at ts1, lat at ts2),
         # activity_path has only 1 point (the full sample).
-        assert mock_session.bulk_save_objects.call_count == 2
-        ts_metrics = mock_session.bulk_save_objects.call_args_list[0][0][0]
+        assert mock_session.add_all.call_count == 2
+        ts_metrics = mock_session.add_all.call_args_list[0][0][0]
         assert len(ts_metrics) == 3
 
-        activity_paths = mock_session.bulk_save_objects.call_args_list[1][0][0]
+        activity_paths = mock_session.add_all.call_args_list[1][0][0]
         assert len(activity_paths) == 1
         path_row = activity_paths[0]
         assert path_row.point_count == 1
@@ -5436,7 +5487,9 @@ class TestGarminProcessor:
 
         mock_activity = MagicMock()
         mock_activity.activity_id = activity_id
-        mock_session.query().filter().first.return_value = mock_activity
+        mock_session.execute.return_value.scalars.return_value.first.return_value = (
+            mock_activity
+        )
 
         # Two record frames sharing the same timestamp but with different GPS coords.
         shared_ts = datetime(2025, 8, 7, 14, 30, tzinfo=timezone.utc)
@@ -5484,8 +5537,8 @@ class TestGarminProcessor:
                 processor._process_fit_file(fit_file, mock_session)
 
         # Assert: both points are preserved despite the shared timestamp.
-        assert mock_session.bulk_save_objects.call_count == 2
-        activity_paths = mock_session.bulk_save_objects.call_args_list[1][0][0]
+        assert mock_session.add_all.call_count == 2
+        activity_paths = mock_session.add_all.call_args_list[1][0][0]
         assert len(activity_paths) == 1
         path_row = activity_paths[0]
         assert path_row.point_count == 2
@@ -5554,12 +5607,26 @@ class TestGarminProcessor:
         assert "totalReps" not in activity_data
         assert "otherField" in activity_data
 
-        # Assert - delete was called for reprocessing.
-        mock_session.query.assert_called_with(StrengthExercise)
-        mock_session.query.return_value.filter_by.assert_called_with(
-            activity_id=activity_id
+        # Assert - delete targeted StrengthExercise for correct activity.
+        delete_stmts = [
+            c[0][0]
+            for c in mock_session.execute.call_args_list
+            if getattr(c[0][0], "is_delete", False)
+        ]
+        compiled_delete_stmts = [
+            stmt.compile(compile_kwargs={"render_postcompile": True})
+            for stmt in delete_stmts
+        ]
+        strength_delete_compiled = next(
+            (
+                compiled_stmt
+                for compiled_stmt in compiled_delete_stmts
+                if "strength_exercise" in str(compiled_stmt)
+            ),
+            None,
         )
-        mock_session.query.return_value.filter_by.return_value.delete.assert_called_once()
+        assert strength_delete_compiled is not None
+        assert activity_id in strength_delete_compiled.params.values()
 
         # Assert - records were added.
         mock_session.add_all.assert_called_once()
@@ -5637,19 +5704,36 @@ class TestGarminProcessor:
             "activeSets": 0,
             "totalReps": 0,
         }
+        activity_id = 12345
 
         # Act.
-        processor._process_strength_metrics(activity_data, 12345, mock_session)
+        processor._process_strength_metrics(activity_data, activity_id, mock_session)
 
         # Assert - scalars were still popped.
         assert "totalSets" not in activity_data
         assert "activeSets" not in activity_data
         assert "totalReps" not in activity_data
 
-        # Assert - delete was called (cleans stale data on reprocessing).
-        mock_session.query.assert_called_with(StrengthExercise)
-        mock_session.query.return_value.filter_by.assert_called_with(activity_id=12345)
-        mock_session.query.return_value.filter_by.return_value.delete.assert_called_once()
+        # Assert - delete targeted StrengthExercise for correct activity_id.
+        delete_stmts = [
+            c[0][0]
+            for c in mock_session.execute.call_args_list
+            if getattr(c[0][0], "is_delete", False)
+        ]
+        compiled_delete_stmts = [
+            stmt.compile(compile_kwargs={"render_postcompile": True})
+            for stmt in delete_stmts
+        ]
+        strength_delete_compiled = next(
+            (
+                compiled_stmt
+                for compiled_stmt in compiled_delete_stmts
+                if "strength_exercise" in str(compiled_stmt)
+            ),
+            None,
+        )
+        assert strength_delete_compiled is not None
+        assert activity_id in strength_delete_compiled.params.values()
 
         # Assert - no insert since sets are empty.
         mock_session.add_all.assert_not_called()
@@ -5785,13 +5869,28 @@ class TestGarminProcessor:
 
         # Act.
         processor._process_exercise_sets(file_path, mock_session)
+        activity_id = exercise_sets_data["activityId"]
 
-        # Assert - delete was called for reprocessing.
-        mock_session.query.assert_called_with(StrengthSet)
-        mock_session.query.return_value.filter_by.assert_called_with(
-            activity_id=22320029355
+        # Assert - delete targeted StrengthSet for correct activity_id.
+        delete_stmts = [
+            c[0][0]
+            for c in mock_session.execute.call_args_list
+            if getattr(c[0][0], "is_delete", False)
+        ]
+        compiled_delete_stmts = [
+            stmt.compile(compile_kwargs={"render_postcompile": True})
+            for stmt in delete_stmts
+        ]
+        strength_set_delete_compiled = next(
+            (
+                compiled_stmt
+                for compiled_stmt in compiled_delete_stmts
+                if "strength_set" in str(compiled_stmt)
+            ),
+            None,
         )
-        mock_session.query.return_value.filter_by.return_value.delete.assert_called_once()
+        assert strength_set_delete_compiled is not None
+        assert activity_id in strength_set_delete_compiled.params.values()
 
         # Assert - records were added.
         mock_session.add_all.assert_called_once()
@@ -5890,5 +5989,5 @@ class TestGarminProcessor:
         processor._process_exercise_sets(file_path, mock_session)
 
         # Assert - delete is called to clean stale rows, but no inserts.
-        mock_session.query.return_value.filter_by.return_value.delete.assert_called()
+        mock_session.execute.assert_called()
         mock_session.add_all.assert_not_called()

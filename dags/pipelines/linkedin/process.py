@@ -11,6 +11,7 @@ from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import List, Optional, Set
 
+from sqlalchemy import select, update
 from sqlalchemy.orm import Session
 
 from dags.lib.dag_utils import Processor
@@ -233,11 +234,11 @@ class LinkedInProcessor(Processor):
 
         # Query URLs of active connections with capture_date <= current file's date.
         db_active_urls = set(
-            row[0]
-            for row in session.query(Connection.url)
-            .filter(Connection.active_connection == True)  # noqa: E712
-            .filter(Connection.capture_date <= capture_date)
-            .all()
+            session.execute(
+                select(Connection.url)
+                .where(Connection.active_connection == True)  # noqa: E712
+                .where(Connection.capture_date <= capture_date)
+            ).scalars()
         )
 
         # Find URLs to deactivate (in DB but not in file).
@@ -245,14 +246,14 @@ class LinkedInProcessor(Processor):
 
         if urls_to_deactivate:
             # Bulk UPDATE with explicit update_ts (matches _upsert_values pattern).
-            session.query(Connection).filter(
-                Connection.url.in_(urls_to_deactivate)
-            ).update(
-                {
-                    Connection.active_connection: False,
-                    Connection.capture_date: capture_date,
-                    Connection.update_ts: datetime.now(timezone.utc),
-                },
-                synchronize_session=False,
+            session.execute(
+                update(Connection)
+                .where(Connection.url.in_(urls_to_deactivate))
+                .values(
+                    active_connection=False,
+                    capture_date=capture_date,
+                    update_ts=datetime.now(timezone.utc),
+                )
+                .execution_options(synchronize_session=False)
             )
             LOGGER.info(f"Marked {len(urls_to_deactivate)} connections as inactive.")

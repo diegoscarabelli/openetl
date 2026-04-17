@@ -15,7 +15,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 import fitdecode
-from sqlalchemy import and_, text
+from sqlalchemy import and_, delete, select, text
 from sqlalchemy.orm import Session
 
 from dags.lib.dag_utils import Processor
@@ -237,7 +237,11 @@ class GarminProcessor(Processor):
         """
 
         # Check if user exists in user table.
-        existing_user = session.query(User).filter(User.user_id == int(user_id)).first()
+        existing_user = (
+            session.execute(select(User).where(User.user_id == int(user_id)))
+            .scalars()
+            .first()
+        )
 
         if not existing_user:
             # Create minimal user record with conflict handling.
@@ -286,7 +290,9 @@ class GarminProcessor(Processor):
         # Update user table with demographics if needed.
         if self.must_update_user:
             user_record = (
-                session.query(User).filter(User.user_id == int(self.user_id)).first()
+                session.execute(select(User).where(User.user_id == int(self.user_id)))
+                .scalars()
+                .first()
             )
             if user_record:
                 user_record.full_name = full_name
@@ -295,8 +301,15 @@ class GarminProcessor(Processor):
 
         # Get latest user profile.
         latest_profile = (
-            session.query(UserProfile)
-            .filter(and_(UserProfile.user_id == int(self.user_id), UserProfile.latest))
+            session.execute(
+                select(UserProfile).where(
+                    and_(
+                        UserProfile.user_id == int(self.user_id),
+                        UserProfile.latest,
+                    )
+                )
+            )
+            .scalars()
             .first()
         )
 
@@ -802,7 +815,11 @@ class GarminProcessor(Processor):
 
         # Always delete existing rows for reprocessing (cleans stale data even
         # when the activity no longer has exercise sets).
-        session.query(StrengthExercise).filter_by(activity_id=activity_id).delete()
+        session.execute(
+            delete(StrengthExercise)
+            .where(StrengthExercise.activity_id == activity_id)
+            .execution_options(synchronize_session=False)
+        )
 
         if not summarized_sets:
             LOGGER.info("No summarized exercise sets found for strength activity.")
@@ -863,7 +880,11 @@ class GarminProcessor(Processor):
 
         # Always delete existing rows for reprocessing (cleans stale data even
         # when the activity no longer has exercise sets).
-        session.query(StrengthSet).filter_by(activity_id=activity_id).delete()
+        session.execute(
+            delete(StrengthSet)
+            .where(StrengthSet.activity_id == activity_id)
+            .execution_options(synchronize_session=False)
+        )
 
         if not exercise_sets:
             LOGGER.info(
@@ -2261,8 +2282,10 @@ class GarminProcessor(Processor):
             else:
                 # Check if activity exists to avoid FK violations.
                 activity_exists = (
-                    session.query(Activity)
-                    .filter(Activity.activity_id == activity_id)
+                    session.execute(
+                        select(Activity).where(Activity.activity_id == activity_id)
+                    )
+                    .scalars()
                     .first()
                     is not None
                 )
@@ -2282,14 +2305,16 @@ class GarminProcessor(Processor):
             # Find all PersonalRecord rows with `latest`=True and same `type_id` for
             # this user.
             latest_prs = (
-                session.query(PersonalRecord)
-                .filter(
-                    and_(
-                        PersonalRecord.user_id == int(self.user_id),
-                        PersonalRecord.type_id == type_id,
-                        PersonalRecord.latest,
+                session.execute(
+                    select(PersonalRecord).where(
+                        and_(
+                            PersonalRecord.user_id == int(self.user_id),
+                            PersonalRecord.type_id == type_id,
+                            PersonalRecord.latest,
+                        )
                     )
                 )
+                .scalars()
                 .all()
             )
 
@@ -2366,13 +2391,15 @@ class GarminProcessor(Processor):
 
         # Find all race predictions with `latest`=True for this user.
         latest_race_predictions = (
-            session.query(RacePredictions)
-            .filter(
-                and_(
-                    RacePredictions.user_id == int(self.user_id),
-                    RacePredictions.latest,
+            session.execute(
+                select(RacePredictions).where(
+                    and_(
+                        RacePredictions.user_id == int(self.user_id),
+                        RacePredictions.latest,
+                    )
                 )
             )
+            .scalars()
             .all()
         )
 
@@ -2435,7 +2462,9 @@ class GarminProcessor(Processor):
 
         # Verify activity exists (FIT file requires a parent activity record).
         existing_activity = (
-            session.query(Activity).filter(Activity.activity_id == activity_id).first()
+            session.execute(select(Activity).where(Activity.activity_id == activity_id))
+            .scalars()
+            .first()
         )
 
         if not existing_activity:
@@ -2617,22 +2646,30 @@ class GarminProcessor(Processor):
 
         # Delete existing FIT metric rows for this activity before re-inserting.
         # This handles added/removed laps, splits, or records between reprocesses.
-        session.query(ActivityTsMetric).filter_by(activity_id=activity_id).delete(
-            synchronize_session=False
+        session.execute(
+            delete(ActivityTsMetric)
+            .where(ActivityTsMetric.activity_id == activity_id)
+            .execution_options(synchronize_session=False)
         )
-        session.query(ActivitySplitMetric).filter_by(activity_id=activity_id).delete(
-            synchronize_session=False
+        session.execute(
+            delete(ActivitySplitMetric)
+            .where(ActivitySplitMetric.activity_id == activity_id)
+            .execution_options(synchronize_session=False)
         )
-        session.query(ActivityLapMetric).filter_by(activity_id=activity_id).delete(
-            synchronize_session=False
+        session.execute(
+            delete(ActivityLapMetric)
+            .where(ActivityLapMetric.activity_id == activity_id)
+            .execution_options(synchronize_session=False)
         )
-        session.query(ActivityPath).filter_by(activity_id=activity_id).delete(
-            synchronize_session=False
+        session.execute(
+            delete(ActivityPath)
+            .where(ActivityPath.activity_id == activity_id)
+            .execution_options(synchronize_session=False)
         )
 
         # Bulk insert all metrics.
         if ts_metrics:
-            session.bulk_save_objects(ts_metrics)
+            session.add_all(ts_metrics)
             LOGGER.info(f"Processed {len(ts_metrics)} time-series records.")
         else:
             LOGGER.warning("⚠️ No time-series data found.")
@@ -2640,13 +2677,13 @@ class GarminProcessor(Processor):
         existing_activity.ts_data_available = bool(ts_metrics)
 
         if split_metrics:
-            session.bulk_save_objects(split_metrics)
+            session.add_all(split_metrics)
             LOGGER.info(f"Processed {len(split_metrics)} split records.")
         else:
             LOGGER.warning("⚠️ No split data found.")
 
         if lap_metrics:
-            session.bulk_save_objects(lap_metrics)
+            session.add_all(lap_metrics)
             LOGGER.info(f"Processed {len(lap_metrics)} lap records.")
         else:
             LOGGER.warning("⚠️ No lap data found.")
@@ -2668,7 +2705,7 @@ class GarminProcessor(Processor):
                 for _, lon_semi, lat_semi in gps_records
             ]
 
-            session.bulk_save_objects(
+            session.add_all(
                 [
                     ActivityPath(
                         activity_id=activity_id,

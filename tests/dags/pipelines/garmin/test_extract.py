@@ -20,7 +20,7 @@ from unittest.mock import ANY, MagicMock, call, patch
 
 import pendulum
 import pytest
-from airflow.exceptions import AirflowSkipException
+from airflow.sdk.exceptions import AirflowSkipException
 
 from dags.lib.etl_config import ETLConfig
 from dags.pipelines.garmin.constants import APIMethodTimeParam, GarminDataType

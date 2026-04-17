@@ -15,7 +15,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Dict, Union, Optional
 
-from sqlalchemy import Boolean, Column, DateTime, String
+from sqlalchemy import Boolean, Column, DateTime, String, select
 from sqlalchemy.orm import Session
 
 from dags.lib.etl_config import ETLConfig
@@ -100,12 +100,14 @@ class ETLResult:
 
         with Session(self.engine) as sess:
             records = (
-                sess.query(ETLResultSqla)
-                .filter(
-                    ETLResultSqla.dag_id == self.config.dag_id,
-                    ETLResultSqla.dag_run_id == self.dag_run_id,
-                    ETLResultSqla.dag_start_date == self.dag_start_date,
+                sess.execute(
+                    select(ETLResultSqla).where(
+                        ETLResultSqla.dag_id == self.config.dag_id,
+                        ETLResultSqla.dag_run_id == self.dag_run_id,
+                        ETLResultSqla.dag_start_date == self.dag_start_date,
+                    )
                 )
+                .scalars()
                 .all()
             )
             self.result_records = {
