@@ -379,11 +379,7 @@ def _upsert_values(
             )
         query_type = QueryType.UPSERT
     else:
-        query_type = (
-            QueryType.INSERT_IGNORE
-            if conflict_columns is not None
-            else QueryType.INSERT
-        )
+        query_type = QueryType.INSERT_IGNORE if conflict_columns else QueryType.INSERT
 
     conflict_columns = conflict_columns or []
     returned_values: List[Dict[str, Any]] = []
