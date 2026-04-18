@@ -647,3 +647,129 @@ class TestUpsertModelInstances:
         assert (
             updated_record.update_ts > initial_update_ts
         )  # update_ts should be newer.
+
+
+class TestChunkedUpsert:
+    """
+    Tests for multi-chunk execution in _upsert_values().
+
+    Uses a tiny chunk_size to force multiple INSERT statements and verifies that rows
+    and RETURNING results are aggregated correctly across chunks.
+    """
+
+    def test_upsert_all_rows_inserted_across_chunks(self, db_session):
+        """
+        Test that all rows are inserted when split across chunks.
+        """
+
+        values = [{"id": i, "col_a": f"val_{i}"} for i in range(1, 6)]
+        _upsert_values(
+            model=MyTest,
+            values=values,
+            session=db_session,
+            conflict_columns=["id"],
+            on_conflict_update=True,
+            chunk_size=2,
+        )
+        count = db_session.execute(select(func.count()).select_from(MyTest)).scalar()
+        assert count == 5
+
+    def test_upsert_returning_aggregated_across_chunks(self, db_session):
+        """
+        Test that RETURNING results are collected from every chunk.
+        """
+
+        values = [{"id": i, "col_a": f"val_{i}"} for i in range(1, 6)]
+        results = _upsert_values(
+            model=MyTest,
+            values=values,
+            session=db_session,
+            conflict_columns=["id"],
+            on_conflict_update=True,
+            returning_columns=["id", "col_a"],
+            chunk_size=2,
+        )
+        assert results is not None
+        assert len(results) == 5
+        returned_ids = sorted(r["id"] for r in results)
+        assert returned_ids == [1, 2, 3, 4, 5]
+
+    def test_upsert_updates_existing_across_chunks(self, db_session):
+        """
+        Test that chunked upsert updates existing rows correctly.
+        """
+
+        # Seed rows.
+        seed = [{"id": i, "col_a": f"old_{i}"} for i in range(1, 6)]
+        _upsert_values(
+            model=MyTest,
+            values=seed,
+            session=db_session,
+            conflict_columns=["id"],
+            on_conflict_update=True,
+        )
+
+        # Upsert with new values in small chunks.
+        updated = [{"id": i, "col_a": f"new_{i}"} for i in range(1, 6)]
+        _upsert_values(
+            model=MyTest,
+            values=updated,
+            session=db_session,
+            conflict_columns=["id"],
+            on_conflict_update=True,
+            chunk_size=2,
+        )
+        rows = db_session.execute(select(MyTest).order_by(MyTest.id)).scalars().all()
+        assert all(r.col_a == f"new_{r.id}" for r in rows)
+
+    def test_insert_ignore_returning_across_chunks(self, db_session):
+        """
+        Test INSERT_IGNORE with RETURNING re-queries per chunk.
+        """
+
+        # Seed a subset of rows.
+        seed = [{"id": 1, "col_a": "A"}, {"id": 3, "col_a": "C"}]
+        _upsert_values(
+            model=MyTest,
+            values=seed,
+            session=db_session,
+            conflict_columns=["id"],
+            on_conflict_update=True,
+        )
+
+        # INSERT_IGNORE with mix of new and existing rows.
+        values = [{"id": i, "col_a": f"new_{i}"} for i in range(1, 6)]
+        results = _upsert_values(
+            model=MyTest,
+            values=values,
+            session=db_session,
+            conflict_columns=["id"],
+            on_conflict_update=False,
+            returning_columns=["id", "col_a"],
+            chunk_size=2,
+        )
+        assert results is not None
+        assert len(results) == 5
+        by_id = {r["id"]: r["col_a"] for r in results}
+        # Existing rows keep original values.
+        assert by_id[1] == "A"
+        assert by_id[3] == "C"
+        # New rows have the inserted values.
+        assert by_id[2] == "new_2"
+        assert by_id[4] == "new_4"
+        assert by_id[5] == "new_5"
+
+    def test_plain_insert_across_chunks(self, db_session):
+        """
+        Test plain INSERT (no conflict) works across chunks.
+        """
+
+        values = [{"id": i, "col_a": f"val_{i}"} for i in range(1, 6)]
+        _upsert_values(
+            model=MyTest,
+            values=values,
+            session=db_session,
+            chunk_size=2,
+        )
+        count = db_session.execute(select(func.count()).select_from(MyTest)).scalar()
+        assert count == 5
