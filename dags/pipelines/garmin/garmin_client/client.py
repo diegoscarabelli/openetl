@@ -330,7 +330,8 @@ class GarminClient:
             signature parity with the upstream library; resume routes via attribute
             presence on the client instance, not via this argument).
         :param mfa_code: 6-digit MFA code.
-        :return:``(None, None)`` on success.
+        :return: A 2-tuple of ``(None, None)`` on success once authentication and DI
+            token exchange both complete.
         :raises GarminAuthenticationError: On verification failure.
         """
         if hasattr(self, "_widget_session"):

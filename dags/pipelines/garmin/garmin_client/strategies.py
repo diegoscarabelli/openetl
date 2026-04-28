@@ -294,7 +294,8 @@ def portal_web_login_cffi(
     :param password: Garmin Connect password.
     :param prompt_mfa: Callable returning a 6-digit MFA code (see widget flow).
     :param return_on_mfa: If True, return early on MFA challenge.
-    :return:``(None, None)`` on success, or ``("needs_mfa", session)`` on MFA.
+    :return: A 2-tuple of ``(None, None)`` on success, or ``("needs_mfa", session)``
+        when MFA is required and ``return_on_mfa`` is True.
     :raises GarminConnectionError: If all five impersonations fail.
     """
     if not HAS_CFFI:
@@ -365,7 +366,8 @@ def portal_web_login_requests(
     :param password: Garmin Connect password.
     :param prompt_mfa: Callable returning a 6-digit MFA code.
     :param return_on_mfa: If True, return early on MFA challenge.
-    :return:``(None, None)`` on success, or ``("needs_mfa", session)`` on MFA.
+    :return: A 2-tuple of ``(None, None)`` on success, or ``("needs_mfa", session)``
+        when MFA is required and ``return_on_mfa`` is True.
     """
     sess = requests.Session()
     return _portal_web_login(
@@ -401,7 +403,8 @@ def _portal_web_login(
     :param password: Garmin Connect password.
     :param prompt_mfa: Callable returning a 6-digit MFA code.
     :param return_on_mfa: If True, return early on MFA challenge.
-    :return:``(None, None)`` on success, or ``("needs_mfa", session)`` on MFA.
+    :return: A 2-tuple of ``(None, None)`` on success, or ``("needs_mfa", session)``
+        when MFA is required and ``return_on_mfa`` is True.
     :raises GarminTooManyRequestsError: On HTTP 429.
     :raises GarminAuthenticationError: On invalid credentials or missing MFA prompt.
     :raises GarminConnectionError: On HTTP errors or unexpected response shape.
@@ -675,7 +678,8 @@ def portal_login(
     :param password: Garmin Connect password.
     :param prompt_mfa: Callable returning a 6-digit MFA code.
     :param return_on_mfa: If True, return early on MFA challenge.
-    :return:``(None, None)`` on success, or ``("needs_mfa", session)`` on MFA.
+    :return: A 2-tuple of ``(None, None)`` on success, or ``("needs_mfa", session)``
+        when MFA is required and ``return_on_mfa`` is True.
     :raises GarminTooManyRequestsError: On HTTP 429.
     :raises GarminAuthenticationError: On bad credentials or unexpected status.
     :raises GarminConnectionError: If curl_cffi is unavailable, on non-OK responses, or
@@ -862,7 +866,8 @@ def mobile_login(
     :param password: Garmin Connect password.
     :param prompt_mfa: Callable returning a 6-digit MFA code.
     :param return_on_mfa: If True, return early on MFA challenge.
-    :return:``(None, None)`` on success, or ``("needs_mfa", session)`` on MFA.
+    :return: A 2-tuple of ``(None, None)`` on success, or ``("needs_mfa", session)``
+        when MFA is required and ``return_on_mfa`` is True.
     :raises GarminTooManyRequestsError: On HTTP 429.
     :raises GarminAuthenticationError: On bad credentials.
     :raises GarminConnectionError: On non-JSON response.
