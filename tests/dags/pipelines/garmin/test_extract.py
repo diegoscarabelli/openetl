@@ -2041,9 +2041,13 @@ class TestActivitiesListFromDisk:
         (tmp_path / "test-user_ACTIVITIES_LIST_2025-01-01T12-00-00Z.json").write_text(
             json.dumps([{"activityId": 999, "name": "stale"}])
         )
-        # In-window files.
+        # In-window files (full 3-day coverage so the partial-coverage
+        # fallback doesn't fire).
         (tmp_path / "test-user_ACTIVITIES_LIST_2025-01-10T12-00-00Z.json").write_text(
             json.dumps([{"activityId": 100, "name": "current"}])
+        )
+        (tmp_path / "test-user_ACTIVITIES_LIST_2025-01-11T12-00-00Z.json").write_text(
+            json.dumps([{"activityId": 150, "name": "current"}])
         )
         (tmp_path / "test-user_ACTIVITIES_LIST_2025-01-12T12-00-00Z.json").write_text(
             json.dumps([{"activityId": 200, "name": "current"}])
@@ -2052,7 +2056,7 @@ class TestActivitiesListFromDisk:
         result = instance._load_activities_list_from_disk()
 
         ids = sorted(a["activityId"] for a in result)
-        assert ids == [100, 200]
+        assert ids == [100, 150, 200]
 
     def test_returns_none_when_only_out_of_window_files(self, tmp_path):
         """
@@ -2101,5 +2105,59 @@ class TestActivitiesListFromDisk:
 
         result = instance._load_activities_list_from_disk()
 
+        ids = sorted(a["activityId"] for a in result)
+        assert ids == [100, 200]
+
+    def test_returns_none_when_disk_coverage_is_partial(self, tmp_path):
+        """
+        Window has 3 days but only 2 ACTIVITIES_LIST files exist (e.g. day 2 had a
+        transient API failure during extract).
+
+        The function must return None to force a fresh API call rather than silently
+        using the partial data, otherwise extract_fit_activities would never download
+        FITs for the missing day.
+        """
+
+        instance = GarminExtractor(
+            start_date=date(2025, 1, 1),
+            end_date=date(2025, 1, 3),
+            ingest_dir=tmp_path,
+            data_types=("ACTIVITY",),
+        )
+        instance.user_id = "test-user"
+
+        # Day 1 + day 3 present; day 2 missing (simulates a per-date
+        # ACTIVITIES_LIST failure that recorded a failure record but no file).
+        (tmp_path / "test-user_ACTIVITIES_LIST_2025-01-01T12-00-00Z.json").write_text(
+            json.dumps([{"activityId": 100}])
+        )
+        (tmp_path / "test-user_ACTIVITIES_LIST_2025-01-03T12-00-00Z.json").write_text(
+            json.dumps([{"activityId": 300}])
+        )
+
+        assert instance._load_activities_list_from_disk() is None
+
+    def test_returns_data_when_full_window_covered(self, tmp_path):
+        """
+        Sanity check: when every day in the window has a file, the helper
+        returns the merged data without falling back to the API.
+        """
+
+        instance = GarminExtractor(
+            start_date=date(2025, 1, 1),
+            end_date=date(2025, 1, 2),
+            ingest_dir=tmp_path,
+            data_types=("ACTIVITY",),
+        )
+        instance.user_id = "test-user"
+
+        (tmp_path / "test-user_ACTIVITIES_LIST_2025-01-01T12-00-00Z.json").write_text(
+            json.dumps([{"activityId": 100}])
+        )
+        (tmp_path / "test-user_ACTIVITIES_LIST_2025-01-02T12-00-00Z.json").write_text(
+            json.dumps([{"activityId": 200}])
+        )
+
+        result = instance._load_activities_list_from_disk()
         ids = sorted(a["activityId"] for a in result)
         assert ids == [100, 200]

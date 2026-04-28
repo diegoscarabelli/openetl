@@ -491,16 +491,36 @@ class GarminExtractor:
         downstream code can assume every item is a well-formed activity.
 
         Falls back to ``None`` (caller hits the live API) on any read or
-        parse error so a single corrupt file doesn't prevent extraction.
+        parse error, OR when the on-disk files don't cover every day in
+        ``[start_date, end_date]`` (a partial run that recorded per-day
+        failures would otherwise silently make the FIT-download loop skip
+        activities for the missing days).
 
         :return: Merged + deduplicated activities list, or ``None`` if no
-            in-window files exist or any file cannot be parsed.
+            in-window files exist, any file cannot be parsed, or the set of
+            in-window files doesn't cover the full date range.
         """
 
         pattern = f"{self.user_id}_ACTIVITIES_LIST_*.json"
         matches = sorted(self.ingest_dir.glob(pattern))
         in_window = [m for m in matches if self._activities_list_in_window(m)]
         if not in_window:
+            return None
+
+        # Verify every day in [start_date, end_date] has a corresponding
+        # ACTIVITIES_LIST file. A subset (e.g., from a partial extract that
+        # had transient failures on some days) means we'd silently skip FIT
+        # downloads for the missing days; force a fresh API call instead.
+        expected_days = (self.end_date - self.start_date).days + 1
+        seen_dates = {self._activities_list_date(m) for m in in_window}
+        seen_dates.discard(None)
+        if len(seen_dates) < expected_days:
+            LOGGER.warning(
+                f"⚠️ ACTIVITIES_LIST disk coverage incomplete for "
+                f"{self.user_id} ({len(seen_dates)}/{expected_days} days "
+                f"present in {self.start_date}..{self.end_date}); falling "
+                f"back to API call."
+            )
             return None
 
         merged: Dict = {}
@@ -545,27 +565,40 @@ class GarminExtractor:
         Return True if ``path`` is an ACTIVITIES_LIST file whose embedded date is in
         ``[self.start_date, self.end_date]``.
 
+        :param path: Candidate ACTIVITIES_LIST file path.
+        :return: True if the file's embedded date is within the window.
+        """
+
+        file_date = self._activities_list_date(path)
+        if file_date is None:
+            return False
+        return self.start_date <= file_date <= self.end_date
+
+    def _activities_list_date(self, path: Path) -> Optional[date]:
+        """
+        Parse the embedded YYYY-MM-DD date out of an ACTIVITIES_LIST filename.
+
         Filenames are produced by :meth:`_save_garmin_data` as
         ``<user_id>_ACTIVITIES_LIST_<ISO 8601 timestamp>.json`` where the
         timestamp begins with ``YYYY-MM-DD``. Files whose date can't be parsed
         are skipped with a warning so a malformed leftover never causes an
-        out-of-window download.
+        out-of-window download or contributes to coverage counts.
 
         :param path: Candidate ACTIVITIES_LIST file path.
-        :return: True if the file's embedded date is within the window.
+        :return: Parsed date, or ``None`` if the filename doesn't match the
+            expected prefix or the date portion isn't a valid ISO date.
         """
 
         prefix = f"{self.user_id}_ACTIVITIES_LIST_"
         stem = path.stem
         if not stem.startswith(prefix):
-            return False
+            return None
         date_str = stem[len(prefix) : len(prefix) + 10]
         try:
-            file_date = date.fromisoformat(date_str)
+            return date.fromisoformat(date_str)
         except ValueError:
             LOGGER.warning(f"⚠️ Skipping {path.name}: cannot parse date from filename.")
-            return False
-        return self.start_date <= file_date <= self.end_date
+            return None
 
     def extract_fit_activities(self) -> List[Path]:
         """
