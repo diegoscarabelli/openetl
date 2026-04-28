@@ -57,7 +57,6 @@ def make_config(
     :param min_file_sets_in_batch: Minimum file sets per batch.
     :return: Mock ETLConfig instance.
     """
-
     config = MagicMock()
     config.data_dirs.process = process_dir
     config.file_types = file_types
@@ -74,7 +73,6 @@ def create_garmin_file(process_dir: Path, filename: str) -> Path:
     :param filename: Name of the file to create.
     :return: Path to the created file.
     """
-
     file_path = process_dir / filename
     file_path.touch()
     return file_path
@@ -90,7 +88,6 @@ def collect_all_filenames(serialized_batches: list) -> list[str]:
     :param serialized_batches: Output from the batch function.
     :return: Flat list of all filenames across all batches.
     """
-
     filenames = []
     for batch_tuple in serialized_batches:
         for serialized_file_set_list in batch_tuple:
@@ -107,7 +104,6 @@ def count_file_sets(serialized_batches: list) -> int:
     :param serialized_batches: Output from the batch function.
     :return: Total number of FileSets.
     """
-
     total = 0
     for batch_tuple in serialized_batches:
         for serialized_file_set_list in batch_tuple:
@@ -130,7 +126,6 @@ class TestBatchGrouping:
         Files from a single user at the same timestamp should be grouped into one
         FileSet.
         """
-
         # Arrange
         ts = "2025-08-07T12:00:00Z"
         create_garmin_file(tmp_path, f"12345678_SLEEP_{ts}.json")
@@ -160,7 +155,6 @@ class TestBatchGrouping:
         default dag_utils.batch: grouping by (user_id, timestamp) instead of timestamp
         alone prevents cross-user contamination.
         """
-
         # Arrange
         ts = "2025-08-07T12:00:00Z"
         create_garmin_file(tmp_path, f"11111111_SLEEP_{ts}.json")
@@ -192,7 +186,6 @@ class TestBatchGrouping:
         Files from the same user at different timestamps should be grouped into separate
         FileSets, one per timestamp.
         """
-
         # Arrange
         ts1 = "2025-08-07T12:00:00Z"
         ts2 = "2025-08-08T12:00:00Z"
@@ -215,7 +208,6 @@ class TestBatchGrouping:
         Two users with two timestamps each should produce four FileSets, one for each
         (user_id, timestamp) combination.
         """
-
         # Arrange
         ts1 = "2025-08-07T12:00:00Z"
         ts2 = "2025-08-08T12:00:00Z"
@@ -254,7 +246,6 @@ class TestBatchEdgeCases:
         An empty process directory should raise AirflowSkipException, signaling that
         there is no work to do for this DAG run.
         """
-
         # Arrange
         config = make_config(tmp_path)
 
@@ -266,7 +257,6 @@ class TestBatchEdgeCases:
         """
         max_process_tasks <= 0 should raise ValueError before any file processing.
         """
-
         # Arrange
         config = make_config(tmp_path, max_process_tasks=0)
 
@@ -278,7 +268,6 @@ class TestBatchEdgeCases:
         """
         min_file_sets_in_batch <= 0 should raise ValueError before any file processing.
         """
-
         # Arrange
         config = make_config(tmp_path, min_file_sets_in_batch=0)
 
@@ -291,7 +280,6 @@ class TestBatchEdgeCases:
         A file that doesn't match any configured file type pattern should raise
         ValueError, since the batch function performs a completeness check.
         """
-
         # Arrange: create a file that won't match any GarminFileTypes pattern.
         create_garmin_file(tmp_path, "12345678_UNKNOWN_TYPE_2025-08-07T12:00:00Z.json")
         config = make_config(tmp_path)
@@ -308,7 +296,6 @@ class TestBatchEdgeCases:
         The DB schema uses BIGINT for user_id, so non-numeric prefixes would fail
         downstream in the processor.
         """
-
         # Arrange: "abc" is not numeric.
         ts = "2025-08-07T12:00:00Z"
         create_garmin_file(tmp_path, f"abc_SLEEP_{ts}.json")
@@ -329,7 +316,6 @@ class TestBatchChunking:
         With max_process_tasks=2, min_file_sets_in_batch=1, and 4 FileSets (4 distinct
         timestamps), the result should be 2 batches with 2 FileSets each.
         """
-
         # Arrange: 4 timestamps for user 12345678.
         for day in range(7, 11):
             ts = f"2025-08-{day:02d}T12:00:00Z"
@@ -351,7 +337,6 @@ class TestBatchChunking:
         When the number of FileSets is less than min_file_sets_in_batch *
         max_process_tasks, all FileSets should be placed in a single batch.
         """
-
         # Arrange: 1 FileSet, but max_process_tasks=4.
         create_garmin_file(tmp_path, "12345678_SLEEP_2025-08-07T12:00:00Z.json")
         config = make_config(tmp_path, max_process_tasks=4, min_file_sets_in_batch=1)
@@ -368,7 +353,6 @@ class TestBatchChunking:
         When FileSets don't divide evenly into batches, remaining FileSets should be
         distributed round-robin across the existing batches.
         """
-
         # Arrange: 5 timestamps, max_process_tasks=2, min_file_sets_in_batch=2.
         # First pass: 2 batches of 2 = 4 file sets consumed. 1 remainder distributed
         # round-robin into batch 0.
@@ -392,7 +376,6 @@ class TestBatchChunking:
         With min_file_sets_in_batch=3 and 6 FileSets, max_process_tasks=4, we should get
         2 batches of 3 FileSets each (not 4 batches).
         """
-
         # Arrange: 6 distinct timestamps.
         for day in range(7, 13):
             ts = f"2025-08-{day:02d}T12:00:00Z"
@@ -412,7 +395,6 @@ class TestBatchChunking:
         Verify the serialized output structure matches what XCom expects:
         list of tuples, each containing a list of serialized FileSet dicts.
         """
-
         # Arrange
         ts = "2025-08-07T12:00:00Z"
         create_garmin_file(tmp_path, f"12345678_SLEEP_{ts}.json")

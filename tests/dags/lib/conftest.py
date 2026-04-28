@@ -26,7 +26,6 @@ def get_postgres_password() -> str:
 
     :return: The password value, or 'postgres' if not found.
     """
-
     sql_credentials_dir = os.getenv("SQL_CREDENTIALS_DIR")
     if not sql_credentials_dir:
         # Return default for test environments without credentials configured.
@@ -87,7 +86,6 @@ class MyTest(Base):
         """
         Compare two MyTest instances for equality.
         """
-
         return (
             self.id == other.id
             and self.col_a == other.col_a
@@ -100,14 +98,12 @@ class MyTest(Base):
         """
         Compare two MyTest instances for sorting by id.
         """
-
         return self.id < other.id
 
     def __repr__(self) -> str:
         """
         String representation of MyTest instance.
         """
-
         return (
             f"<MyTest(id={self.id}, col_a={self.col_a}, col_b={self.col_b}, "
             f"col_c={self.col_c}, latest={self.latest})>"
@@ -121,7 +117,6 @@ def db_engine() -> Generator[Engine, None, None]:
 
     :return: The SQLAlchemy engine instance.
     """
-
     engine = create_engine(TEST_DB_URL)
     MyTest.metadata.create_all(engine)
     yield engine
@@ -136,7 +131,6 @@ def db_session(db_engine: Engine) -> Generator[Session, None, None]:
     :param db_engine: The SQLAlchemy engine instance.
     :return: The SQLAlchemy session instance.
     """
-
     session = Session(db_engine)
     yield session
     session.close()
@@ -149,7 +143,6 @@ def etl_result_engine() -> Generator[Engine, None, None]:
 
     :return: The SQLAlchemy engine instance for reporting.
     """
-
     engine = create_engine(TEST_DB_URL)
     with engine.begin() as conn:
         # Drop schema if exists.
@@ -170,7 +163,6 @@ def etl_result_session(etl_result_engine: Engine) -> Generator[Session, None, No
     :param reporting_engine: The SQLAlchemy engine instance for reporting.
     :return: The SQLAlchemy session instance for reporting.
     """
-
     session = Session(etl_result_engine)
     yield session
     session.close()

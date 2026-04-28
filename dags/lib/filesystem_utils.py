@@ -50,7 +50,6 @@ class ETLDataDirectories:
         :param base_dir: Name of the base directory where pipeline data is stored.
         :param create_dirs: Whether to create directories if they don't exist.
         """
-
         self.ingest = self._get_directory_path(base_dir, DataState.INGEST)
         self.process = self._get_directory_path(base_dir, DataState.PROCESS)
         self.quarantine = self._get_directory_path(base_dir, DataState.QUARANTINE)
@@ -70,7 +69,6 @@ class ETLDataDirectories:
         :param data_state: Data state.
         :return: Path object for the directory.
         """
-
         data_dir = os.environ.get("DATA_DIR")
         if not data_dir:
             LOGGER.warning(
@@ -85,7 +83,6 @@ class ETLDataDirectories:
         """
         Create the pipeline data directories for all data states, if they don't exist.
         """
-
         for directory in [self.ingest, self.process, self.quarantine, self.store]:
             if directory:
                 directory.mkdir(parents=True, exist_ok=True)
@@ -133,7 +130,6 @@ class FileSet:
         """
         Return a flat list of file paths in the file set.
         """
-
         file_paths = []
         for file_list in self.files.values():
             file_paths.extend(file_list)
@@ -146,7 +142,6 @@ class FileSet:
         :param enum: File type enum (e.g., GARMIN_FILE_TYPES.SLEEP).
         :return: List of Path objects, or empty list if none found.
         """
-
         return self.files.get(enum, [])
 
     def to_serializable(self) -> Dict[str, List[str]]:
@@ -155,7 +150,6 @@ class FileSet:
 
         :return: Dictionary with file type names as keys and lists of string paths.
         """
-
         serializable = {}
         for file_type, paths in self.files.items():
             # Convert enum to string and Path objects to strings.
@@ -174,7 +168,6 @@ class FileSet:
         :param file_types_enum: The file types enum class to reconstruct keys.
         :return: FileSet instance.
         """
-
         file_set = cls()
         for type_name, path_strings in data.items():
             # Find the enum by name.
@@ -194,7 +187,6 @@ class FileSet:
 
         :return: Total size in bytes.
         """
-
         total_size = 0
         for file_path in self.file_paths:
             if file_path.exists():

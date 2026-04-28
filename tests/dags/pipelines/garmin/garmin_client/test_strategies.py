@@ -27,7 +27,6 @@ def mock_client() -> MagicMock:
 
     :return: MagicMock standing in for a GarminClient.
     """
-
     client = MagicMock()
     client._sso = "https://sso.garmin.com"
     return client
@@ -48,7 +47,6 @@ class TestWidgetLoginCffi:
         Without curl_cffi the widget strategy raises ``GarminConnectionError``
         immediately so the parent fallback chain advances.
         """
-
         with patch("dags.pipelines.garmin.garmin_client.strategies.HAS_CFFI", False):
             with pytest.raises(GarminConnectionError):
                 strategies.widget_login_cffi(mock_client, "u", "p")
@@ -59,7 +57,6 @@ class TestWidgetLoginCffi:
         """
         A 429 on the initial embed GET raises the typed rate-limit error.
         """
-
         # Arrange.
         rate_limited = MagicMock()
         rate_limited.status_code = 429
@@ -84,7 +81,6 @@ class TestWidgetLoginCffi:
         When the credential POST title contains 'MFA' and ``return_on_mfa`` is True, the
         strategy stashes session state and returns the sentinel tuple.
         """
-
         # Arrange.
         embed_resp = MagicMock(status_code=200, ok=True, text="<html></html>")
         signin_resp = MagicMock(
@@ -128,7 +124,6 @@ class TestWidgetLoginCffi:
         A title mentioning 'invalid' triggers ``GarminAuthenticationError`` so the
         fallback chain stops trying other strategies on bad credentials.
         """
-
         # Arrange.
         embed_resp = MagicMock(status_code=200, ok=True, text="<html></html>")
         signin_resp = MagicMock(
@@ -168,7 +163,6 @@ class TestCompleteMfaWidget:
         """
         A successful MFA verify returns the extracted service ticket.
         """
-
         # Arrange.
         last_resp = MagicMock(
             text='<input name="_csrf" value="csrf_token"/>',
@@ -199,7 +193,6 @@ class TestCompleteMfaWidget:
         """
         A non-success title raises ``GarminAuthenticationError``.
         """
-
         # Arrange.
         last_resp = MagicMock(
             text='<input name="_csrf" value="csrf_token"/>',
@@ -237,7 +230,6 @@ class TestPortalWebLogin:
         The 30-45s Cloudflare-evading delay is invoked between the SSO GET and the
         credential POST.
         """
-
         # Arrange. Mock POST returns SUCCESSFUL so the flow short-circuits.
         post_resp = MagicMock()
         post_resp.status_code = 200
@@ -266,7 +258,6 @@ class TestPortalWebLogin:
         """
         A 429 from the credential POST raises the typed rate-limit error.
         """
-
         # Arrange.
         post_resp = MagicMock()
         post_resp.status_code = 429
@@ -285,7 +276,6 @@ class TestPortalWebLogin:
         """
         ``INVALID_USERNAME_PASSWORD`` is mapped to ``GarminAuthenticationError``.
         """
-
         # Arrange.
         post_resp = MagicMock()
         post_resp.status_code = 200
@@ -306,7 +296,6 @@ class TestPortalWebLogin:
         ``MFA_REQUIRED`` with ``return_on_mfa=True`` stashes session state and returns
         the needs_mfa sentinel.
         """
-
         # Arrange.
         post_resp = MagicMock()
         post_resp.status_code = 200
@@ -340,7 +329,6 @@ class TestPortalWebLogin:
         response is non-JSON HTML, so checking ``r.ok`` first gives a better
         error message than letting ``r.json()`` fail.
         """
-
         # Arrange.
         post_resp = MagicMock()
         post_resp.status_code = 403
@@ -366,7 +354,6 @@ class TestPortalWebLogin:
         ``GarminConnectionError`` with the body preview included so the failure is
         debuggable from logs.
         """
-
         # Arrange.
         post_resp = MagicMock()
         post_resp.status_code = 200
@@ -395,7 +382,6 @@ class TestPortalWebLoginCffi:
         """
         Without curl_cffi the cffi variant raises ``GarminConnectionError``.
         """
-
         with patch("dags.pipelines.garmin.garmin_client.strategies.HAS_CFFI", False):
             with pytest.raises(GarminConnectionError):
                 strategies.portal_web_login_cffi(mock_client, "u", "p")
@@ -407,7 +393,6 @@ class TestPortalWebLoginCffi:
         If the first 4 impersonations raise transient errors, the 5th succeeds and
         returns its result.
         """
-
         # Arrange.
         successful_result = (None, None)
         call_count = {"n": 0}
@@ -439,7 +424,6 @@ class TestPortalWebLoginCffi:
         If the first impersonation gets 429'd, the wrapper must try the next one (rather
         than re-raising immediately).
         """
-
         # Arrange.
         successful_result = (None, None)
         call_count = {"n": 0}
@@ -472,7 +456,6 @@ class TestPortalWebLoginCffi:
         ``GarminConnectionError``) so the outer ``Client.login()`` strategy chain can
         detect the all-429 case and choose the right final error to surface.
         """
-
         # Arrange.
         with patch(
             "dags.pipelines.garmin.garmin_client.strategies.HAS_CFFI", True
@@ -499,7 +482,6 @@ class TestPortalWebLoginCffi:
         ``last_err``-based classifier would have raised the 429 subclass even though
         only 1 of 5 attempts actually hit rate limiting.
         """
-
         # Arrange.
         call_count = {"n": 0}
 
@@ -534,7 +516,6 @@ class TestPortalWebLoginCffi:
         including non-typed exceptions), the wrapper raises a generic
         :class:`GarminConnectionError` with the last error as cause.
         """
-
         # Arrange.
         with patch(
             "dags.pipelines.garmin.garmin_client.strategies.HAS_CFFI", True
@@ -565,7 +546,6 @@ class TestPortalLoginMobileCffi:
 
         Verify it is invoked between GET and POST.
         """
-
         # Arrange.
         post_resp = MagicMock()
         post_resp.json.return_value = {
@@ -612,7 +592,6 @@ class TestMobileLogin:
         The plain-requests mobile flow now has the same delay between GET and POST as
         the cffi variants.
         """
-
         # Arrange.
         post_resp = MagicMock()
         post_resp.status_code = 200
@@ -644,11 +623,9 @@ class TestMobileLogin:
         """
         A 429 from the credential POST raises the typed rate-limit error.
         """
-
         # Arrange.
         post_resp = MagicMock()
         post_resp.status_code = 429
-
         with patch(
             "dags.pipelines.garmin.garmin_client.strategies.requests.Session"
         ) as mock_session_cls, patch(
@@ -667,11 +644,10 @@ class TestMobileLogin:
         infrastructure (GarminConnectionError) before falling through to the JSON-based
         ``SUCCESSFUL``/``MFA_REQUIRED`` branches.
 
-        Without this guard
-        the classifier would mis-credit a backend outage as a bad-credential
-        failure, swallowing a retryable error behind ``GarminAuthenticationError``.
+        Without this guard the classifier would mis-credit a backend outage as a bad-
+        credential failure, swallowing a retryable error behind
+        ``GarminAuthenticationError``.
         """
-
         # Arrange.
         post_resp = MagicMock()
         post_resp.status_code = 500
@@ -700,12 +676,10 @@ class TestMobileLogin:
         A 429 on the initial GET raises ``GarminTooManyRequestsError`` before any delay
         is taken so we don't waste 30-45s sleeping for nothing.
         """
-
         # Arrange.
         get_resp = MagicMock()
         get_resp.status_code = 429
         get_resp.ok = False
-
         with patch(
             "dags.pipelines.garmin.garmin_client.strategies.requests.Session"
         ) as mock_session_cls, patch(
@@ -727,12 +701,10 @@ class TestMobileLogin:
         A non-2xx (e.g., 503) on the initial GET raises ``GarminConnectionError`` before
         sleeping or attempting credentials.
         """
-
         # Arrange.
         get_resp = MagicMock()
         get_resp.status_code = 503
         get_resp.ok = False
-
         with patch(
             "dags.pipelines.garmin.garmin_client.strategies.requests.Session"
         ) as mock_session_cls, patch(
@@ -750,7 +722,6 @@ class TestMobileLogin:
         Both the sign-in GET and the credential POST forward an explicit ``timeout``
         kwarg so the calls can never hang indefinitely in long-running pipelines.
         """
-
         # Arrange.
         get_resp = MagicMock()
         get_resp.status_code = 200
@@ -790,7 +761,6 @@ class TestPortalWebLoginGet:
         A 429 on the SSO sign-in GET raises ``GarminTooManyRequestsError`` immediately
         rather than sleeping 30-45s and then attempting a doomed credential POST.
         """
-
         # Arrange.
         get_resp = MagicMock()
         get_resp.status_code = 429
@@ -815,7 +785,6 @@ class TestPortalWebLoginGet:
         A non-2xx (e.g., 502 Bad Gateway) on the SSO sign-in GET raises
         ``GarminConnectionError`` before sleeping or POSTing credentials.
         """
-
         # Arrange.
         get_resp = MagicMock()
         get_resp.status_code = 502
@@ -842,7 +811,6 @@ class TestPortalLoginMobileCffiHardening:
         A 429 on the mobile sign-in GET raises ``GarminTooManyRequestsError`` before any
         delay or POST happens.
         """
-
         # Arrange.
         get_resp = MagicMock()
         get_resp.status_code = 429
@@ -875,7 +843,6 @@ class TestPortalLoginMobileCffiHardening:
         HTML page), the JSON decode failure is wrapped as :class:`GarminConnectionError`
         rather than escaping as a bare decode error.
         """
-
         # Arrange.
         get_resp = MagicMock()
         get_resp.status_code = 200
@@ -915,13 +882,11 @@ class TestCompleteMfaPortalHardening:
         A 429 from the verifyCode endpoint raises ``GarminTooManyRequestsError`` instead
         of crashing on JSON decode of an HTML rate-limit page.
         """
-
         # Arrange.
         verify_resp = MagicMock()
         verify_resp.status_code = 429
         verify_resp.ok = False
         verify_resp.text = "Too Many Requests"
-
         mock_session = MagicMock()
         mock_session.post.return_value = verify_resp
         mock_client._mfa_cffi_session = mock_session
@@ -938,7 +903,6 @@ class TestCompleteMfaPortalHardening:
         failed before it could evaluate the MFA code; this is a transport error, not a
         verification failure.
         """
-
         # Arrange.
         verify_resp = MagicMock()
         verify_resp.status_code = 500
@@ -963,7 +927,6 @@ class TestCompleteMfaPortalHardening:
         ``GarminConnectionError`` because the response is a transport/infra failure, not
         a definitive verification failure.
         """
-
         # Arrange.
         verify_resp = MagicMock()
         verify_resp.status_code = 200
@@ -991,7 +954,6 @@ class TestCompleteMfaHardening:
         """
         A 429 from the verifyCode endpoint raises ``GarminTooManyRequestsError``.
         """
-
         # Arrange.
         verify_resp = MagicMock()
         verify_resp.status_code = 429
@@ -1012,7 +974,6 @@ class TestCompleteMfaHardening:
         before evaluating the MFA code; this is a transport error, not a verification
         failure.
         """
-
         # Arrange.
         verify_resp = MagicMock()
         verify_resp.status_code = 502
@@ -1034,7 +995,6 @@ class TestCompleteMfaHardening:
         A 200 with a non-JSON body raises ``GarminConnectionError`` because the response
         is a transport/infra failure, not a verification failure.
         """
-
         # Arrange.
         verify_resp = MagicMock()
         verify_resp.status_code = 200
@@ -1066,7 +1026,6 @@ class TestCompleteMfaPortalWebAggregation:
         Build a mock client populated with the ``_mfa_portal_web_*`` attributes
         ``complete_mfa_portal_web`` expects to read.
         """
-
         client = MagicMock()
         client._sso = "https://sso.garmin.com"
         client._mfa_portal_web_session = MagicMock()
@@ -1081,13 +1040,11 @@ class TestCompleteMfaPortalWebAggregation:
         rate limiting and should raise ``GarminTooManyRequestsError`` so callers can
         apply backoff instead of treating the failure as bad credentials.
         """
-
         # Arrange.
         client = self._make_portal_web_client()
         rate_limited = MagicMock()
         rate_limited.status_code = 429
         client._mfa_portal_web_session.post.return_value = rate_limited
-
         # Act & Assert.
         with pytest.raises(GarminTooManyRequestsError):
             strategies.complete_mfa_portal_web(client, "123456")
@@ -1100,13 +1057,11 @@ class TestCompleteMfaPortalWebAggregation:
         (network down, TLS reset), the aggregate failure is infrastructure and should
         raise ``GarminConnectionError`` rather than ``GarminAuthenticationError``.
         """
-
         # Arrange.
         client = self._make_portal_web_client()
         client._mfa_portal_web_session.post.side_effect = ConnectionError(
             "network down"
         )
-
         # Act & Assert.
         with pytest.raises(GarminConnectionError) as excinfo:
             strategies.complete_mfa_portal_web(client, "123456")
@@ -1121,7 +1076,6 @@ class TestCompleteMfaPortalWebAggregation:
         transport-level failures for aggregate classification, so two non-JSON responses
         map to ``GarminConnectionError``, not ``GarminAuthenticationError``.
         """
-
         # Arrange.
         client = self._make_portal_web_client()
         html_resp = MagicMock()
@@ -1142,7 +1096,6 @@ class TestCompleteMfaPortalWebAggregation:
         verification response, and the 429 branch wins over transport (more specific
         signal that Garmin is throttling).
         """
-
         # Arrange.
         client = self._make_portal_web_client()
         rate_limited = MagicMock()
@@ -1165,7 +1118,6 @@ class TestCompleteMfaPortalWebAggregation:
 
         A real verification response is the definitive signal.
         """
-
         # Arrange.
         client = self._make_portal_web_client()
         rate_limited = MagicMock()
@@ -1193,7 +1145,6 @@ class TestCompleteMfaPortalWebAggregation:
         mis-credit this as an auth failure, which in turn would swallow retryable
         backend errors behind a GarminAuthenticationError the caller cannot retry.
         """
-
         # Arrange.
         client = self._make_portal_web_client()
         server_error = MagicMock()

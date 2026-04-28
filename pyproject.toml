@@ -20,6 +20,7 @@ skip_covered = true
 add-blank-after-docstring = true
 black = true
 close-quotes-on-newline = true
+exclude = [".venv", "venv", ".git", "build", "dist"]
 in-place = true
 make-summary-multi-line = true
 pre-summary-newline = true

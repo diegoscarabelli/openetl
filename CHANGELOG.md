@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed
+
+- **Garmin extract task silently masked all-account failures as `Success`**: when every discovered Garmin account hit an account-level exception (e.g., the per-account try/except caught a DNS resolution error during auth, or every token expired at once), the per-account loop swallowed the exceptions, no files were extracted, and the task raised `AirflowSkipException` ("No Garmin Connect data found"). Airflow marked the DagRun **Success** in the UI (with downstream tasks pink-skipped), so the operator had no signal anything was wrong. Worse, `prev_data_interval_end_success` advanced past the failure window, breaking the `data_interval_start` resume mechanism — subsequent manual or scheduled triggers would not auto-backfill the gap. The extract task now distinguishes the two cases: if every discovered account failed, it raises `AirflowFailException` instead, marking the run **Failed** so the operator is alerted, callbacks fire, and `prev_data_interval_end_success` does not advance — the next successful run automatically backfills the missing window. The legitimate-empty case (every account authenticated, the API returned no data for the requested window) still raises `AirflowSkipException` as before.
+
 ### Added
 
 - **Garmin strength training data** ([#113](https://github.com/diegoscarabelli/openetl/issues/113), [#114](https://github.com/diegoscarabelli/openetl/pull/114)): First-class support for strength training activities with two new tables and a new API data source.

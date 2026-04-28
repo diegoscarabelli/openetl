@@ -17,7 +17,6 @@ def test_make_base_with_update_ts_and_schema():
     """
     Test that make_base creates correct columns and schema.
     """
-
     Base = make_base(schema="test_schema", include_update_ts=True)
 
     class TestModel(Base):
@@ -40,7 +39,6 @@ class TestUpsertModelInstances:
         """
         Add a row with id=1 and col_a="A" to the session and flush.
         """
-
         obj = MyTest(id=1, col_a="A")
         session.add(obj)
         session.flush()
@@ -50,7 +48,6 @@ class TestUpsertModelInstances:
         """
         Test upsert_model_instances for insert and update behavior.
         """
-
         obj1 = MyTest(id=1, col_a="A")
         obj2 = MyTest(id=2, col_a="B")
         kwargs = {
@@ -89,7 +86,6 @@ class TestUpsertModelInstances:
         """
         Test upsert_model_instances with returning_columns against real DB.
         """
-
         obj = MyTest(id=1, col_a="A", col_b="B")
         result = upsert_model_instances(
             db_session,
@@ -107,7 +103,6 @@ class TestUpsertModelInstances:
         """
         Test upsert_model_instances without returning_columns returns None.
         """
-
         obj = MyTest(id=1, col_a="A")
         result = upsert_model_instances(
             db_session,
@@ -125,7 +120,6 @@ class TestUpsertModelInstances:
         """
         Test that _upsert_values raises ValueError if conflict_columns is missing.
         """
-
         with pytest.raises(ValueError):
             _upsert_values(
                 MyTest,
@@ -138,7 +132,6 @@ class TestUpsertModelInstances:
         """
         Test _upsert_values UPSERT mode updates on conflict.
         """
-
         # Insert initial row.
         kwargs = {
             "conflict_columns": ["id"],
@@ -165,7 +158,6 @@ class TestUpsertModelInstances:
         """
         Test _upsert_values INSERT_IGNORE mode does not update on conflict.
         """
-
         # Insert initial row.
         _upsert_values(
             MyTest,
@@ -196,7 +188,6 @@ class TestUpsertModelInstances:
         """
         Test _upsert_values INSERT mode inserts new rows.
         """
-
         # Insert first row.
         kwargs = {
             "conflict_columns": None,
@@ -227,7 +218,6 @@ class TestUpsertModelInstances:
         """
         Test that rollback undoes inserted rows.
         """
-
         # Insert two rows.
         kwargs = {
             "conflict_columns": None,
@@ -250,16 +240,14 @@ class TestUpsertModelInstances:
         Test that _upsert_values automatically sets update_ts when model has this
         column.
         """
-
         # Use raw SQL to test the functionality directly without table creation.
         db_session.execute(text("""
-            CREATE TEMP TABLE test_update_ts_temp (
-                id INTEGER PRIMARY KEY,
-                name TEXT,
-                create_ts TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-                update_ts TIMESTAMPTZ NOT NULL DEFAULT NOW()
-            )
-        """))
+                                CREATE TEMP TABLE test_update_ts_temp ( id INTEGER
+                                PRIMARY KEY, name TEXT, create_ts TIMESTAMPTZ NOT NULL
+                                DEFAULT NOW(),
+
+                                update_ts TIMESTAMPTZ NOT NULL DEFAULT NOW() )
+                                """))
 
         # Create a simple mock model for this test.
         class TempBase(DeclarativeBase):
@@ -321,7 +309,6 @@ class TestUpsertModelInstances:
         """
         Test that models without update_ts column continue to work unchanged.
         """
-
         # This should work exactly as before - using MyTest which has no update_ts.
         _upsert_values(
             MyTest,
@@ -343,16 +330,14 @@ class TestUpsertModelInstances:
         """
         Test that explicit update_ts values in update_columns are preserved.
         """
-
         # Use raw SQL to test the functionality directly.
         db_session.execute(text("""
-            CREATE TEMP TABLE test_explicit_ts_temp (
-                id INTEGER PRIMARY KEY,
-                name TEXT,
-                create_ts TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-                update_ts TIMESTAMPTZ NOT NULL DEFAULT NOW()
-            )
-        """))
+                                CREATE TEMP TABLE test_explicit_ts_temp ( id INTEGER
+                                PRIMARY KEY, name TEXT, create_ts TIMESTAMPTZ NOT NULL
+                                DEFAULT NOW(),
+
+                                update_ts TIMESTAMPTZ NOT NULL DEFAULT NOW() )
+                                """))
 
         # Create a simple mock model for this test.
         class TempBase(DeclarativeBase):
@@ -408,15 +393,13 @@ class TestUpsertModelInstances:
         """
         Test latest_check_column with strict > comparison (default behavior).
         """
-
         # Create temp table with version column.
         db_session.execute(text("""
-            CREATE TEMP TABLE test_version_strict_temp (
-                id INTEGER PRIMARY KEY,
-                name TEXT,
-                version INTEGER NOT NULL
-            )
-        """))
+                                CREATE TEMP TABLE test_version_strict_temp ( id INTEGER
+                                PRIMARY KEY, name TEXT,
+
+                                version INTEGER NOT NULL )
+                                """))
 
         class TempBase(DeclarativeBase):
             pass
@@ -495,15 +478,13 @@ class TestUpsertModelInstances:
         """
         Test latest_check_column with >= comparison (inclusive).
         """
-
         # Create temp table with version column.
         db_session.execute(text("""
-            CREATE TEMP TABLE test_version_inclusive_temp (
-                id INTEGER PRIMARY KEY,
-                name TEXT,
-                version INTEGER NOT NULL
-            )
-        """))
+                                CREATE TEMP TABLE test_version_inclusive_temp ( id
+                                INTEGER PRIMARY KEY, name TEXT,
+
+                                version INTEGER NOT NULL )
+                                """))
 
         class TempBase(DeclarativeBase):
             pass
@@ -572,19 +553,16 @@ class TestUpsertModelInstances:
         """
         Test that update_ts is updated when latest_check_column condition passes.
         """
-
         import time
 
         # Create temp table with version and update_ts columns.
         db_session.execute(text("""
-            CREATE TEMP TABLE test_version_update_ts_temp (
-                id INTEGER PRIMARY KEY,
-                name TEXT,
-                version INTEGER NOT NULL,
-                create_ts TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-                update_ts TIMESTAMPTZ NOT NULL DEFAULT NOW()
-            )
-        """))
+                                CREATE TEMP TABLE test_version_update_ts_temp ( id
+                                INTEGER PRIMARY KEY, name TEXT, version INTEGER NOT
+                                NULL, create_ts TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+
+                                update_ts TIMESTAMPTZ NOT NULL DEFAULT NOW() )
+                                """))
 
         class TempBase(DeclarativeBase):
             pass
@@ -661,7 +639,6 @@ class TestChunkedUpsert:
         """
         Test that all rows are inserted when split across chunks.
         """
-
         values = [{"id": i, "col_a": f"val_{i}"} for i in range(1, 6)]
         _upsert_values(
             model=MyTest,
@@ -678,7 +655,6 @@ class TestChunkedUpsert:
         """
         Test that RETURNING results are collected from every chunk.
         """
-
         values = [{"id": i, "col_a": f"val_{i}"} for i in range(1, 6)]
         results = _upsert_values(
             model=MyTest,
@@ -698,7 +674,6 @@ class TestChunkedUpsert:
         """
         Test that chunked upsert updates existing rows correctly.
         """
-
         # Seed rows.
         seed = [{"id": i, "col_a": f"old_{i}"} for i in range(1, 6)]
         _upsert_values(
@@ -726,7 +701,6 @@ class TestChunkedUpsert:
         """
         Test INSERT_IGNORE with RETURNING re-queries per chunk.
         """
-
         # Seed a subset of rows.
         seed = [{"id": 1, "col_a": "A"}, {"id": 3, "col_a": "C"}]
         _upsert_values(
@@ -763,7 +737,6 @@ class TestChunkedUpsert:
         """
         Test plain INSERT (no conflict) works across chunks.
         """
-
         values = [{"id": i, "col_a": f"val_{i}"} for i in range(1, 6)]
         _upsert_values(
             model=MyTest,

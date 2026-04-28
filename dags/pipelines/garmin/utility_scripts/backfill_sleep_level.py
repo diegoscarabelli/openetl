@@ -53,7 +53,6 @@ def _parse_sleep_file(
     :return: Tuple of (user_id, calendar_date, sleep_levels) if parseable, otherwise
         None.
     """
-
     match = SLEEP_FILENAME_RE.match(file_path.name)
     if not match:
         LOGGER.warning(f"⚠️ Skipping {file_path.name}: invalid filename pattern.")
@@ -82,7 +81,6 @@ def _build_sleep_level_records(sleep_id: int, sleep_levels: list) -> list:
     :param sleep_levels: Raw sleepLevels list from the JSON file.
     :return: List of SleepLevel instances ready to be persisted.
     """
-
     records = []
     for level in sleep_levels:
         start_gmt_str = level.get("startGMT")
@@ -124,7 +122,6 @@ def backfill_sleep_level(store_dir: Path) -> None:
 
     :param store_dir: Garmin store directory containing SLEEP JSON files.
     """
-
     sleep_files = sorted(store_dir.rglob("*_SLEEP_*.json"))
     LOGGER.info(f"🔍 Found {len(sleep_files)} SLEEP files under {store_dir}.")
 
@@ -209,7 +206,6 @@ def main() -> None:
     """
     Parse CLI arguments and run the sleep_level backfill.
     """
-
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "--store-dir",

@@ -1,8 +1,8 @@
 """
 Unit tests for dags.pipelines.garmin.garmin_client.tokens module.
 
-Covers serialization, file I/O, and the directory-vs-file path resolution that
-the persistence helpers perform on behalf of ``GarminClient``.
+Covers serialization, file I/O, and the directory-vs-file path resolution that the
+persistence helpers perform on behalf of ``GarminClient``.
 """
 
 import json
@@ -26,7 +26,6 @@ def populated_client() -> GarminClient:
 
     :return: GarminClient instance with stub token state.
     """
-
     client = GarminClient()
     client.di_token = "stub_access_token"
     client.di_refresh_token = "stub_refresh_token"
@@ -46,7 +45,6 @@ class TestDumps:
         ``dumps`` returns a JSON string containing exactly the three DI fields in the
         format the upstream library uses.
         """
-
         # Act.
         serialized = tokens.dumps(populated_client)
 
@@ -70,7 +68,6 @@ class TestDump:
         """
         Passing a directory path appends ``garmin_tokens.json`` automatically.
         """
-
         # Act.
         tokens.dump(populated_client, tmp_path)
 
@@ -86,7 +83,6 @@ class TestDump:
         """
         A ``.json`` path is honored as-is rather than treated as a directory.
         """
-
         # Arrange.
         target = tmp_path / "subdir" / "custom.json"
 
@@ -105,7 +101,6 @@ class TestDump:
         Token files are written with mode ``0o600`` so the secret tokens are never
         readable by other users, regardless of the caller's umask.
         """
-
         # Act.
         tokens.dump(populated_client, tmp_path)
 
@@ -122,7 +117,6 @@ class TestDump:
         have drifted (e.g., a manual chmod or a stale file from a buggy older version)
         is locked back down on the next refresh.
         """
-
         # Arrange: pre-create the token file with world-readable permissions.
         token_file = tmp_path / "garmin_tokens.json"
         token_file.write_text("{}")
@@ -147,7 +141,6 @@ class TestLoad:
         """
         A dump-then-load cycle preserves all three DI fields.
         """
-
         # Arrange.
         tokens.dump(populated_client, tmp_path)
         new_client = GarminClient()
@@ -168,7 +161,6 @@ class TestLoad:
         """
         A malformed JSON string raises ``GarminConnectionError``.
         """
-
         # Arrange.
         client = GarminClient()
 
@@ -180,7 +172,6 @@ class TestLoad:
         """
         Valid JSON without ``di_token`` raises ``GarminAuthenticationError``.
         """
-
         # Arrange.
         client = GarminClient()
 
@@ -194,7 +185,6 @@ class TestLoad:
         because the client cannot refresh without it and the error would surface much
         later as a confusing KeyError.
         """
-
         # Arrange.
         client = GarminClient()
         tokenstore = json.dumps({"di_token": "stub_access", "di_client_id": "STUB_ID"})
@@ -209,7 +199,6 @@ class TestLoad:
         because the token refresh request requires the client ID in both the
         Authorization header and body.
         """
-
         # Arrange.
         client = GarminClient()
         tokenstore = json.dumps(
@@ -224,10 +213,8 @@ class TestLoad:
         """
         A missing file path raises ``GarminConnectionError``.
         """
-
         # Arrange.
         client = GarminClient()
-
         # Act & Assert.
         with pytest.raises(GarminConnectionError):
             tokens.load(client, tmp_path / "does_not_exist")
