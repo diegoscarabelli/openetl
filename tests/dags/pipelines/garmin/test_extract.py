@@ -20,7 +20,7 @@ from unittest.mock import ANY, MagicMock, call, patch
 
 import pendulum
 import pytest
-from airflow.sdk.exceptions import AirflowSkipException
+from airflow.sdk.exceptions import AirflowFailException, AirflowSkipException
 
 from dags.lib.etl_config import ETLConfig
 from dags.pipelines.garmin.constants import APIMethodTimeParam, GarminDataType
@@ -1710,7 +1710,14 @@ class TestExtractMultiAccount:
         self, mock_logger, mock_extractor_class, mock_discover, mock_config
     ) -> None:
         """
-        Test that AirflowSkipException is raised when all accounts fail to produce data.
+        Test that AirflowFailException is raised when every discovered account hits an
+        account-level exception.
+
+        AirflowSkipException would mark the run Success in the UI, hide the
+        failure from the operator, and advance prev_data_interval_end_success
+        past the failure window — silently losing data and breaking the
+        resume mechanism. AirflowFailException keeps the failure visible so
+        the next run auto-backfills the gap.
 
         :param mock_logger: Mock logger.
         :param mock_extractor_class: Mock GarminExtractor class.
@@ -1737,7 +1744,7 @@ class TestExtractMultiAccount:
         data_interval_end = pendulum.datetime(2025, 1, 3, tz="UTC")
 
         # Act & Assert.
-        with pytest.raises(AirflowSkipException, match="No Garmin Connect data found"):
+        with pytest.raises(AirflowFailException, match="All 2 Garmin account"):
             extract(
                 mock_config.data_dirs.ingest, data_interval_start, data_interval_end
             )

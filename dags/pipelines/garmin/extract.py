@@ -20,7 +20,7 @@ from typing import Callable, Dict, List, Optional, Tuple, Union
 import fire
 import pendulum
 import requests
-from airflow.sdk.exceptions import AirflowSkipException
+from airflow.sdk.exceptions import AirflowFailException, AirflowSkipException
 
 from dags.lib.logging_utils import LOGGER
 from dags.pipelines.garmin.constants import (
@@ -923,7 +923,14 @@ def extract(
         'HRV', 'USER_PROFILE', 'ACTIVITY'], provided in constants.GarminDataRegistry).
         If None, extracts all available data types including FIT activity files.
         If empty list [], skip extraction.
-    :raises AirflowSkipException: If no data found for extraction across all accounts.
+    :raises AirflowFailException: If every discovered account hit an
+        account-level exception (e.g. all-accounts auth failure, DNS
+        outage). Marks the run as Failed so the operator is alerted and
+        ``prev_data_interval_end_success`` does not advance past the
+        failure window.
+    :raises AirflowSkipException: If the API returned no data for any
+        account in the requested window (legitimate empty interval, no
+        account-level failures).
     :raises ValueError: If any requested data type names are not found in registry.
     """
 
@@ -1082,7 +1089,26 @@ def extract(
             + "\n".join(account_blocks)
         )
 
-    # Check if any data was extracted across all accounts.
+    # If every discovered account hit an account-level exception (e.g. auth
+    # failure, DNS resolution error), the run should fail loudly rather than
+    # masquerade as a clean Skip. AirflowSkipException would mark the run
+    # Success in the UI AND advance prev_data_interval_end_success past the
+    # failure window, silently losing data and breaking the resume mechanism
+    # for the next manual or scheduled trigger. AirflowFailException keeps
+    # the failure visible (red in the UI, callbacks fire, prev_*_success
+    # does not advance) so the operator can investigate and the next
+    # successful run will auto-backfill the gap.
+    if failed_accounts and len(failed_accounts) == len(accounts):
+        raise AirflowFailException(
+            f"All {len(accounts)} Garmin account(s) failed: "
+            f"{failed_accounts}. See per-account logs above for the underlying "
+            "error (commonly DNS / auth / transient network)."
+        )
+
+    # Check if any data was extracted across all accounts. At this point we
+    # know NOT every account failed (the all-accounts-failed branch above
+    # would have raised), so reaching this with no data means the API
+    # legitimately returned empty for the requested window — a true skip.
     if not all_garmin_files and not all_activity_files:
         raise AirflowSkipException(
             "No Garmin Connect data found for extraction across all accounts. "
