@@ -2020,3 +2020,84 @@ class TestActivitiesListFromDisk:
         instance.user_id = "test-user"
 
         assert instance._load_activities_list_from_disk() is None
+
+    def test_skips_files_outside_date_window(self, tmp_path):
+        """
+        Stale ACTIVITIES_LIST files from a previous run with a different window must not
+        leak activities into the current extract.
+        """
+
+        instance = GarminExtractor(
+            start_date=date(2025, 1, 10),
+            end_date=date(2025, 1, 12),
+            ingest_dir=tmp_path,
+            data_types=("ACTIVITY",),
+        )
+        instance.user_id = "test-user"
+
+        # Stale leftover from a previous run with an earlier window.
+        (tmp_path / "test-user_ACTIVITIES_LIST_2025-01-01T12-00-00Z.json").write_text(
+            json.dumps([{"activityId": 999, "name": "stale"}])
+        )
+        # In-window files.
+        (tmp_path / "test-user_ACTIVITIES_LIST_2025-01-10T12-00-00Z.json").write_text(
+            json.dumps([{"activityId": 100, "name": "current"}])
+        )
+        (tmp_path / "test-user_ACTIVITIES_LIST_2025-01-12T12-00-00Z.json").write_text(
+            json.dumps([{"activityId": 200, "name": "current"}])
+        )
+
+        result = instance._load_activities_list_from_disk()
+
+        ids = sorted(a["activityId"] for a in result)
+        assert ids == [100, 200]
+
+    def test_returns_none_when_only_out_of_window_files(self, tmp_path):
+        """
+        If every matching file is outside the window the helper returns None so the
+        caller falls back to a fresh API call.
+        """
+
+        instance = GarminExtractor(
+            start_date=date(2025, 2, 1),
+            end_date=date(2025, 2, 3),
+            ingest_dir=tmp_path,
+            data_types=("ACTIVITY",),
+        )
+        instance.user_id = "test-user"
+
+        (tmp_path / "test-user_ACTIVITIES_LIST_2025-01-01T12-00-00Z.json").write_text(
+            json.dumps([{"activityId": 1}])
+        )
+
+        assert instance._load_activities_list_from_disk() is None
+
+    def test_drops_entries_without_activity_id(self, tmp_path):
+        """
+        Entries that aren't dicts or are missing ``activityId`` must be dropped so
+        downstream code can assume every item has an ``activityId``.
+        """
+
+        instance = GarminExtractor(
+            start_date=date(2025, 1, 1),
+            end_date=date(2025, 1, 1),
+            ingest_dir=tmp_path,
+            data_types=("ACTIVITY",),
+        )
+        instance.user_id = "test-user"
+
+        (tmp_path / "test-user_ACTIVITIES_LIST_2025-01-01T12-00-00Z.json").write_text(
+            json.dumps(
+                [
+                    {"activityId": 100, "name": "good"},
+                    {"name": "missing-id"},
+                    "not-a-dict",
+                    {"activityId": 200, "name": "good"},
+                ]
+            )
+        )
+
+        result = instance._load_activities_list_from_disk()
+
+        ids = sorted(a["activityId"] for a in result)
+        assert ids == [100, 200]

@@ -48,7 +48,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   - Per-date isolation in `_extract_day_by_day` (renamed from `_process_day_by_day`): one failed day no longer aborts the rest of the date range.
   - Per-data-type isolation in `extract_garmin_data`: one failed type no longer aborts the rest of the account.
   - Per-activity isolation in `extract_fit_activities`: any exception on one activity download is logged with the activity ID; the loop continues. The `get_activities_by_date` call is wrapped so a list-fetch failure records an `ACTIVITIES_LIST` failure cleanly instead of silently producing zero activities.
-  - `_load_activities_list_from_disk()` reads and merges all per-day `ACTIVITIES_LIST_<date>.json` files, deduping by `activityId`. Falls back to a live API call if any file is unreadable.
+  - `_load_activities_list_from_disk()` reads and merges per-day `ACTIVITIES_LIST_<date>.json` files within the extractor's `[start_date, end_date]` window, deduping by `activityId` and dropping entries without one. Stale leftover files outside the window are skipped so they never trigger out-of-window FIT downloads. Falls back to a live API call if any file is unreadable.
   - End-of-task summary lists every per-data-type / per-date / per-activity failure (capped at 5 per type) so the Airflow log surfaces what was skipped.
 
 ### Fixed

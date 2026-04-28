@@ -68,26 +68,20 @@ def _with_retries(fn: Callable, *args, **kwargs):
     """
 
     total_attempts = 1 + len(_RETRY_BACKOFFS)
-    last_exc: Optional[BaseException] = None
     for attempt in range(total_attempts):
         try:
             return fn(*args, **kwargs)
         except _TRANSIENT_API_EXCEPTIONS as e:
-            last_exc = e
-            if attempt < len(_RETRY_BACKOFFS):
-                backoff = _RETRY_BACKOFFS[attempt]
-                LOGGER.warning(
-                    f"⏳ Transient error ({type(e).__name__}: {e}); "
-                    f"retrying in {backoff:.0f}s "
-                    f"(attempt {attempt + 2}/{total_attempts})..."
-                )
-                time.sleep(backoff)
-    if last_exc is None:
-        raise RuntimeError(
-            "_with_retries exhausted attempts without capturing an exception "
-            "(should be unreachable)"
-        )
-    raise last_exc
+            if attempt >= len(_RETRY_BACKOFFS):
+                # Final attempt: re-raise to preserve the original traceback.
+                raise
+            backoff = _RETRY_BACKOFFS[attempt]
+            LOGGER.warning(
+                f"⏳ Transient error ({type(e).__name__}: {e}); "
+                f"retrying in {backoff:.0f}s "
+                f"(attempt {attempt + 2}/{total_attempts})..."
+            )
+            time.sleep(backoff)
 
 
 @dataclass
@@ -473,32 +467,37 @@ class GarminExtractor:
 
     def _load_activities_list_from_disk(self) -> Optional[list]:
         """
-        Read all saved ACTIVITIES_LIST JSON files from ``ingest_dir`` and merge them
-        into a single deduplicated activities list.
+        Read saved ACTIVITIES_LIST JSON files in the extractor's date window from
+        ``ingest_dir`` and merge them into a single deduplicated activities list.
 
         The registry-driven extract loop calls ``get_activities_by_date`` once
         per day inside ``_extract_day_by_day`` (RANGE-typed), so a multi-day
         window writes one ``<user_id>_ACTIVITIES_LIST_<timestamp>.json`` file
-        per day. Reading only the newest file would silently skip activities
-        from earlier days; instead, parse every matching file and merge by
-        ``activityId`` (last value wins for any duplicate).
+        per day. Only files whose embedded date falls within
+        ``[self.start_date, self.end_date]`` are merged: leftover files from a
+        previous failed run with a different window are ignored so we don't
+        download FIT files outside the requested interval. Entries are merged
+        by ``activityId`` (last value wins for duplicates); entries that are
+        not dicts or are missing ``activityId`` are dropped with a warning so
+        downstream code can assume every item is a well-formed activity.
 
         Falls back to ``None`` (caller hits the live API) on any read or
         parse error so a single corrupt file doesn't prevent extraction.
 
         :return: Merged + deduplicated activities list, or ``None`` if no
-            files exist or any file cannot be parsed.
+            in-window files exist or any file cannot be parsed.
         """
 
         pattern = f"{self.user_id}_ACTIVITIES_LIST_*.json"
         matches = sorted(self.ingest_dir.glob(pattern))
-        if not matches:
+        in_window = [m for m in matches if self._activities_list_in_window(m)]
+        if not in_window:
             return None
 
         merged: Dict = {}
-        anonymous: list = []
+        skipped_no_id = 0
         parsed_any = False
-        for match in matches:
+        for match in in_window:
             try:
                 with open(match, "r", encoding="utf-8") as f:
                     payload = json.load(f)
@@ -519,14 +518,45 @@ class GarminExtractor:
                 if isinstance(activity, dict) and "activityId" in activity:
                     merged[activity["activityId"]] = activity
                 else:
-                    # Activity without an ID — keep verbatim, don't dedupe.
-                    anonymous.append(activity)
+                    skipped_no_id += 1
 
+        if skipped_no_id:
+            LOGGER.warning(
+                f"⚠️ Dropped {skipped_no_id} activities-list entries without "
+                f"an activityId from {self.user_id} ingest files."
+            )
         # An empty list IS a valid result (the user has no activities in the
         # window). Only fall back to the API when no file was parseable.
         if not parsed_any:
             return None
-        return list(merged.values()) + anonymous
+        return list(merged.values())
+
+    def _activities_list_in_window(self, path: Path) -> bool:
+        """
+        Return True if ``path`` is an ACTIVITIES_LIST file whose embedded date is in
+        ``[self.start_date, self.end_date]``.
+
+        Filenames are produced by :meth:`_save_garmin_data` as
+        ``<user_id>_ACTIVITIES_LIST_<ISO 8601 timestamp>.json`` where the
+        timestamp begins with ``YYYY-MM-DD``. Files whose date can't be parsed
+        are skipped with a warning so a malformed leftover never causes an
+        out-of-window download.
+
+        :param path: Candidate ACTIVITIES_LIST file path.
+        :return: True if the file's embedded date is within the window.
+        """
+
+        prefix = f"{self.user_id}_ACTIVITIES_LIST_"
+        stem = path.stem
+        if not stem.startswith(prefix):
+            return False
+        date_str = stem[len(prefix) : len(prefix) + 10]
+        try:
+            file_date = date.fromisoformat(date_str)
+        except ValueError:
+            LOGGER.warning(f"⚠️ Skipping {path.name}: cannot parse date from filename.")
+            return False
+        return self.start_date <= file_date <= self.end_date
 
     def extract_fit_activities(self) -> List[Path]:
         """
