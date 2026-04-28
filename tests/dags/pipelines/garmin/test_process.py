@@ -5991,3 +5991,169 @@ class TestGarminProcessor:
         # Assert - delete is called to clean stale rows, but no inserts.
         mock_session.execute.assert_called()
         mock_session.add_all.assert_not_called()
+
+
+class TestProcessFitSubSecond:
+    """
+    Tests for FIT record-frame fractional_timestamp parsing and the duplicate coalescing
+    safety net in _process_fit_file.
+    """
+
+    @pytest.fixture
+    def temp_dir(self):
+        """
+        Create temporary directory for testing.
+        """
+
+        with tempfile.TemporaryDirectory() as td:
+            yield Path(td)
+
+    @pytest.fixture
+    def mock_session(self) -> MagicMock:
+        """
+        Create mock SQLAlchemy session for testing.
+        """
+
+        session = MagicMock()
+        return session
+
+    @pytest.fixture
+    def processor(self) -> GarminProcessor:
+        """
+        Create a GarminProcessor instance, matching the construction used by
+        TestGarminProcessor.processor.
+        """
+
+        mock_config = MagicMock(spec=ETLConfig)
+        with patch("dags.lib.dag_utils.ETLResult"):
+            return GarminProcessor(
+                config=mock_config,
+                dag_run_id="test_run_123",
+                dag_start_date=datetime(2022, 1, 1),
+                file_sets=[],
+            )
+
+    def test_fractional_timestamp_preserves_subsecond_precision(
+        self, processor, mock_session, temp_dir
+    ):
+        """
+        Two record frames with the same `timestamp` but distinct `fractional_timestamp`
+        values produce two distinct rows with sub-second precision (no UNIQUE constraint
+        collision).
+        """
+
+        # Arrange.
+        activity_id = 12345
+        fit_file = (
+            temp_dir / f"15007510_ACTIVITY_{activity_id}_2025-08-07T12:00:00Z.fit"
+        )
+        fit_file.write_bytes(b"dummy fit data")
+
+        mock_activity = MagicMock()
+        mock_activity.activity_id = activity_id
+        mock_session.execute.return_value.scalars.return_value.first.return_value = (
+            mock_activity
+        )
+
+        ts = datetime(2024, 1, 1, 8, 0, 1, tzinfo=timezone.utc)
+
+        def mk_field(name, value, units=None):
+            f = MagicMock()
+            f.name = name
+            f.value = value
+            f.units = units
+            return f
+
+        def mk_frame(fields):
+            f = MagicMock()
+            f.frame_type = 4
+            f.name = "record"
+            f.fields = fields
+            return f
+
+        frame_a = mk_frame(
+            [
+                mk_field("timestamp", ts),
+                mk_field("fractional_timestamp", 0.0, "s"),
+                mk_field("heart_rate", 150, "bpm"),
+            ]
+        )
+        frame_b = mk_frame(
+            [
+                mk_field("timestamp", ts),
+                mk_field("fractional_timestamp", 0.5, "s"),
+                mk_field("heart_rate", 152, "bpm"),
+            ]
+        )
+
+        mock_fit_reader = MagicMock()
+        mock_fit_reader.__enter__.return_value = [frame_a, frame_b]
+
+        with patch("fitdecode.FitReader", return_value=mock_fit_reader):
+            with patch("fitdecode.FIT_FRAME_DATA", 4):
+                processor._process_fit_file(fit_file, mock_session)
+
+        # Filter to heart_rate rows (the per-field loop also emits a row for
+        # fractional_timestamp itself since it's a numeric field; that's
+        # incidental and harmless). Two heart_rate rows survive, 500ms apart.
+        ts_metrics = mock_session.add_all.call_args[0][0]
+        hr_rows = [m for m in ts_metrics if m.name == "heart_rate"]
+        assert len(hr_rows) == 2
+        timestamps = sorted(m.timestamp for m in hr_rows)
+        assert (timestamps[1] - timestamps[0]).total_seconds() == pytest.approx(0.5)
+
+    def test_duplicate_records_coalesced_by_timestamp_and_name(
+        self, processor, mock_session, temp_dir
+    ):
+        """
+        Two record frames at the same effective timestamp (no fractional_timestamp)
+        collapse into a single row whose value is the last-seen one.
+
+        Prevents UNIQUE constraint failure on (activity_id, timestamp, name).
+        """
+
+        activity_id = 12345
+        fit_file = (
+            temp_dir / f"15007510_ACTIVITY_{activity_id}_2025-08-07T12:00:00Z.fit"
+        )
+        fit_file.write_bytes(b"dummy fit data")
+
+        mock_activity = MagicMock()
+        mock_activity.activity_id = activity_id
+        mock_session.execute.return_value.scalars.return_value.first.return_value = (
+            mock_activity
+        )
+
+        ts = datetime(2024, 1, 1, 8, 0, 1, tzinfo=timezone.utc)
+
+        def mk_field(name, value, units=None):
+            f = MagicMock()
+            f.name = name
+            f.value = value
+            f.units = units
+            return f
+
+        def mk_frame(fields):
+            f = MagicMock()
+            f.frame_type = 4
+            f.name = "record"
+            f.fields = fields
+            return f
+
+        frame_a = mk_frame(
+            [mk_field("timestamp", ts), mk_field("heart_rate", 150, "bpm")]
+        )
+        frame_b = mk_frame(
+            [mk_field("timestamp", ts), mk_field("heart_rate", 152, "bpm")]
+        )
+
+        mock_fit_reader = MagicMock()
+        mock_fit_reader.__enter__.return_value = [frame_a, frame_b]
+
+        with patch("fitdecode.FitReader", return_value=mock_fit_reader):
+            with patch("fitdecode.FIT_FRAME_DATA", 4):
+                processor._process_fit_file(fit_file, mock_session)
+
+        ts_metrics = mock_session.add_all.call_args[0][0]
+        assert len(ts_metrics) == 1
+        assert ts_metrics[0].value == 152.0

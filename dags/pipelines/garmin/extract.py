@@ -7,16 +7,19 @@ Garmin Connect accounts by discovering token subdirectories in the base token di
 """
 
 import json
+import socket
 import time
 import zipfile
 import io
 
+from dataclasses import dataclass
 from datetime import datetime, timedelta, date
 from pathlib import Path
-from typing import List, Optional, Tuple, Union
+from typing import Callable, Dict, List, Optional, Tuple, Union
 
 import fire
 import pendulum
+import requests
 from airflow.sdk.exceptions import AirflowSkipException
 
 from dags.lib.logging_utils import LOGGER
@@ -26,6 +29,89 @@ from dags.pipelines.garmin.constants import (
     GARMIN_DATA_REGISTRY,
 )
 from dags.pipelines.garmin.garmin_client import GarminClient
+from dags.pipelines.garmin.garmin_client.exceptions import GarminConnectionError
+
+# Exception classes considered transient (worth retrying with backoff). All
+# represent network or transport-level failures that typically self-heal in
+# seconds. Application-level errors (parse failures, ValueError, etc.) are
+# excluded because retries won't help.
+_TRANSIENT_API_EXCEPTIONS: tuple = (
+    GarminConnectionError,
+    requests.exceptions.ConnectionError,
+    requests.exceptions.Timeout,
+    socket.gaierror,
+)
+
+# Backoff schedule applied before each retry attempt. With three entries the
+# call gets a total of four chances (1 initial + 3 retries) over ~40s in the
+# worst case, comfortably absorbing typical DNS hiccups and brief outages.
+_RETRY_BACKOFFS: tuple = (2.0, 8.0, 30.0)
+
+
+def _with_retries(fn: Callable, *args, **kwargs):
+    """
+    Call ``fn(*args, **kwargs)`` with exponential-backoff retries on transient network
+    errors.
+
+    Retries only on the connection / DNS / timeout exception classes listed in
+    ``_TRANSIENT_API_EXCEPTIONS``. Other exceptions propagate immediately so
+    the caller's broader try/except (e.g. per-date isolation in
+    :meth:`GarminExtractor._extract_day_by_day`) can record the failure once
+    and move on.
+
+    :param fn: Callable to invoke.
+    :param args: Positional arguments forwarded to ``fn``.
+    :param kwargs: Keyword arguments forwarded to ``fn``.
+    :return: Whatever ``fn`` returns on success.
+    :raises Exception: The last transient exception if all retries are
+        exhausted, or any non-transient exception immediately.
+    """
+
+    total_attempts = 1 + len(_RETRY_BACKOFFS)
+    last_exc: Optional[BaseException] = None
+    for attempt in range(total_attempts):
+        try:
+            return fn(*args, **kwargs)
+        except _TRANSIENT_API_EXCEPTIONS as e:
+            last_exc = e
+            if attempt < len(_RETRY_BACKOFFS):
+                backoff = _RETRY_BACKOFFS[attempt]
+                LOGGER.warning(
+                    f"⏳ Transient error ({type(e).__name__}: {e}); "
+                    f"retrying in {backoff:.0f}s "
+                    f"(attempt {attempt + 2}/{total_attempts})..."
+                )
+                time.sleep(backoff)
+    if last_exc is None:
+        raise RuntimeError(
+            "_with_retries exhausted attempts without capturing an exception "
+            "(should be unreachable)"
+        )
+    raise last_exc
+
+
+@dataclass
+class ExtractionFailure:
+    """
+    A single extraction failure recorded by the extractor for end-of-run reporting.
+
+    :ivar data_type: Garmin data type name (e.g. ``"SLEEP"``, ``"ACTIVITY"``).
+    :ivar date: Date context for the failure. Most commonly an ISO date
+        string (``"YYYY-MM-DD"``) for per-date failures, but may also be a
+        date range string like ``"<start>..<end>"`` (e.g. for
+        ``ACTIVITIES_LIST`` failures that span the whole run window) or
+        ``""`` when no date context applies (per-data-type or per-activity
+        failures).
+    :ivar activity_id: Activity ID as a string for per-activity failures, or
+        ``""`` otherwise.
+    :ivar error: Human-readable error description (typically
+        ``"<ExceptionType>: <message>"``).
+    """
+
+    data_type: str
+    date: str
+    activity_id: str
+    error: str
 
 
 class GarminExtractor:
@@ -68,6 +154,7 @@ class GarminExtractor:
         self.data_types = data_types
         self.garmin_client = None
         self.user_id = None
+        self.failures: List[ExtractionFailure] = []
 
     def authenticate(self, token_store_dir: str) -> None:
         """
@@ -207,24 +294,45 @@ class GarminExtractor:
             )
 
         # Extract Garmin data by iterating over selected data types.
+        # Per-data-type try/except so one bad type (e.g. NO_DATE call that
+        # raises, or a structural error escaping the inner per-date layer)
+        # doesn't abort the rest of the account's extraction.
         saved_files = []
 
         for data_type in data_types_to_extract:
-            files = self._extract_data_by_type(
-                data_type, self.start_date, self.end_date
-            )
-            saved_files.extend(files)
+            try:
+                files = self._extract_data_by_type(
+                    data_type, self.start_date, self.end_date
+                )
+                saved_files.extend(files)
+            except Exception as e:
+                LOGGER.error(
+                    f"⚠️ {data_type.name} extraction failed entirely: "
+                    f"{type(e).__name__}: {e}. Continuing with next data type.",
+                    exc_info=True,
+                )
+                self.failures.append(
+                    ExtractionFailure(
+                        data_type=data_type.name,
+                        date="",
+                        activity_id="",
+                        error=f"{type(e).__name__}: {e}",
+                    )
+                )
 
         return saved_files
 
-    def _process_day_by_day(
+    def _extract_day_by_day(
         self, data_type: GarminDataType, start_date: date, end_date: date
     ) -> List[Path]:
         """
-        Extract Garmin data type one day at a time with common loop logic.
+        Extract a Garmin data type one day at a time with per-date error isolation.
 
-        Handles both DAILY and RANGE API time parameter patterns by processing each day
-        individually and calling the appropriate API method with the correct parameters.
+        Handles both DAILY and RANGE API time parameter patterns. Each per-day
+        API call goes through ``_with_retries`` so transient network blips
+        absorb silently. A failure that exhausts retries is logged and recorded
+        in :attr:`failures`; extraction continues with the next date so a
+        single bad day never aborts the rest of the date range.
 
         :param data_type: GarminDataType defining the extraction parameters.
         :param start_date: Start date for data extraction (inclusive).
@@ -238,26 +346,38 @@ class GarminExtractor:
             LOGGER.info(
                 f"Fetching {data_type.emoji} {data_type.name} data for {current_date}."
             )
-
-            # Get API method dynamically.
-            api_method = getattr(self.garmin_client, data_type.api_method)
             date_str = current_date.strftime("%Y-%m-%d")
 
-            # Call API method with appropriate parameters based on type.
-            if data_type.api_method_time_param == APIMethodTimeParam.DAILY:
-                data = api_method(date_str)
-            else:
-                # Pass the same date to both date params for RANGE methods.
-                data = api_method(date_str, date_str)
+            try:
+                api_method = getattr(self.garmin_client, data_type.api_method)
+                if data_type.api_method_time_param == APIMethodTimeParam.DAILY:
+                    data = _with_retries(api_method, date_str)
+                else:
+                    # Pass the same date to both params for RANGE methods.
+                    data = _with_retries(api_method, date_str, date_str)
 
-            if data:
-                saved_files.extend(
-                    self._save_garmin_data(data, data_type, current_date)
+                if data:
+                    saved_files.extend(
+                        self._save_garmin_data(data, data_type, current_date)
+                    )
+                else:
+                    LOGGER.warning(
+                        f"⚠️ {data_type.emoji} {data_type.name}: "
+                        f"No data for {current_date}."
+                    )
+            except Exception as e:
+                LOGGER.error(
+                    f"⚠️ {data_type.name} {date_str} failed: "
+                    f"{type(e).__name__}: {e}. Continuing with next date.",
+                    exc_info=True,
                 )
-            else:
-                LOGGER.warning(
-                    f"⚠️ {data_type.emoji} {data_type.name}: "
-                    f"No data for {current_date}."
+                self.failures.append(
+                    ExtractionFailure(
+                        data_type=data_type.name,
+                        date=date_str,
+                        activity_id="",
+                        error=f"{type(e).__name__}: {e}",
+                    )
                 )
 
             current_date += timedelta(days=1)
@@ -294,13 +414,17 @@ class GarminExtractor:
             APIMethodTimeParam.RANGE,
         ]:
             # Process each day individually using common helper method.
-            return self._process_day_by_day(data_type, start_date, end_date)
+            return self._extract_day_by_day(data_type, start_date, end_date)
 
         if data_type.api_method_time_param == APIMethodTimeParam.NO_DATE:
-            # Process no-date data.
+            # Process no-date data. Wrap the call in _with_retries so
+            # transient network failures absorb the same way they do for
+            # DAILY / RANGE types via _extract_day_by_day; otherwise NO_DATE
+            # types (USER_PROFILE, PERSONAL_RECORDS, RACE_PREDICTIONS) would
+            # fail on the first DNS hiccup.
             LOGGER.info(f"{data_type.emoji} Fetching {data_type.name.lower()} data.")
             api_method = getattr(self.garmin_client, data_type.api_method)
-            data = api_method()
+            data = _with_retries(api_method)
 
             if data:
                 # Enhance USER_PROFILE data with client information.
@@ -347,6 +471,63 @@ class GarminExtractor:
         LOGGER.info(f"✅ Saved {data_type.emoji} {data_type.name}: {filename}.")
         return [filepath]
 
+    def _load_activities_list_from_disk(self) -> Optional[list]:
+        """
+        Read all saved ACTIVITIES_LIST JSON files from ``ingest_dir`` and merge them
+        into a single deduplicated activities list.
+
+        The registry-driven extract loop calls ``get_activities_by_date`` once
+        per day inside ``_extract_day_by_day`` (RANGE-typed), so a multi-day
+        window writes one ``<user_id>_ACTIVITIES_LIST_<timestamp>.json`` file
+        per day. Reading only the newest file would silently skip activities
+        from earlier days; instead, parse every matching file and merge by
+        ``activityId`` (last value wins for any duplicate).
+
+        Falls back to ``None`` (caller hits the live API) on any read or
+        parse error so a single corrupt file doesn't prevent extraction.
+
+        :return: Merged + deduplicated activities list, or ``None`` if no
+            files exist or any file cannot be parsed.
+        """
+
+        pattern = f"{self.user_id}_ACTIVITIES_LIST_*.json"
+        matches = sorted(self.ingest_dir.glob(pattern))
+        if not matches:
+            return None
+
+        merged: Dict = {}
+        anonymous: list = []
+        parsed_any = False
+        for match in matches:
+            try:
+                with open(match, "r", encoding="utf-8") as f:
+                    payload = json.load(f)
+            except (json.JSONDecodeError, OSError) as e:
+                LOGGER.warning(
+                    f"⚠️ Could not read {match.name}: {e}. "
+                    f"Falling back to API call."
+                )
+                return None
+            if not isinstance(payload, list):
+                LOGGER.warning(
+                    f"⚠️ Could not use {match.name}: expected a JSON list. "
+                    f"Falling back to API call."
+                )
+                return None
+            parsed_any = True
+            for activity in payload:
+                if isinstance(activity, dict) and "activityId" in activity:
+                    merged[activity["activityId"]] = activity
+                else:
+                    # Activity without an ID — keep verbatim, don't dedupe.
+                    anonymous.append(activity)
+
+        # An empty list IS a valid result (the user has no activities in the
+        # window). Only fall back to the API when no file was parseable.
+        if not parsed_any:
+            return None
+        return list(merged.values()) + anonymous
+
     def extract_fit_activities(self) -> List[Path]:
         """
         Extract FIT activity files from Garmin Connect.
@@ -364,12 +545,37 @@ class GarminExtractor:
             f"(start: {self.start_date}, end: {self.end_date} inclusive)..."
         )
 
-        # Get list of activities, API is inclusive of both dates.
-        # The API is designed to retrieve activities for entire days,
-        # not specific time ranges within days.
+        # Get list of activities. The registry-driven extract loop has
+        # already fetched and saved this same data as ACTIVITIES_LIST JSON
+        # in ingest_dir (the API is RANGE-typed and called once per day).
+        # Read it from disk to avoid duplicate API calls. Fall back to a
+        # live API call if the file is missing or unreadable.
         start_str = self.start_date.strftime("%Y-%m-%d")
         end_str = self.end_date.strftime("%Y-%m-%d")
-        activities = self.garmin_client.get_activities_by_date(start_str, end_str)
+
+        activities = self._load_activities_list_from_disk()
+        if activities is None:
+            try:
+                activities = _with_retries(
+                    self.garmin_client.get_activities_by_date,
+                    start_str,
+                    end_str,
+                )
+            except Exception as e:
+                LOGGER.error(
+                    f"⚠️ Activity list fetch failed: {type(e).__name__}: {e}. "
+                    f"No activity files will be downloaded for this account.",
+                    exc_info=True,
+                )
+                self.failures.append(
+                    ExtractionFailure(
+                        data_type="ACTIVITIES_LIST",
+                        date=f"{start_str}..{end_str}",
+                        activity_id="",
+                        error=f"{type(e).__name__}: {e}",
+                    )
+                )
+                return []
 
         if not activities:
             LOGGER.warning("No activities found in the specified date range.")
@@ -394,11 +600,29 @@ class GarminExtractor:
             filename = f"{self.user_id}_ACTIVITY_{activity_id}_{timestamp}.fit"
             filepath = self.ingest_dir / filename
 
-            # Download FIT file.
-            fit_data = self.garmin_client.download_activity(
-                activity_id,
-                dl_fmt=self.garmin_client.ActivityDownloadFormat.ORIGINAL,
-            )
+            # Download FIT file. Wrap in _with_retries for transient network
+            # errors and broaden the catch to Exception so a parse error or
+            # any unexpected exception on one activity does not abort the
+            # whole loop.
+            try:
+                fit_data = _with_retries(
+                    self.garmin_client.download_activity,
+                    activity_id,
+                    dl_fmt=self.garmin_client.ActivityDownloadFormat.ORIGINAL,
+                )
+            except Exception as e:
+                LOGGER.warning(
+                    f"⚠️ Skipping activity {activity_id}: " f"{type(e).__name__}: {e}."
+                )
+                self.failures.append(
+                    ExtractionFailure(
+                        data_type="ACTIVITY",
+                        date="",
+                        activity_id=str(activity_id),
+                        error=f"{type(e).__name__}: {e}",
+                    )
+                )
+                continue
 
             # Extract FIT file from ZIP archive.
             try:
@@ -459,7 +683,9 @@ class GarminExtractor:
         """
 
         try:
-            data = self.garmin_client.get_activity_exercise_sets(activity_id)
+            data = _with_retries(
+                self.garmin_client.get_activity_exercise_sets, activity_id
+            )
         except Exception as e:
             LOGGER.warning(
                 f"⚠️ Failed to fetch exercise sets for activity {activity_id}: {e}."
@@ -716,14 +942,15 @@ def extract(
     # Extract data for each account sequentially with error isolation.
     all_garmin_files = []
     all_activity_files = []
+    all_failures: List[ExtractionFailure] = []
     failed_accounts = []
 
     for user_id, token_dir in accounts:
         LOGGER.info(f"{'=' * 60}")
         LOGGER.info(f"📥 Extracting data for account {user_id}...")
 
+        extractor = GarminExtractor(start_date, end_date, ingest_dir, data_types)
         try:
-            extractor = GarminExtractor(start_date, end_date, ingest_dir, data_types)
             garmin_files, activity_files = _extract_account(
                 extractor, token_dir, data_types
             )
@@ -740,6 +967,12 @@ def extract(
                 exc_info=True,
             )
             failed_accounts.append(user_id)
+        finally:
+            # Always collect per-account ExtractionFailures so granular
+            # failures (per-date / per-data-type / per-activity) appear in
+            # the end-of-run summary, even if the account otherwise
+            # completed successfully.
+            all_failures.extend(extractor.failures)
 
     LOGGER.info(f"{'=' * 60}")
 
@@ -773,6 +1006,30 @@ def extract(
         f"{activity_summary}\n"
         f"   ✅ Garmin data files (total: {len(all_garmin_files)}):\n{garmin_summary}"
     )
+
+    # Surface granular per-date / per-data-type / per-activity failures
+    # collected by the per-account extractors. These are non-fatal
+    # (extraction continued past them) but the user should know what gaps
+    # exist so they can target a re-run if needed.
+    if all_failures:
+        by_type: Dict[str, List[ExtractionFailure]] = {}
+        for f in all_failures:
+            by_type.setdefault(f.data_type, []).append(f)
+        type_lines = []
+        for dt, items in sorted(by_type.items()):
+            samples = []
+            for item in items[:5]:
+                label = item.date or item.activity_id or "(no context)"
+                samples.append(f"      - {label}: {item.error}")
+            if len(items) > 5:
+                samples.append(f"      ... and {len(items) - 5} more.")
+            type_lines.append(
+                f"   • {dt}: {len(items)} failure(s)\n" + "\n".join(samples)
+            )
+        LOGGER.warning(
+            f"⚠️ Extraction failures ({len(all_failures)} total):\n"
+            + "\n".join(type_lines)
+        )
 
 
 def cli_extract(
