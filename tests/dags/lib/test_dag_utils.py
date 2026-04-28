@@ -186,7 +186,6 @@ def make_config(
     Create a DummyConfig with specified file types, files, max tasks, and min batch
     size.
     """
-
     config = DummyConfig()
     config.file_types = file_types
     config.max_process_tasks = max_tasks
@@ -294,7 +293,6 @@ class TestBatch:
         """
         Test that batch data can be serialized and deserialized correctly.
         """
-
         file1 = DummyFile("2025-08-02T12:00:00+00:00_data1.csv")
         file2 = DummyFile("2025-08-02T12:00:00+00:00_data2.csv")
         file3 = DummyFile("2025-08-02T12:00:00+00:00_meta.json")
@@ -478,7 +476,6 @@ class TestFileSetSerialization:
         """
         Test FileSet to_serializable method.
         """
-
         from dags.lib.filesystem_utils import FileSet
         from pathlib import Path
 
@@ -504,7 +501,6 @@ class TestFileSetSerialization:
         """
         Test FileSet from_serializable method.
         """
-
         from dags.lib.filesystem_utils import FileSet
         from pathlib import Path
 

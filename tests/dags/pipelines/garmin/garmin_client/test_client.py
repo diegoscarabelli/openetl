@@ -1,9 +1,9 @@
 """
 Unit tests for dags.pipelines.garmin.garmin_client.client module.
 
-Covers the GarminClient class itself: authentication state, JWT parsing, token
-expiry detection, the DI OAuth2 token exchange and refresh, and the
-authenticated request helper that maps HTTP error codes to typed exceptions.
+Covers the GarminClient class itself: authentication state, JWT parsing, token expiry
+detection, the DI OAuth2 token exchange and refresh, and the authenticated request
+helper that maps HTTP error codes to typed exceptions.
 """
 
 import base64
@@ -34,7 +34,6 @@ def _make_jwt(payload: dict) -> str:
     :param payload: Dictionary to encode as the JWT payload.
     :return: A JWT-shaped string.
     """
-
     header = base64.urlsafe_b64encode(b'{"alg":"none"}').rstrip(b"=").decode()
     body = base64.urlsafe_b64encode(json.dumps(payload).encode()).rstrip(b"=").decode()
     return f"{header}.{body}.sig"
@@ -49,7 +48,6 @@ class TestInit:
         """
         A fresh client has no token, no profile, and is not authenticated.
         """
-
         # Act.
         client = GarminClient()
 
@@ -66,7 +64,6 @@ class TestInit:
         """
         The ``domain`` kwarg propagates to all three URL bases.
         """
-
         # Act.
         client = GarminClient(domain="garmin.cn")
 
@@ -85,7 +82,6 @@ class TestApiHeaders:
         """
         An unauthenticated client cannot build API headers.
         """
-
         # Arrange.
         client = GarminClient()
 
@@ -97,7 +93,6 @@ class TestApiHeaders:
         """
         When a token is held, headers carry the Bearer token.
         """
-
         # Arrange.
         client = GarminClient()
         client.di_token = "stub_access_token"
@@ -119,7 +114,6 @@ class TestExtractClientIdFromJwt:
         """
         A well-formed JWT yields its ``client_id`` claim.
         """
-
         # Arrange.
         token = _make_jwt({"client_id": "GARMIN_TEST_CID", "exp": 9999999999})
 
@@ -133,7 +127,6 @@ class TestExtractClientIdFromJwt:
         """
         A malformed token (no dots) returns None rather than raising.
         """
-
         # Act.
         result = GarminClient._extract_client_id_from_jwt("notajwt")
 
@@ -144,7 +137,6 @@ class TestExtractClientIdFromJwt:
         """
         A JWT without ``client_id`` returns None.
         """
-
         # Arrange.
         token = _make_jwt({"exp": 1234567890})
 
@@ -164,7 +156,6 @@ class TestTokenExpiresSoon:
         """
         A token whose ``exp`` is in the past expires "soon".
         """
-
         # Arrange.
         client = GarminClient()
         client.di_token = _make_jwt({"exp": int(time.time()) - 100})
@@ -176,7 +167,6 @@ class TestTokenExpiresSoon:
         """
         A token expiring within the 15-min refresh window is flagged.
         """
-
         # Arrange.
         client = GarminClient()
         client.di_token = _make_jwt({"exp": int(time.time()) + 60})
@@ -188,7 +178,6 @@ class TestTokenExpiresSoon:
         """
         A token with an ``exp`` 24h in the future does not need refresh.
         """
-
         # Arrange.
         client = GarminClient()
         client.di_token = _make_jwt({"exp": int(time.time()) + 86400})
@@ -200,10 +189,8 @@ class TestTokenExpiresSoon:
         """
         Without a token there is nothing to refresh.
         """
-
         # Arrange.
         client = GarminClient()
-
         # Act & Assert.
         assert client._token_expires_soon() is False
 
@@ -217,7 +204,6 @@ class TestExchangeServiceTicket:
         """
         The first DI client ID succeeds and populates all three fields.
         """
-
         # Arrange.
         client = GarminClient()
         token = _make_jwt({"client_id": "FIRST_CID", "exp": 9999999999})
@@ -248,7 +234,6 @@ class TestExchangeServiceTicket:
 
         We verify by responding "not ok" twice and OK on the third call.
         """
-
         # Arrange.
         client = GarminClient()
         token = _make_jwt({"client_id": "THIRD_CID", "exp": 9999999999})
@@ -282,7 +267,6 @@ class TestExchangeServiceTicket:
         """
         If every client ID is rejected, the exchange raises auth error.
         """
-
         # Arrange.
         client = GarminClient()
         bad_response = MagicMock()
@@ -299,7 +283,6 @@ class TestExchangeServiceTicket:
         """
         A 429 from the DI exchange surfaces as the typed rate-limit error.
         """
-
         # Arrange.
         client = GarminClient()
         rate_limited = MagicMock()
@@ -318,7 +301,6 @@ class TestExchangeServiceTicket:
         typed ``GarminConnectionError`` rather than leaking the underlying
         requests/curl_cffi exception.
         """
-
         # Arrange.
         client = GarminClient()
         transport_error = requests.ConnectionError("network down")
@@ -341,11 +323,10 @@ class TestExchangeServiceTicket:
         A 200 response that omits ``refresh_token`` is treated as a parse failure and
         the exchange falls through to the next client ID.
 
-        If all three responses
-        are similarly malformed, the exchange raises ``GarminAuthenticationError``
-        rather than half-populating client state with no way to refresh later.
+        If all three responses are similarly malformed, the exchange raises
+        ``GarminAuthenticationError`` rather than half-populating client state with no
+        way to refresh later.
         """
-
         # Arrange.
         client = GarminClient()
         token = _make_jwt({"client_id": "FIRST_CID", "exp": 9999999999})
@@ -378,10 +359,8 @@ class TestRefreshDiToken:
         """
         Cannot refresh without a refresh token + client ID.
         """
-
         # Arrange.
         client = GarminClient()
-
         # Act & Assert.
         with pytest.raises(GarminAuthenticationError):
             client._refresh_di_token()
@@ -390,7 +369,6 @@ class TestRefreshDiToken:
         """
         A successful refresh updates the access + refresh + client ID.
         """
-
         # Arrange.
         client = GarminClient()
         client.di_refresh_token = "old_refresh"
@@ -417,7 +395,6 @@ class TestRefreshDiToken:
         If the refresh response does not include a new refresh token, the existing one
         is preserved (so the chain stays alive).
         """
-
         # Arrange.
         client = GarminClient()
         client.di_refresh_token = "old_refresh"
@@ -438,7 +415,6 @@ class TestRefreshDiToken:
         """
         A non-OK refresh response raises auth error.
         """
-
         # Arrange.
         client = GarminClient()
         client.di_refresh_token = "old_refresh"
@@ -458,7 +434,6 @@ class TestRefreshDiToken:
         A 429 from the DI token endpoint maps to GarminTooManyRequestsError so callers
         can distinguish rate limiting from auth failure.
         """
-
         # Arrange.
         client = GarminClient()
         client.di_refresh_token = "old_refresh"
@@ -496,17 +471,15 @@ class TestRefreshDiToken:
         post are wrapped as :class:`GarminConnectionError` so callers see consistent
         typed errors.
 
-        Both ``requests.RequestException`` (the requests-only fallback
-        path) and ``curl_cffi.requests.exceptions.RequestException`` (the production
-        cffi path) must be caught: the two hierarchies are unrelated, so a single
-        ``except requests.RequestException`` would silently leak the cffi case.
+        Both ``requests.RequestException`` (the requests-only fallback path) and
+        ``curl_cffi.requests.exceptions.RequestException`` (the production cffi path)
+        must be caught: the two hierarchies are unrelated, so a single ``except
+        requests.RequestException`` would silently leak the cffi case.
         """
-
         # Arrange.
         client = GarminClient()
         client.di_refresh_token = "old_refresh"
         client.di_client_id = "GARMIN_OLD"
-
         with patch.object(
             GarminClient,
             "_http_post",
@@ -522,12 +495,10 @@ class TestRefreshDiToken:
         edge HTML page), the JSON decode failure is wrapped as
         :class:`GarminConnectionError` with a short body preview.
         """
-
         # Arrange.
         client = GarminClient()
         client.di_refresh_token = "old_refresh"
         client.di_client_id = "GARMIN_OLD"
-
         bad_body = MagicMock()
         bad_body.ok = True
         bad_body.status_code = 200
@@ -548,7 +519,6 @@ class TestRefreshDiToken:
         A malformed refresh response is an auth-server problem, not a transport failure,
         and callers that catch auth errors should see this case.
         """
-
         # Arrange.
         client = GarminClient()
         client.di_refresh_token = "old_refresh"
@@ -575,7 +545,6 @@ class TestRefreshSession:
         After a successful in-memory refresh, the new tokens are written back to
         ``_tokenstore_path`` so the rotating chain stays alive.
         """
-
         # Arrange.
         client = GarminClient()
         client.di_token = "old_token"
@@ -606,11 +575,9 @@ class TestRefreshSession:
         Refresh failures are logged but do not propagate, so a transient DI outage
         cannot crash a long-running pipeline.
         """
-
         # Arrange.
         client = GarminClient()
         client.di_token = "old_token"
-
         with patch.object(
             client, "_refresh_di_token", side_effect=Exception("network down")
         ):
@@ -621,7 +588,6 @@ class TestRefreshSession:
         """
         An unauthenticated client has nothing to refresh.
         """
-
         # Arrange.
         client = GarminClient()
 
@@ -642,7 +608,6 @@ class TestRequest:
         """
         Build a client with a token that won't trigger pre-refresh.
         """
-
         client = GarminClient()
         client.di_token = _make_jwt(
             {"client_id": "CID", "exp": int(time.time()) + 86400}
@@ -656,7 +621,6 @@ class TestRequest:
         On HTTP 401 the client refreshes the token once and retries; the second response
         is returned to the caller.
         """
-
         # Arrange.
         client = self._build_client_with_token()
 
@@ -685,7 +649,6 @@ class TestRequest:
         """
         If the retry also returns 401 the client surfaces a typed auth error.
         """
-
         # Arrange.
         client = self._build_client_with_token()
 
@@ -707,14 +670,12 @@ class TestRequest:
         """
         HTTP 429 raises ``GarminTooManyRequestsError``.
         """
-
         # Arrange.
         client = self._build_client_with_token()
 
         rate_limited = MagicMock()
         rate_limited.status_code = 429
         rate_limited.text = "rate limited"
-
         mock_session = MagicMock()
         mock_session.request.return_value = rate_limited
 
@@ -730,7 +691,6 @@ class TestRequest:
         """
         HTTP 500-class responses raise ``GarminConnectionError``.
         """
-
         # Arrange.
         client = self._build_client_with_token()
 
@@ -756,13 +716,11 @@ class TestRequest:
         ``requests`` are wrapped as :class:`GarminConnectionError` so callers see
         consistent typed errors instead of bare ``RequestException`` subclasses.
         """
-
         # Arrange.
         client = self._build_client_with_token()
 
         mock_session = MagicMock()
         mock_session.request.side_effect = requests.ConnectionError("network down")
-
         with patch(
             "dags.pipelines.garmin.garmin_client.client.requests.Session",
             return_value=mock_session,
@@ -777,7 +735,6 @@ class TestRequest:
         wrapped as :class:`GarminConnectionError` and references the retry phase
         explicitly.
         """
-
         # Arrange.
         client = self._build_client_with_token()
 
@@ -808,13 +765,11 @@ class TestConnectapi:
         """
         A 200 response with a valid JSON body returns the parsed dict.
         """
-
         # Arrange.
         client = GarminClient()
         ok_resp = MagicMock()
         ok_resp.status_code = 200
         ok_resp.json.return_value = {"hello": "world"}
-
         with patch.object(client, "_request", return_value=ok_resp):
             # Act.
             result = client._connectapi("/some/path")
@@ -826,7 +781,6 @@ class TestConnectapi:
         """
         HTTP 204 No Content yields an empty dict so callers don't try to parse.
         """
-
         # Arrange.
         client = GarminClient()
         empty_resp = MagicMock()
@@ -846,7 +800,6 @@ class TestConnectapi:
         :class:`GarminConnectionError` with a short body preview rather than escaping as
         a bare ``JSONDecodeError``.
         """
-
         # Arrange.
         client = GarminClient()
         html_resp = MagicMock()
@@ -870,7 +823,6 @@ class TestFromTokens:
         ``from_tokens`` reads the on-disk JSON, calls ``_load_profile`` to populate the
         display name, and returns a ready client.
         """
-
         # Arrange.
         token_file = tmp_path / "garmin_tokens.json"
         token_file.write_text(
@@ -916,11 +868,9 @@ class TestLoadProfile:
         """
         A successful profile fetch sets both name attributes.
         """
-
         # Arrange.
         client = GarminClient()
         client.di_token = "stub_token"
-
         with patch.object(
             client,
             "_connectapi",
@@ -937,7 +887,6 @@ class TestLoadProfile:
         """
         A profile response without ``displayName`` raises auth error.
         """
-
         # Arrange.
         client = GarminClient()
         client.di_token = "stub_token"
@@ -959,7 +908,6 @@ class TestResumeLogin:
         returned ``("needs_mfa", ...)`` raises a typed auth error rather than leaking an
         ``AttributeError`` from the strategy module.
         """
-
         # Arrange: a fresh client has no ``_mfa_*_session`` attribute.
         client = GarminClient()
 

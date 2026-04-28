@@ -117,7 +117,6 @@ def _validate_input(value: str, field_name: str) -> str:
     :param field_name: Name of the field for error messages.
     :return: Validated input value.
     """
-
     if not value:
         raise ValueError(f"❌ {field_name} is required.")
     return value
@@ -127,7 +126,6 @@ def _print_troubleshooting() -> None:
     """
     Print common troubleshooting steps.
     """
-
     logger.info(
         "\n🔍 Troubleshooting:"
         "\n   - Verify your email and password are correct."
@@ -145,7 +143,6 @@ def get_credentials() -> Tuple[str, str]:
 
     :return: Tuple of (email, password).
     """
-
     logger.info(f"🔐 Garmin Connect Token Refresh Utility.\n{'=' * 50}")
 
     # Try environment variables first.
@@ -172,7 +169,6 @@ def get_mfa_code() -> str:
 
     :return: MFA code string.
     """
-
     logger.info(
         "\n🔢 Multi-Factor Authentication Required."
         "\n   Check your email or phone for the MFA code."
@@ -193,7 +189,6 @@ def _handle_mfa_authentication(client: GarminClient, result2) -> None:
     :param client: GarminClient instance.
     :param result2: MFA continuation token from login result.
     """
-
     logger.info("✅ Initial authentication successful.")
 
     for attempt in range(2):  # Allow 2 attempts (0 and 1)
@@ -223,16 +218,15 @@ def refresh_tokens(email: str, password: str, base_token_dir: str = "~/.garminco
     """
     Refresh Garmin Connect tokens with MFA support.
 
-    After successful authentication, the Garmin user ID is auto-detected via the
-    user profile API. Tokens are saved to a user-specific subdirectory:
+    After successful authentication, the Garmin user ID is auto-detected via the user
+    profile API. Tokens are saved to a user-specific subdirectory:
     ``<base_token_dir>/<user_id>/``.
 
     :param email: Garmin Connect email.
     :param password: Garmin Connect password.
-    :param base_token_dir: Base directory for token storage. Tokens will be saved
-        to a ``<user_id>`` subdirectory within this directory.
+    :param base_token_dir: Base directory for token storage. Tokens will be saved to a
+        ``<user_id>`` subdirectory within this directory.
     """
-
     base_path = Path(base_token_dir).expanduser()
 
     logger.info(
@@ -303,7 +297,6 @@ def main() -> None:
     """
     Main function to orchestrate token refresh process.
     """
-
     # Get credentials.
     email, password = get_credentials()
 

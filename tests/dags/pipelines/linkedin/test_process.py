@@ -36,7 +36,6 @@ class TestLinkedInProcessor:
 
         :return: Temporary directory path.
         """
-
         with tempfile.TemporaryDirectory() as temp_dir:
             yield Path(temp_dir)
 
@@ -47,7 +46,6 @@ class TestLinkedInProcessor:
 
         :return: LinkedInProcessor instance.
         """
-
         mock_config = MagicMock(spec=ETLConfig)
 
         with patch("dags.lib.dag_utils.ETLResult"):
@@ -65,7 +63,6 @@ class TestLinkedInProcessor:
 
         :return: Mock session.
         """
-
         session = MagicMock()
         session.execute.return_value.scalars.return_value = iter([])
         return session
@@ -77,7 +74,6 @@ class TestLinkedInProcessor:
 
         :return: Sample CSV content with header notes.
         """
-
         return """Notes:
 "Connections are exported from LinkedIn."
 
@@ -95,7 +91,6 @@ Bob,Wilson,https://www.linkedin.com/in/bobwilson,bob@test.com,Startup LLC,Develo
         """
         Test parsing valid LinkedIn date format.
         """
-
         result = processor._parse_date("09 Jan 2024")
         assert result == date(2024, 1, 9)
 
@@ -103,7 +98,6 @@ Bob,Wilson,https://www.linkedin.com/in/bobwilson,bob@test.com,Startup LLC,Develo
         """
         Test parsing dates with various months.
         """
-
         test_cases = [
             ("01 Feb 2024", date(2024, 2, 1)),
             ("15 Mar 2023", date(2023, 3, 15)),
@@ -119,7 +113,6 @@ Bob,Wilson,https://www.linkedin.com/in/bobwilson,bob@test.com,Startup LLC,Develo
         """
         Test parsing empty date string returns None.
         """
-
         result = processor._parse_date("")
         assert result is None
 
@@ -127,7 +120,6 @@ Bob,Wilson,https://www.linkedin.com/in/bobwilson,bob@test.com,Startup LLC,Develo
         """
         Test parsing whitespace-only string returns None.
         """
-
         result = processor._parse_date("   ")
         assert result is None
 
@@ -135,7 +127,6 @@ Bob,Wilson,https://www.linkedin.com/in/bobwilson,bob@test.com,Startup LLC,Develo
         """
         Test parsing None returns None.
         """
-
         result = processor._parse_date(None)
         assert result is None
 
@@ -143,7 +134,6 @@ Bob,Wilson,https://www.linkedin.com/in/bobwilson,bob@test.com,Startup LLC,Develo
         """
         Test parsing invalid date format returns None.
         """
-
         result = processor._parse_date("2024-01-09")
         assert result is None
 
@@ -151,7 +141,6 @@ Bob,Wilson,https://www.linkedin.com/in/bobwilson,bob@test.com,Startup LLC,Develo
         """
         Test parsing invalid date value returns None.
         """
-
         result = processor._parse_date("32 Jan 2024")
         assert result is None
 
@@ -163,7 +152,6 @@ Bob,Wilson,https://www.linkedin.com/in/bobwilson,bob@test.com,Startup LLC,Develo
         """
         Test extracting capture date from valid filename.
         """
-
         file_path = Path("/some/path/Connections_20240115.csv")
         result = processor._extract_capture_date(file_path)
         assert result == date(2024, 1, 15)
@@ -174,7 +162,6 @@ Bob,Wilson,https://www.linkedin.com/in/bobwilson,bob@test.com,Startup LLC,Develo
         """
         Test extracting capture dates from various filenames.
         """
-
         test_cases = [
             (Path("Connections_20230101.csv"), date(2023, 1, 1)),
             (Path("Connections_20241231.csv"), date(2024, 12, 31)),
@@ -191,7 +178,6 @@ Bob,Wilson,https://www.linkedin.com/in/bobwilson,bob@test.com,Startup LLC,Develo
         """
         Test extracting capture date from filename without date returns None.
         """
-
         file_path = Path("Connections.csv")
         result = processor._extract_capture_date(file_path)
         assert result is None
@@ -202,7 +188,6 @@ Bob,Wilson,https://www.linkedin.com/in/bobwilson,bob@test.com,Startup LLC,Develo
         """
         Test extracting capture date from filename with invalid date returns None.
         """
-
         # Invalid month (13).
         file_path = Path("Connections_20241301.csv")
         result = processor._extract_capture_date(file_path)
@@ -218,7 +203,6 @@ Bob,Wilson,https://www.linkedin.com/in/bobwilson,bob@test.com,Startup LLC,Develo
         """
         Test parsing CSV file that includes header notes.
         """
-
         csv_file = temp_dir / "Connections.csv"
         csv_file.write_text(sample_csv_content)
 
@@ -239,10 +223,8 @@ Bob,Wilson,https://www.linkedin.com/in/bobwilson,bob@test.com,Startup LLC,Develo
         """
         Test parsing CSV file with empty optional fields.
         """
-
         csv_file = temp_dir / "Connections.csv"
         csv_file.write_text(sample_csv_content)
-
         result = processor._parse_csv_file(csv_file)
 
         # Jane Smith has no email.
@@ -256,7 +238,6 @@ Bob,Wilson,https://www.linkedin.com/in/bobwilson,bob@test.com,Startup LLC,Develo
         """
         Test parsing CSV file without valid header row returns empty list.
         """
-
         csv_content = """This is not a valid CSV.
 Some random text.
 """
@@ -273,7 +254,6 @@ Some random text.
         """
         Test parsing CSV file where header is at a different line number.
         """
-
         csv_content = """Line 1 notes.
 Line 2 more notes.
 Line 3 even more notes.
@@ -305,10 +285,8 @@ Test,User,https://www.linkedin.com/in/testuser,test@test.com,Test Co,Tester,01 J
         """
         Test that processing a CSV file creates Connection instances.
         """
-
         csv_file = temp_dir / "Connections_20240115.csv"
         csv_file.write_text(sample_csv_content)
-
         with patch(
             "dags.pipelines.linkedin.process.upsert_model_instances"
         ) as mock_upsert:
@@ -332,10 +310,8 @@ Test,User,https://www.linkedin.com/in/testuser,test@test.com,Test Co,Tester,01 J
         """
         Test that all processed connections have active_connection=True.
         """
-
         csv_file = temp_dir / "Connections_20240115.csv"
         csv_file.write_text(sample_csv_content)
-
         with patch(
             "dags.pipelines.linkedin.process.upsert_model_instances"
         ) as mock_upsert:
@@ -354,10 +330,8 @@ Test,User,https://www.linkedin.com/in/testuser,test@test.com,Test Co,Tester,01 J
         """
         Test that dates are correctly parsed into date objects.
         """
-
         csv_file = temp_dir / "Connections_20240115.csv"
         csv_file.write_text(sample_csv_content)
-
         with patch(
             "dags.pipelines.linkedin.process.upsert_model_instances"
         ) as mock_upsert:
@@ -382,10 +356,8 @@ Test,User,https://www.linkedin.com/in/testuser,test@test.com,Test Co,Tester,01 J
         """
         Test that empty optional fields are converted to None.
         """
-
         csv_file = temp_dir / "Connections_20240115.csv"
         csv_file.write_text(sample_csv_content)
-
         with patch(
             "dags.pipelines.linkedin.process.upsert_model_instances"
         ) as mock_upsert:
@@ -406,10 +378,8 @@ Test,User,https://www.linkedin.com/in/testuser,test@test.com,Test Co,Tester,01 J
         """
         Test that capture_date is extracted from filename and set on all connections.
         """
-
         csv_file = temp_dir / "Connections_20240115.csv"
         csv_file.write_text(sample_csv_content)
-
         with patch(
             "dags.pipelines.linkedin.process.upsert_model_instances"
         ) as mock_upsert:
@@ -431,10 +401,8 @@ Test,User,https://www.linkedin.com/in/testuser,test@test.com,Test Co,Tester,01 J
         """
         Test that upsert is called with latest_check_column for capture_date.
         """
-
         csv_file = temp_dir / "Connections_20240115.csv"
         csv_file.write_text(sample_csv_content)
-
         with patch(
             "dags.pipelines.linkedin.process.upsert_model_instances"
         ) as mock_upsert:
@@ -453,7 +421,6 @@ Test,User,https://www.linkedin.com/in/testuser,test@test.com,Test Co,Tester,01 J
         """
         Test that rows with empty URL are skipped.
         """
-
         csv_content = """Notes:
 Header notes here.
 
@@ -464,7 +431,6 @@ Jane,Smith,https://www.linkedin.com/in/janesmith,,Tech Inc,Manager,15 Feb 2024
 
         csv_file = temp_dir / "Connections_20240115.csv"
         csv_file.write_text(csv_content)
-
         with patch(
             "dags.pipelines.linkedin.process.upsert_model_instances"
         ) as mock_upsert:
@@ -484,7 +450,6 @@ Jane,Smith,https://www.linkedin.com/in/janesmith,,Tech Inc,Manager,15 Feb 2024
         """
         Test processing a file with no connections.
         """
-
         csv_content = """Notes:
 Header notes here.
 
@@ -493,7 +458,6 @@ First Name,Last Name,URL,Email Address,Company,Position,Connected On
 
         csv_file = temp_dir / "Connections_20240115.csv"
         csv_file.write_text(csv_content)
-
         with patch(
             "dags.pipelines.linkedin.process.upsert_model_instances"
         ) as mock_upsert:
@@ -512,7 +476,6 @@ First Name,Last Name,URL,Email Address,Company,Position,Connected On
         """
         Test that connections not in file are marked as inactive via bulk UPDATE.
         """
-
         # Track execute calls to distinguish select from update.
         execute_call_count = [0]
         scalars_mock = MagicMock()
@@ -570,7 +533,6 @@ First Name,Last Name,URL,Email Address,Company,Position,Connected On
         """
         Test that no update when all DB connections are in file.
         """
-
         # Mock the URL query result (scalars returns URL strings).
         scalars_mock = MagicMock()
         scalars_mock.scalars.return_value = [
@@ -593,12 +555,10 @@ First Name,Last Name,URL,Email Address,Company,Position,Connected On
         """
         Test handling when database has no active connections.
         """
-
         # Mock the URL query result (scalars returns empty list).
         scalars_mock = MagicMock()
         scalars_mock.scalars.return_value = []
         mock_session.execute.return_value = scalars_mock
-
         active_urls: Set[str] = {"https://www.linkedin.com/in/newuser"}
         capture_date = date(2024, 1, 15)
 
@@ -621,7 +581,6 @@ First Name,Last Name,URL,Email Address,Company,Position,Connected On
         """
         Test that process_file_set processes all files in the file set.
         """
-
         csv_file = temp_dir / "Connections_20240115.csv"
         csv_file.write_text(sample_csv_content)
 
@@ -642,13 +601,11 @@ First Name,Last Name,URL,Email Address,Company,Position,Connected On
         """
         Test that process_file_set handles multiple files.
         """
-
         csv_file_1 = temp_dir / "Connections_20240115.csv"
         csv_file_1.write_text(sample_csv_content)
 
         csv_file_2 = temp_dir / "Connections_20240116.csv"
         csv_file_2.write_text(sample_csv_content)
-
         file_set = FileSet(
             files={LinkedInFileTypes.CONNECTIONS: [csv_file_1, csv_file_2]}
         )

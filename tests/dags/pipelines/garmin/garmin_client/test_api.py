@@ -1,10 +1,9 @@
 """
 Unit tests for dags.pipelines.garmin.garmin_client.api module.
 
-Verifies the URL patterns, query parameters, and pagination behavior of the 15
-API method wrappers used by the openetl pipeline. Each test mocks
-``client._connectapi`` (or ``_download``) and asserts the correct URL/params
-were passed.
+Verifies the URL patterns, query parameters, and pagination behavior of the 15 API
+method wrappers used by the openetl pipeline. Each test mocks ``client._connectapi`` (or
+``_download``) and asserts the correct URL/params were passed.
 """
 
 from unittest.mock import MagicMock
@@ -25,7 +24,6 @@ def mock_client() -> MagicMock:
 
     :return: MagicMock standing in for a GarminClient instance.
     """
-
     client = MagicMock()
     client.display_name = "stub_user"
     return client
@@ -45,21 +43,18 @@ class TestValidateDateFormat:
         """
         A YYYY-MM-DD string passes through unchanged.
         """
-
         assert _validate_date_format("2026-04-07") == "2026-04-07"
 
     def test_strips_whitespace(self) -> None:
         """
         Surrounding whitespace is stripped.
         """
-
         assert _validate_date_format("  2026-04-07  ") == "2026-04-07"
 
     def test_rejects_wrong_shape(self) -> None:
         """
         Strings that don't match YYYY-MM-DD raise ValueError.
         """
-
         with pytest.raises(ValueError):
             _validate_date_format("04/07/2026")
 
@@ -67,7 +62,6 @@ class TestValidateDateFormat:
         """
         Strings with the right shape but an invalid date raise ValueError.
         """
-
         with pytest.raises(ValueError):
             _validate_date_format("2026-02-30")
 
@@ -75,7 +69,6 @@ class TestValidateDateFormat:
         """
         Non-string inputs raise ValueError.
         """
-
         with pytest.raises(ValueError):
             _validate_date_format(20260407)  # type: ignore[arg-type]
 
@@ -95,7 +88,6 @@ class TestGetSleepData:
         Sleep URL contains the display name and the request includes the
         ``nonSleepBufferMinutes=60`` query param.
         """
-
         # Arrange.
         mock_client._connectapi.return_value = {"sleep": "data"}
 
@@ -119,7 +111,6 @@ class TestGetStressData:
         """
         Stress URL embeds the date in the path (no display_name).
         """
-
         # Arrange.
         mock_client._connectapi.return_value = {"stress": "data"}
 
@@ -141,7 +132,6 @@ class TestGetRespirationData:
         """
         Respiration URL embeds the date in the path.
         """
-
         # Arrange.
         mock_client._connectapi.return_value = {"resp": "data"}
 
@@ -163,7 +153,6 @@ class TestGetHeartRates:
         """
         Heart rate URL contains display_name and a ``date`` query param.
         """
-
         # Arrange.
         mock_client._connectapi.return_value = {"hr": "data"}
 
@@ -186,7 +175,6 @@ class TestGetTrainingReadiness:
         """
         Training readiness URL embeds the date in the path.
         """
-
         # Arrange.
         mock_client._connectapi.return_value = [{"score": 80}]
 
@@ -207,7 +195,6 @@ class TestGetTrainingStatus:
         """
         Training status URL embeds the date in the path.
         """
-
         # Arrange.
         mock_client._connectapi.return_value = {"status": "productive"}
 
@@ -228,7 +215,6 @@ class TestGetStepsData:
         """
         Steps URL contains display_name and a ``date`` query param.
         """
-
         # Arrange.
         mock_client._connectapi.return_value = [{"steps": 100}]
 
@@ -248,10 +234,8 @@ class TestGetStepsData:
         """
         A None response is normalized to an empty list.
         """
-
         # Arrange.
         mock_client._connectapi.return_value = None
-
         # Act.
         result = api.get_steps_data(mock_client, "2026-04-07")
 
@@ -268,10 +252,8 @@ class TestGetFloors:
         """
         Floors URL embeds the date in the path.
         """
-
         # Act.
         api.get_floors(mock_client, "2026-04-07")
-
         # Assert.
         url = mock_client._connectapi.call_args[0][0]
         assert url == "/wellness-service/wellness/floorsChartData/daily/2026-04-07"
@@ -286,10 +268,8 @@ class TestGetIntensityMinutesData:
         """
         Intensity minutes URL embeds the date in the path.
         """
-
         # Act.
         api.get_intensity_minutes_data(mock_client, "2026-04-07")
-
         # Assert.
         url = mock_client._connectapi.call_args[0][0]
         assert url == "/wellness-service/wellness/daily/im/2026-04-07"
@@ -309,7 +289,6 @@ class TestGetActivitiesByDate:
         """
         The loop fetches 20-activity pages until the API returns [].
         """
-
         # Arrange. First page has 2 activities, second page is empty.
         mock_client._connectapi.side_effect = [
             [{"id": 1}, {"id": 2}],
@@ -332,10 +311,8 @@ class TestGetActivitiesByDate:
         """
         Optional ``enddate``, ``activitytype``, and ``sortorder`` propagate.
         """
-
         # Arrange.
         mock_client._connectapi.return_value = []
-
         # Act.
         api.get_activities_by_date(
             mock_client,
@@ -357,7 +334,6 @@ class TestGetActivitiesByDate:
         """
         A bad start date raises ValueError before any API call.
         """
-
         with pytest.raises(ValueError):
             api.get_activities_by_date(mock_client, "04/01/2026")
         mock_client._connectapi.assert_not_called()
@@ -372,10 +348,8 @@ class TestGetActivityExerciseSets:
         """
         Exercise sets URL contains the activity ID.
         """
-
         # Arrange.
         mock_client._connectapi.return_value = {"sets": []}
-
         # Act.
         api.get_activity_exercise_sets(mock_client, 12345)
 
@@ -387,7 +361,6 @@ class TestGetActivityExerciseSets:
         """
         Activity IDs must be positive integers.
         """
-
         with pytest.raises(ValueError):
             api.get_activity_exercise_sets(mock_client, 0)
 
@@ -406,7 +379,6 @@ class TestGetPersonalRecord:
         """
         Personal record URL ends in the display name.
         """
-
         # Act.
         api.get_personal_record(mock_client)
 
@@ -425,7 +397,6 @@ class TestGetRacePredictions:
         The openetl hot path calls ``get_race_predictions()`` with no args and expects
         the ``/latest/<display_name>`` endpoint.
         """
-
         # Act.
         api.get_race_predictions(mock_client)
 
@@ -438,10 +409,8 @@ class TestGetRacePredictions:
         Providing all three args produces ``/<type>/<display_name>`` plus the date range
         params.
         """
-
         # Act.
         api.get_race_predictions(mock_client, "2026-01-01", "2026-04-01", _type="daily")
-
         # Assert.
         url = mock_client._connectapi.call_args[0][0]
         params = mock_client._connectapi.call_args[1]["params"]
@@ -455,7 +424,6 @@ class TestGetRacePredictions:
         """
         Unknown ``_type`` values raise ValueError.
         """
-
         with pytest.raises(ValueError):
             api.get_race_predictions(
                 mock_client, "2026-01-01", "2026-04-01", _type="weekly"
@@ -465,7 +433,6 @@ class TestGetRacePredictions:
         """
         Providing some but not all of the three args raises ValueError.
         """
-
         with pytest.raises(ValueError):
             api.get_race_predictions(mock_client, "2026-01-01")
 
@@ -473,7 +440,6 @@ class TestGetRacePredictions:
         """
         A start-to-end range over one year raises ValueError.
         """
-
         with pytest.raises(ValueError):
             api.get_race_predictions(
                 mock_client, "2024-01-01", "2026-01-01", _type="daily"
@@ -490,7 +456,6 @@ class TestGetUserProfile:
         ``get_user_profile`` hits ``/user-settings``, NOT the ``/profile`` endpoint that
         ``_load_profile`` uses.
         """
-
         # Arrange.
         mock_client._connectapi.return_value = {"id": "12345678"}
 
@@ -517,13 +482,11 @@ class TestDownloadActivity:
         """
         ``ORIGINAL`` format hits the FIT download URL by default.
         """
-
         # Arrange.
         mock_client._download.return_value = b"FIT_BYTES"
 
         # Act.
         result = api.download_activity(mock_client, 99999)
-
         # Assert.
         assert result == b"FIT_BYTES"
         url = mock_client._download.call_args[0][0]
@@ -533,7 +496,6 @@ class TestDownloadActivity:
         """
         TCX format hits the TCX export URL.
         """
-
         # Act.
         api.download_activity(mock_client, 99999, ActivityDownloadFormat.TCX)
 
@@ -545,7 +507,6 @@ class TestDownloadActivity:
         """
         GPX format hits the GPX export URL.
         """
-
         # Act.
         api.download_activity(mock_client, 99999, ActivityDownloadFormat.GPX)
 

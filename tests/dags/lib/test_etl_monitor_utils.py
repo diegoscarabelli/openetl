@@ -25,7 +25,6 @@ def dummy_etl_result() -> ETLResult:
     """
     Fixture to create a basic ETLResult object.
     """
-
     config = DummyConfig()
     dag_start_date = datetime(2025, 8, 1, 12, 0, 0)
     dag_run_id = "run_123"
@@ -38,7 +37,6 @@ def test_etl_result_record_fields() -> None:
     """
     Test ETLResultRecord field assignment.
     """
-
     record = ETLResultRecord(
         file_name="file.csv",
         success=True,
@@ -55,7 +53,6 @@ def test_set_result_record(dummy_etl_result: ETLResult) -> None:
     """
     Test setting a result record in ETLResult.
     """
-
     etl_result = dummy_etl_result
     etl_result.set_result_record("file.csv", True)
     assert "file.csv" in etl_result.result_records
@@ -66,7 +63,6 @@ def test_successes_and_errors(dummy_etl_result: ETLResult) -> None:
     """
     Test successes and errors properties of ETLResult.
     """
-
     etl_result = dummy_etl_result
     etl_result.set_result_record("file1.csv", True)
     etl_result.set_result_record(
@@ -92,7 +88,6 @@ def test_etl_result_equality(
     """
     Test ETLResult equality comparison.
     """
-
     etl_result1 = dummy_etl_result
     etl_result2 = ETLResult(
         etl_result1.config,
@@ -112,7 +107,6 @@ def test_submit_writes_to_database(
     """
     Test that submit() writes ETL results to the database.
     """
-
     from dags.lib.etl_monitor_utils import ETLResultSqla
 
     config = DummyConfig()

@@ -35,7 +35,6 @@ def batch(
     :return: Serialized batches for XCom. Each batch is a single-element tuple containing
         a list of serialized FileSets (dicts mapping file type patterns to file paths).
     """
-
     if config.max_process_tasks <= 0:
         raise ValueError("`max_process_tasks` must be greater than 0.")
 

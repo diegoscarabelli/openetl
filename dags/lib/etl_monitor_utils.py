@@ -97,7 +97,6 @@ class ETLResult:
         Read existing ETL results for this DAG run from the database and populate
         `result_records`.
         """
-
         with Session(self.engine) as sess:
             records = (
                 sess.execute(
@@ -137,7 +136,6 @@ class ETLResult:
             encountered during ETL processing.
         :param traceback: Detailed traceback or error message if the ETL task failed.
         """
-
         self.result_records[file_name] = ETLResultRecord(
             file_name=file_name,
             success=success,
@@ -150,7 +148,6 @@ class ETLResult:
         """
         List of successfully processed file records.
         """
-
         return [record for record in self.result_records.values() if record.success]
 
     @property
@@ -158,14 +155,12 @@ class ETLResult:
         """
         List of file records that failed processing.
         """
-
         return [record for record in self.result_records.values() if not record.success]
 
     def submit(self) -> None:
         """
         Write the ETL results to the database using upsert logic.
         """
-
         model_instances = [
             ETLResultSqla(
                 dag_id=self.config.dag_id,
@@ -198,7 +193,6 @@ class ETLResult:
         """
         Equality comparison for ETLResult objects.
         """
-
         if not isinstance(other, ETLResult):
             return False
         return self.result_records == other.result_records

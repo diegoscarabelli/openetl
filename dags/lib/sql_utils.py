@@ -65,7 +65,6 @@ def make_base(
     :param metadata: SQLAlchemy MetaData instance to share across models.
     :return: Declarative base class for ORM models.
     """
-
     _metadata = metadata or MetaData()
 
     class _Base(DeclarativeBase):
@@ -124,7 +123,6 @@ def fkey(schema: str, table_name: str, column_name: str = None) -> ForeignKey:
     :param column_name: Foreign column name, defaults to <table_name>_id.
     :return: ForeignKey object.
     """
-
     return ForeignKey(".".join([schema, table_name, column_name or f"{table_name}_id"]))
 
 
@@ -150,7 +148,6 @@ def get_engine(
     :param echo: Whether to print queries to stdout.
     :return: SQLAlchemy engine for database operations.
     """
-
     # Escape password as described in SQLAlchemy documentation:
     # https://docs.sqlalchemy.org/en/20/core/engines.html#escaping-special-characters
     password = ":" + urllib.parse.quote_plus(password) if password else ""
@@ -183,7 +180,6 @@ def _get_default_docker_host() -> str:
 
     :return: Docker host address (either host.docker.internal or 172.17.0.1).
     """
-
     try:
         # Try to resolve host.docker.internal.
         socket.gethostbyname("host.docker.internal")
@@ -213,7 +209,6 @@ def get_lens_engine(user: str, echo: bool = False) -> Engine:
     :raises RuntimeError: If SQL_CREDENTIALS_DIR not set or credential file
         missing.
     """
-
     sql_credentials_dir = os.getenv("SQL_CREDENTIALS_DIR")
     if not sql_credentials_dir:
         raise RuntimeError(
@@ -285,14 +280,13 @@ def upsert_model_instances(
     :param latest_check_inclusive: If True, use >= comparison for latest_check_column
         instead of >. Defaults to False (strict greater than).
     :param returning_columns: List of column names to return via RETURNING clause. If
-        None, no RETURNING is issued and the function returns None. Matches the
-        behavior of ``_upsert_values``.
+        None, no RETURNING is issued and the function returns None. Matches the behavior
+        of ``_upsert_values``.
     :param chunk_size: Maximum rows per INSERT statement. Clamped internally so the
         total parameter count never exceeds the psycopg3 limit.
     :return: List of SQLAlchemy model instances (with only the requested columns
         populated) if returning_columns is specified, otherwise None.
     """
-
     if not model_instances:
         raise ValueError("`model_instances` list cannot be empty.")
     model = model_instances[0].__class__
@@ -371,7 +365,6 @@ def _upsert_values(
     :return: List of dictionaries with returned values if returning_columns is
         specified, otherwise None.
     """
-
     if on_conflict_update:
         if not conflict_columns:
             raise ValueError(

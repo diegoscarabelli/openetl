@@ -161,7 +161,6 @@ class ETLConfig:
         validates that max_process_tasks and min_file_sets_in_batch are >= 1. Raises
         ValueError if configuration is invalid.
         """
-
         if not self.dag_id:
             raise ValueError("dag_id must not be empty.")
         if self.max_process_tasks < 1:
@@ -181,7 +180,6 @@ class ETLConfig:
 
         This is useful for logging and debugging purposes.
         """
-
         return (
             f"ETLConfig(dag_id={self.dag_id}, "
             f"pipeline_print_name={self.pipeline_print_name})"

@@ -34,7 +34,7 @@ class GarminTooManyRequestsError(GarminConnectionError):
     """
     Garmin or Cloudflare returned HTTP 429.
 
-    Subclass of ``GarminConnectionError`` so callers that want to handle all
-    connection problems uniformly can catch the parent class while callers that
-    care about rate limiting specifically can catch this subclass.
+    Subclass of ``GarminConnectionError`` so callers that want to handle all connection
+    problems uniformly can catch the parent class while callers that care about rate
+    limiting specifically can catch this subclass.
     """

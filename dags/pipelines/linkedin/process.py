@@ -42,7 +42,6 @@ class LinkedInProcessor(Processor):
         :param file_set: FileSet containing LinkedIn CSV files to process.
         :param session: SQLAlchemy Session object.
         """
-
         for file_path in file_set.file_paths:
             LOGGER.info(f"Processing LinkedIn connections file: {file_path.name}.")
             self._process_connections_file(file_path, session)
@@ -61,7 +60,6 @@ class LinkedInProcessor(Processor):
         :param file_path: Path to the Connections CSV file.
         :param session: SQLAlchemy Session object.
         """
-
         # Extract capture date from filename (e.g., "Connections_20260110.csv").
         capture_date = self._extract_capture_date(file_path)
         if not capture_date:
@@ -149,7 +147,6 @@ class LinkedInProcessor(Processor):
         :param file_path: Path to the CSV file.
         :return: List of dictionaries containing connection data.
         """
-
         connections = []
 
         with open(file_path, "r", encoding="utf-8") as f:
@@ -183,7 +180,6 @@ class LinkedInProcessor(Processor):
         :param date_str: Date string in LinkedIn format.
         :return: date object or None if parsing fails.
         """
-
         if not date_str or not date_str.strip():
             return None
 
@@ -204,7 +200,6 @@ class LinkedInProcessor(Processor):
         :param file_path: Path to the CSV file.
         :return: date object or None if extraction fails.
         """
-
         # Match pattern like "20260110" in filename.
         match = re.search(r"(\d{8})", file_path.name)
         if not match:
@@ -231,7 +226,6 @@ class LinkedInProcessor(Processor):
         :param active_urls: Set of URLs present in the current CSV file.
         :param capture_date: Capture date of the current file being processed.
         """
-
         # Query URLs of active connections with capture_date <= current file's date.
         db_active_urls = set(
             session.execute(
