@@ -1741,3 +1741,423 @@ class TestExtractMultiAccount:
             extract(
                 mock_config.data_dirs.ingest, data_interval_start, data_interval_end
             )
+
+
+# --------------------------------------------------------------------------------------
+# Failure isolation, retries, and ACTIVITIES_LIST disk-read tests
+# --------------------------------------------------------------------------------------
+
+
+class TestRetryHelper:
+    """
+    Tests for the _with_retries helper.
+    """
+
+    def test_with_retries_succeeds_after_transient_failures(self, monkeypatch):
+        """
+        The helper retries on transient errors and returns the eventual success.
+        """
+
+        from dags.pipelines.garmin import extract as extract_mod
+        from dags.pipelines.garmin.garmin_client.exceptions import (
+            GarminConnectionError,
+        )
+
+        monkeypatch.setattr(extract_mod.time, "sleep", lambda _: None)
+
+        fn = MagicMock(
+            side_effect=[
+                GarminConnectionError("DNS hiccup 1"),
+                GarminConnectionError("DNS hiccup 2"),
+                {"ok": True},
+            ]
+        )
+
+        result = extract_mod._with_retries(fn, "arg1", kwarg="value")
+
+        assert result == {"ok": True}
+        assert fn.call_count == 3
+        fn.assert_called_with("arg1", kwarg="value")
+
+    def test_with_retries_exhausts_and_reraises(self, monkeypatch):
+        """
+        After exhausting all retries the last transient exception is re-raised.
+        """
+
+        from dags.pipelines.garmin import extract as extract_mod
+        from dags.pipelines.garmin.garmin_client.exceptions import (
+            GarminConnectionError,
+        )
+
+        monkeypatch.setattr(extract_mod.time, "sleep", lambda _: None)
+
+        fn = MagicMock(side_effect=GarminConnectionError("persistent failure"))
+
+        with pytest.raises(GarminConnectionError, match="persistent failure"):
+            extract_mod._with_retries(fn)
+
+        # 1 initial + 3 retries = 4 total attempts.
+        assert fn.call_count == 4
+
+    def test_with_retries_does_not_retry_non_transient(self, monkeypatch):
+        """
+        Non-transient exceptions (e.g. ValueError) propagate immediately.
+        """
+
+        from dags.pipelines.garmin import extract as extract_mod
+
+        monkeypatch.setattr(extract_mod.time, "sleep", lambda _: None)
+
+        fn = MagicMock(side_effect=ValueError("bad input"))
+
+        with pytest.raises(ValueError, match="bad input"):
+            extract_mod._with_retries(fn)
+
+        # Only one attempt - no retries for non-transient exceptions.
+        assert fn.call_count == 1
+
+
+class TestExtractionFailureIsolation:
+    """
+    Tests for the per-date / per-data-type / per-activity isolation layers.
+    """
+
+    def test_extract_day_by_day_isolates_per_date_failures(self, tmp_path, monkeypatch):
+        """
+        A transient API failure on one date does not abort extraction of the rest of the
+        date range; the failure is recorded on extractor.failures.
+        """
+
+        from dags.pipelines.garmin import extract as extract_mod
+        from dags.pipelines.garmin.constants import GARMIN_DATA_REGISTRY
+
+        monkeypatch.setattr(extract_mod.time, "sleep", lambda _: None)
+
+        instance = GarminExtractor(
+            start_date=date(2025, 1, 1),
+            end_date=date(2025, 1, 3),
+            ingest_dir=tmp_path,
+            data_types=("SLEEP",),
+        )
+        instance.user_id = "test-user"
+
+        sleep_type = GARMIN_DATA_REGISTRY.get_by_name("SLEEP")
+        # RuntimeError is NOT in _TRANSIENT_API_EXCEPTIONS, so it bypasses
+        # the retry loop and is caught by the outer per-date try/except.
+        # That's exactly the path we want to exercise here.
+        mock_api = MagicMock(
+            side_effect=[
+                {"value": "ok-day-1"},
+                RuntimeError("hiccup"),
+                {"value": "ok-day-3"},
+            ]
+        )
+        instance.garmin_client = MagicMock()
+        setattr(instance.garmin_client, sleep_type.api_method, mock_api)
+
+        saved = instance._extract_day_by_day(
+            sleep_type, date(2025, 1, 1), date(2025, 1, 3)
+        )
+
+        # Day1 + day3 succeeded; day2 was recorded as a failure.
+        assert len(saved) == 2
+        assert mock_api.call_count == 3
+        assert any(f.date == "2025-01-02" for f in instance.failures)
+        # Failures carry the extractor's user_id for multi-account attribution.
+        assert all(f.user_id == "test-user" for f in instance.failures)
+
+    def test_extract_garmin_data_isolates_per_data_type_failures(
+        self, tmp_path, monkeypatch
+    ):
+        """
+        A failure inside _extract_data_by_type for one type does not abort the others.
+        """
+
+        from dags.pipelines.garmin import extract as extract_mod
+
+        monkeypatch.setattr(extract_mod.time, "sleep", lambda _: None)
+
+        instance = GarminExtractor(
+            start_date=date(2025, 1, 1),
+            end_date=date(2025, 1, 1),
+            ingest_dir=tmp_path,
+            data_types=("SLEEP", "HEART_RATE"),
+        )
+        instance.user_id = "test-user"
+        instance.garmin_client = MagicMock()
+
+        fake_path = tmp_path / "fake.json"
+        fake_path.write_text("{}")
+
+        def fake_extract(data_type, *_):
+            if data_type.name == "SLEEP":
+                raise RuntimeError("SLEEP endpoint went away")
+            return [fake_path]
+
+        with patch.object(instance, "_extract_data_by_type", side_effect=fake_extract):
+            saved = instance.extract_garmin_data()
+
+        assert len(saved) == 1  # HEART_RATE succeeded
+        assert any(f.data_type == "SLEEP" for f in instance.failures)
+
+    def test_no_date_api_calls_use_retries(self, tmp_path, monkeypatch):
+        """
+        NO_DATE data types (USER_PROFILE / PERSONAL_RECORDS / RACE_PREDICTIONS) go
+        through _with_retries like DAILY/RANGE types do.
+        """
+
+        from dags.pipelines.garmin import extract as extract_mod
+        from dags.pipelines.garmin.constants import GARMIN_DATA_REGISTRY
+        from dags.pipelines.garmin.garmin_client.exceptions import (
+            GarminConnectionError,
+        )
+
+        monkeypatch.setattr(extract_mod.time, "sleep", lambda _: None)
+
+        instance = GarminExtractor(
+            start_date=date(2025, 1, 1),
+            end_date=date(2025, 1, 1),
+            ingest_dir=tmp_path,
+            data_types=("USER_PROFILE",),
+        )
+        instance.user_id = "test-user"
+
+        user_profile_type = GARMIN_DATA_REGISTRY.get_by_name("USER_PROFILE")
+        mock_api = MagicMock(
+            side_effect=[
+                GarminConnectionError("DNS hiccup"),
+                GarminConnectionError("still flaky"),
+                {"id": 12345, "displayName": "test"},
+            ]
+        )
+        instance.garmin_client = MagicMock()
+        instance.garmin_client.full_name = "Test User"
+        setattr(instance.garmin_client, user_profile_type.api_method, mock_api)
+
+        result = instance._extract_data_by_type(
+            user_profile_type, date(2025, 1, 1), date(2025, 1, 1)
+        )
+
+        # Two retries then success: 3 attempts, no failure recorded.
+        assert mock_api.call_count == 3
+        assert len(result) == 1
+        assert instance.failures == []
+
+
+class TestActivitiesListFromDisk:
+    """
+    Tests for the _load_activities_list_from_disk helper.
+    """
+
+    def test_merges_multiple_files_dedupes_by_id(self, tmp_path):
+        """
+        Multi-day extracts produce one ACTIVITIES_LIST_<date>.json per day.
+
+        The helper must merge all of them and dedupe by activityId.
+        """
+
+        instance = GarminExtractor(
+            start_date=date(2025, 1, 1),
+            end_date=date(2025, 1, 3),
+            ingest_dir=tmp_path,
+            data_types=("ACTIVITY",),
+        )
+        instance.user_id = "test-user"
+        instance.garmin_client = MagicMock()
+
+        (tmp_path / "test-user_ACTIVITIES_LIST_2025-01-01T12-00-00Z.json").write_text(
+            json.dumps([{"activityId": 100, "name": "day1"}])
+        )
+        (tmp_path / "test-user_ACTIVITIES_LIST_2025-01-02T12-00-00Z.json").write_text(
+            json.dumps(
+                [
+                    {"activityId": 100, "name": "day1-dup"},
+                    {"activityId": 200, "name": "day2"},
+                ]
+            )
+        )
+        (tmp_path / "test-user_ACTIVITIES_LIST_2025-01-03T12-00-00Z.json").write_text(
+            json.dumps([{"activityId": 300, "name": "day3"}])
+        )
+
+        result = instance._load_activities_list_from_disk()
+
+        instance.garmin_client.get_activities_by_date.assert_not_called()
+        ids = sorted(a["activityId"] for a in result)
+        assert ids == [100, 200, 300]
+
+    def test_falls_back_on_corrupt_file(self, tmp_path):
+        """
+        A single corrupt file returns None so the caller hits the API.
+        """
+
+        instance = GarminExtractor(
+            start_date=date(2025, 1, 1),
+            end_date=date(2025, 1, 2),
+            ingest_dir=tmp_path,
+            data_types=("ACTIVITY",),
+        )
+        instance.user_id = "test-user"
+
+        (tmp_path / "test-user_ACTIVITIES_LIST_2025-01-01T12-00-00Z.json").write_text(
+            "{not valid json"
+        )
+        (tmp_path / "test-user_ACTIVITIES_LIST_2025-01-02T12-00-00Z.json").write_text(
+            json.dumps([{"activityId": 200}])
+        )
+
+        assert instance._load_activities_list_from_disk() is None
+
+    def test_returns_none_when_no_files(self, tmp_path):
+        """
+        With no matching files the helper returns None (caller falls back).
+        """
+
+        instance = GarminExtractor(
+            start_date=date(2025, 1, 1),
+            end_date=date(2025, 1, 1),
+            ingest_dir=tmp_path,
+            data_types=("ACTIVITY",),
+        )
+        instance.user_id = "test-user"
+
+        assert instance._load_activities_list_from_disk() is None
+
+    def test_skips_files_outside_date_window(self, tmp_path):
+        """
+        Stale ACTIVITIES_LIST files from a previous run with a different window must not
+        leak activities into the current extract.
+        """
+
+        instance = GarminExtractor(
+            start_date=date(2025, 1, 10),
+            end_date=date(2025, 1, 12),
+            ingest_dir=tmp_path,
+            data_types=("ACTIVITY",),
+        )
+        instance.user_id = "test-user"
+
+        # Stale leftover from a previous run with an earlier window.
+        (tmp_path / "test-user_ACTIVITIES_LIST_2025-01-01T12-00-00Z.json").write_text(
+            json.dumps([{"activityId": 999, "name": "stale"}])
+        )
+        # In-window files (full 3-day coverage so the partial-coverage
+        # fallback doesn't fire).
+        (tmp_path / "test-user_ACTIVITIES_LIST_2025-01-10T12-00-00Z.json").write_text(
+            json.dumps([{"activityId": 100, "name": "current"}])
+        )
+        (tmp_path / "test-user_ACTIVITIES_LIST_2025-01-11T12-00-00Z.json").write_text(
+            json.dumps([{"activityId": 150, "name": "current"}])
+        )
+        (tmp_path / "test-user_ACTIVITIES_LIST_2025-01-12T12-00-00Z.json").write_text(
+            json.dumps([{"activityId": 200, "name": "current"}])
+        )
+
+        result = instance._load_activities_list_from_disk()
+
+        ids = sorted(a["activityId"] for a in result)
+        assert ids == [100, 150, 200]
+
+    def test_returns_none_when_only_out_of_window_files(self, tmp_path):
+        """
+        If every matching file is outside the window the helper returns None so the
+        caller falls back to a fresh API call.
+        """
+
+        instance = GarminExtractor(
+            start_date=date(2025, 2, 1),
+            end_date=date(2025, 2, 3),
+            ingest_dir=tmp_path,
+            data_types=("ACTIVITY",),
+        )
+        instance.user_id = "test-user"
+
+        (tmp_path / "test-user_ACTIVITIES_LIST_2025-01-01T12-00-00Z.json").write_text(
+            json.dumps([{"activityId": 1}])
+        )
+
+        assert instance._load_activities_list_from_disk() is None
+
+    def test_drops_entries_without_activity_id(self, tmp_path):
+        """
+        Entries that aren't dicts or are missing ``activityId`` must be dropped so
+        downstream code can assume every item has an ``activityId``.
+        """
+
+        instance = GarminExtractor(
+            start_date=date(2025, 1, 1),
+            end_date=date(2025, 1, 1),
+            ingest_dir=tmp_path,
+            data_types=("ACTIVITY",),
+        )
+        instance.user_id = "test-user"
+
+        (tmp_path / "test-user_ACTIVITIES_LIST_2025-01-01T12-00-00Z.json").write_text(
+            json.dumps(
+                [
+                    {"activityId": 100, "name": "good"},
+                    {"name": "missing-id"},
+                    "not-a-dict",
+                    {"activityId": 200, "name": "good"},
+                ]
+            )
+        )
+
+        result = instance._load_activities_list_from_disk()
+
+        ids = sorted(a["activityId"] for a in result)
+        assert ids == [100, 200]
+
+    def test_returns_none_when_disk_coverage_is_partial(self, tmp_path):
+        """
+        Window has 3 days but only 2 ACTIVITIES_LIST files exist (e.g. day 2 had a
+        transient API failure during extract).
+
+        The function must return None to force a fresh API call rather than silently
+        using the partial data, otherwise extract_fit_activities would never download
+        FITs for the missing day.
+        """
+
+        instance = GarminExtractor(
+            start_date=date(2025, 1, 1),
+            end_date=date(2025, 1, 3),
+            ingest_dir=tmp_path,
+            data_types=("ACTIVITY",),
+        )
+        instance.user_id = "test-user"
+
+        # Day 1 + day 3 present; day 2 missing (simulates a per-date
+        # ACTIVITIES_LIST failure that recorded a failure record but no file).
+        (tmp_path / "test-user_ACTIVITIES_LIST_2025-01-01T12-00-00Z.json").write_text(
+            json.dumps([{"activityId": 100}])
+        )
+        (tmp_path / "test-user_ACTIVITIES_LIST_2025-01-03T12-00-00Z.json").write_text(
+            json.dumps([{"activityId": 300}])
+        )
+
+        assert instance._load_activities_list_from_disk() is None
+
+    def test_returns_data_when_full_window_covered(self, tmp_path):
+        """
+        Sanity check: when every day in the window has a file, the helper
+        returns the merged data without falling back to the API.
+        """
+
+        instance = GarminExtractor(
+            start_date=date(2025, 1, 1),
+            end_date=date(2025, 1, 2),
+            ingest_dir=tmp_path,
+            data_types=("ACTIVITY",),
+        )
+        instance.user_id = "test-user"
+
+        (tmp_path / "test-user_ACTIVITIES_LIST_2025-01-01T12-00-00Z.json").write_text(
+            json.dumps([{"activityId": 100}])
+        )
+        (tmp_path / "test-user_ACTIVITIES_LIST_2025-01-02T12-00-00Z.json").write_text(
+            json.dumps([{"activityId": 200}])
+        )
+
+        result = instance._load_activities_list_from_disk()
+        ids = sorted(a["activityId"] for a in result)
+        assert ids == [100, 200]
