@@ -89,6 +89,12 @@ class ExtractionFailure:
     """
     A single extraction failure recorded by the extractor for end-of-run reporting.
 
+    :ivar user_id: Garmin user ID the failure belongs to. Populated when the
+        failure is appended (the ``GarminExtractor`` knows its own ``user_id``
+        post-authentication) so a multi-account ``extract()`` task can
+        attribute every failure to the right account in the end-of-run
+        summary. May be ``""`` if the failure occurred before
+        authentication.
     :ivar data_type: Garmin data type name (e.g. ``"SLEEP"``, ``"ACTIVITY"``).
     :ivar date: Date context for the failure. Most commonly an ISO date
         string (``"YYYY-MM-DD"``) for per-date failures, but may also be a
@@ -102,6 +108,7 @@ class ExtractionFailure:
         ``"<ExceptionType>: <message>"``).
     """
 
+    user_id: str
     data_type: str
     date: str
     activity_id: str
@@ -307,6 +314,7 @@ class GarminExtractor:
                 )
                 self.failures.append(
                     ExtractionFailure(
+                        user_id=self.user_id or "",
                         data_type=data_type.name,
                         date="",
                         activity_id="",
@@ -367,6 +375,7 @@ class GarminExtractor:
                 )
                 self.failures.append(
                     ExtractionFailure(
+                        user_id=self.user_id or "",
                         data_type=data_type.name,
                         date=date_str,
                         activity_id="",
@@ -599,6 +608,7 @@ class GarminExtractor:
                 )
                 self.failures.append(
                     ExtractionFailure(
+                        user_id=self.user_id or "",
                         data_type="ACTIVITIES_LIST",
                         date=f"{start_str}..{end_str}",
                         activity_id="",
@@ -646,6 +656,7 @@ class GarminExtractor:
                 )
                 self.failures.append(
                     ExtractionFailure(
+                        user_id=self.user_id or "",
                         data_type="ACTIVITY",
                         date="",
                         activity_id=str(activity_id),
@@ -1006,6 +1017,38 @@ def extract(
 
     LOGGER.info(f"{'=' * 60}")
 
+    # Surface granular per-date / per-data-type / per-activity failures
+    # collected by the per-account extractors. Logged BEFORE the skip check so
+    # a "no files extracted, but per-day failures recorded" run still shows
+    # what went wrong (the AirflowSkipException below would otherwise abort
+    # the task before the summary printed). Group by account first so users
+    # can quickly attribute failures in multi-account runs, then by data type
+    # within each account.
+    if all_failures:
+        by_user: Dict[str, Dict[str, List[ExtractionFailure]]] = {}
+        for f in all_failures:
+            by_user.setdefault(f.user_id or "(unknown)", {}).setdefault(
+                f.data_type, []
+            ).append(f)
+        account_blocks = []
+        for uid, by_type in sorted(by_user.items()):
+            type_lines = []
+            for dt, items in sorted(by_type.items()):
+                samples = []
+                for item in items[:5]:
+                    label = item.date or item.activity_id or "(no context)"
+                    samples.append(f"        - {label}: {item.error}")
+                if len(items) > 5:
+                    samples.append(f"        ... and {len(items) - 5} more.")
+                type_lines.append(
+                    f"     • {dt}: {len(items)} failure(s)\n" + "\n".join(samples)
+                )
+            account_blocks.append(f"   👤 {uid}\n" + "\n".join(type_lines))
+        LOGGER.warning(
+            f"⚠️ Extraction failures ({len(all_failures)} total):\n"
+            + "\n".join(account_blocks)
+        )
+
     # Check if any data was extracted across all accounts.
     if not all_garmin_files and not all_activity_files:
         raise AirflowSkipException(
@@ -1036,30 +1079,6 @@ def extract(
         f"{activity_summary}\n"
         f"   ✅ Garmin data files (total: {len(all_garmin_files)}):\n{garmin_summary}"
     )
-
-    # Surface granular per-date / per-data-type / per-activity failures
-    # collected by the per-account extractors. These are non-fatal
-    # (extraction continued past them) but the user should know what gaps
-    # exist so they can target a re-run if needed.
-    if all_failures:
-        by_type: Dict[str, List[ExtractionFailure]] = {}
-        for f in all_failures:
-            by_type.setdefault(f.data_type, []).append(f)
-        type_lines = []
-        for dt, items in sorted(by_type.items()):
-            samples = []
-            for item in items[:5]:
-                label = item.date or item.activity_id or "(no context)"
-                samples.append(f"      - {label}: {item.error}")
-            if len(items) > 5:
-                samples.append(f"      ... and {len(items) - 5} more.")
-            type_lines.append(
-                f"   • {dt}: {len(items)} failure(s)\n" + "\n".join(samples)
-            )
-        LOGGER.warning(
-            f"⚠️ Extraction failures ({len(all_failures)} total):\n"
-            + "\n".join(type_lines)
-        )
 
 
 def cli_extract(

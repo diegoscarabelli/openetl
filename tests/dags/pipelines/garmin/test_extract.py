@@ -1863,6 +1863,8 @@ class TestExtractionFailureIsolation:
         assert len(saved) == 2
         assert mock_api.call_count == 3
         assert any(f.date == "2025-01-02" for f in instance.failures)
+        # Failures carry the extractor's user_id for multi-account attribution.
+        assert all(f.user_id == "test-user" for f in instance.failures)
 
     def test_extract_garmin_data_isolates_per_data_type_failures(
         self, tmp_path, monkeypatch
