@@ -37,7 +37,6 @@ class TestGarminTokenRefresh:
 
         :return: Mock GarminClient instance.
         """
-
         return MagicMock()
 
     @pytest.fixture
@@ -48,7 +47,6 @@ class TestGarminTokenRefresh:
         :param mock_client_instance: Mock GarminClient instance fixture.
         :return: Tuple of mock class and mock instance.
         """
-
         with patch(
             "dags.pipelines.garmin.utility_scripts.refresh_garmin_tokens.GarminClient"
         ) as mock_class:
@@ -59,7 +57,6 @@ class TestGarminTokenRefresh:
         """
         Test successful input validation.
         """
-
         # Arrange & Act.
         result = _validate_input("test@example.com", "Email")
 
@@ -70,7 +67,6 @@ class TestGarminTokenRefresh:
         """
         Test input validation with empty value.
         """
-
         # Act & Assert.
         with pytest.raises(ValueError, match="❌ Email is required."):
             _validate_input("", "Email")
@@ -86,7 +82,6 @@ class TestGarminTokenRefresh:
 
         :param mock_logger: Mock logger instance.
         """
-
         # Act.
         email, password = get_credentials()
 
@@ -105,7 +100,6 @@ class TestGarminTokenRefresh:
         :param mock_logger: Mock logger instance.
         :param _mock_input: Mock input function (unused but needed for patching).
         """
-
         # Act.
         email, password = get_credentials()
 
@@ -123,7 +117,6 @@ class TestGarminTokenRefresh:
         :param mock_logger: Mock logger instance.
         :param _mock_input: Mock input function (unused but needed for patching).
         """
-
         # Act.
         mfa_code = get_mfa_code()
 
@@ -140,7 +133,6 @@ class TestGarminTokenRefresh:
         :param mock_logger: Mock logger instance.
         :param _mock_input: Mock input function (unused but needed for patching).
         """
-
         # Act.
         mfa_code = get_mfa_code()
 
@@ -156,7 +148,6 @@ class TestGarminTokenRefresh:
 
         :param mock_client_class_with_instance: Mock GarminClient class fixture.
         """
-
         # Arrange.
         _mock_class, mock_client_instance = mock_client_class_with_instance
         result2 = "mfa_token"
@@ -179,7 +170,6 @@ class TestGarminTokenRefresh:
 
         :param mock_client_class_with_instance: Mock GarminClient class fixture.
         """
-
         # Arrange.
         _mock_class, mock_client_instance = mock_client_class_with_instance
         mock_client_instance.resume_login.side_effect = [
@@ -209,7 +199,6 @@ class TestGarminTokenRefresh:
 
         :param mock_client_class_with_instance: Mock GarminClient class fixture.
         """
-
         # Arrange.
         _mock_class, mock_client_instance = mock_client_class_with_instance
         mock_client_instance.resume_login.side_effect = Exception("Invalid MFA")
@@ -232,7 +221,6 @@ class TestGarminTokenRefresh:
         :param mock_client_class_with_instance: Mock GarminClient class fixture.
         :param tmp_path: Pytest temporary path fixture.
         """
-
         # Arrange.
         mock_class, mock_client_instance = mock_client_class_with_instance
         mock_client_instance.login.return_value = None  # No MFA required.
@@ -261,7 +249,6 @@ class TestGarminTokenRefresh:
         :param mock_client_class_with_instance: Mock GarminClient class fixture.
         :param tmp_path: Pytest temporary path fixture.
         """
-
         # Arrange.
         mock_class, mock_client_instance = mock_client_class_with_instance
         mock_client_instance.login.return_value = ("needs_mfa", "mfa_token")
@@ -294,7 +281,6 @@ class TestGarminTokenRefresh:
         :param mock_client_class_with_instance: Mock GarminClient class fixture.
         :param tmp_path: Pytest temporary path fixture.
         """
-
         # Arrange.
         _mock_class, mock_client_instance = mock_client_class_with_instance
         mock_client_instance.login.side_effect = Exception("401 Unauthorized")
@@ -328,7 +314,6 @@ class TestRefreshTokensMultiAccount:
 
         :return: Mock GarminClient instance.
         """
-
         return MagicMock()
 
     @pytest.fixture
@@ -339,7 +324,6 @@ class TestRefreshTokensMultiAccount:
         :param mock_client_instance: Mock GarminClient instance fixture.
         :return: Tuple of mock class and mock instance.
         """
-
         with patch(
             "dags.pipelines.garmin.utility_scripts.refresh_garmin_tokens.GarminClient"
         ) as mock_class:
@@ -358,7 +342,6 @@ class TestRefreshTokensMultiAccount:
         :param mock_client_class_with_instance: Mock GarminClient class fixture.
         :param tmp_path: Pytest temporary path fixture.
         """
-
         # Arrange.
         _mock_class, mock_client_instance = mock_client_class_with_instance
         mock_client_instance.login.return_value = None  # No MFA required.
@@ -388,7 +371,6 @@ class TestRefreshTokensMultiAccount:
         :param mock_client_class_with_instance: Mock GarminClient class fixture.
         :param tmp_path: Pytest temporary path fixture.
         """
-
         # Arrange.
         _mock_class, mock_client_instance = mock_client_class_with_instance
         mock_client_instance.login.return_value = None  # No MFA required.
@@ -419,7 +401,6 @@ class TestRefreshTokensMultiAccount:
         :param mock_client_class_with_instance: Mock GarminClient class fixture.
         :param tmp_path: Pytest temporary path fixture.
         """
-
         # Arrange.
         _mock_class, mock_client_instance = mock_client_class_with_instance
         mock_client_instance.login.return_value = ("needs_mfa", "mfa_token")

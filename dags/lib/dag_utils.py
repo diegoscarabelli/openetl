@@ -49,7 +49,6 @@ def ingest(config: ETLConfig, **context: dict) -> None:
         This parameter is not used in this function but is included to indicate
         the expected signature for replacement callables that may use it.
     """
-
     # Check existence of target directories.
     for state in [DataState.INGEST, DataState.PROCESS, DataState.STORE]:
         dir_path = getattr(config.data_dirs, state.value)
@@ -101,11 +100,12 @@ def ingest(config: ETLConfig, **context: dict) -> None:
 
 def batch(config: ETLConfig, **context: dict) -> list[tuple[FileSet, ...]]:
     """
-    Construct batches of file sets from the content of the 'process' directory. Intended
-    to be used as a PythonOperator callable in the `batch` Airflow task.
+    Construct batches of file sets from the content of the 'process' directory.
 
-    First, construct file sets by grouping files by their timestamp and matching them
-    to a file type pattern.
+    Intended to be used as a PythonOperator callable in the `batch` Airflow task.
+
+    First, construct file sets by grouping files by their timestamp and matching them to
+    a file type pattern.
 
     Then, split the file sets into batches, which will be processed concurrently
     (sequentially within each batch). The cardinality of file sets in each batch is
@@ -113,13 +113,12 @@ def batch(config: ETLConfig, **context: dict) -> list[tuple[FileSet, ...]]:
     pipeline configuration.
 
     :param config: Configuration parameters for Airflow DAGs and pipeline tasks.
-    :param context: `op_kwargs` passed when defining the task in Airflow plus any
+    :param context:`op_kwargs` passed when defining the task in Airflow plus any
         additional Airflow keyword arguments automatically injected by Airflow. This
         parameter is not used in this function but is included to indicate the expected
         signature for replacement callables that may use it.
     :return: Batched file sets.
     """
-
     # ----------------------------------------------------------------------------------
     # Construct file sets
     # ----------------------------------------------------------------------------------
@@ -245,7 +244,6 @@ class Processor(ABC):
         :param extra_processor_init_kwargs: Additional keyword arguments to be passed to
             the processor class when called by process_wrapper function.
         """
-
         self.config = config
         self.dag_run_id = dag_run_id
         self.dag_start_date = dag_start_date
@@ -257,7 +255,6 @@ class Processor(ABC):
         """
         Initialize the ETLResult object.
         """
-
         self.results = ETLResult(
             config=self.config,
             dag_run_id=self.dag_run_id,
@@ -276,7 +273,6 @@ class Processor(ABC):
         Each file set is processed in its own session/transaction for independence and
         resilience.
         """
-
         pg_engine = get_lens_engine(user=self.config.postgres_user)
 
         # Process each file set in its own session/transaction.
@@ -297,7 +293,6 @@ class Processor(ABC):
 
         :param session: SQLAlchemy Session object.
         """
-
         return
 
     def _try_process_file_set(self, file_set: FileSet, session: Session):
@@ -309,7 +304,6 @@ class Processor(ABC):
         :param file_set: FileSet to process.
         :param session: SQLAlchemy Session object.
         """
-
         try:
             LOGGER.info(f"Processing file set:\n{pformat(file_set.file_paths)}")
             self.process_file_set(file_set=file_set, session=session)
@@ -340,7 +334,6 @@ class Processor(ABC):
         :param file_set: FileSet to process.
         :param session: SQLAlchemy Session object.
         """
-
         raise NotImplementedError
 
 
@@ -352,18 +345,18 @@ def process_wrapper(
     **context,
 ) -> None:
     """
-    Wrapper function to process file sets in a batch. Intended to be used as a
-    PythonOperator callable in each `process` Airflow task assigned to each batch of
-    file sets.
+    Wrapper function to process file sets in a batch.
+
+    Intended to be used as a PythonOperator callable in each `process` Airflow task
+    assigned to each batch of file sets.
 
     :param serialized_file_sets: List of serialized file sets in the batch to process.
     :param config: Configuration parameters for Airflow DAGs and pipeline tasks.
     :param dag_run_id: Unique identifier of the Airflow DAG that executed the ETL task.
     :param dag_start_date: Timestamp indicating when the DAG run started.
-    :param context: `op_kwargs` passed when defining the task in Airflow plus any
+    :param context:`op_kwargs` passed when defining the task in Airflow plus any
         additional Airflow keyword arguments automatically injected by Airflow.
     """
-
     # Deserialize file sets from XCom data.
     file_sets = []
     for serialized_file_set in serialized_file_sets:
@@ -398,20 +391,20 @@ def store(
     **context: dict,
 ) -> None:
     """
-    Move all files from the 'process' directory to the 'store' directory. Files that
-    failed processing (according to the ETLResult persisted to the database) are moved
-    to the 'quarantine' directory. Intended to be used as a PythonOperator callable in
-    the `store` Airflow task.
+    Move all files from the 'process' directory to the 'store' directory.
+
+    Files that failed processing (according to the ETLResult persisted to the database)
+    are moved to the 'quarantine' directory. Intended to be used as a PythonOperator
+    callable in the `store` Airflow task.
 
     :param config: Configuration parameters for Airflow DAGs and pipeline tasks.
     :param dag_run_id: Unique identifier of the Airflow DAG that executed the ETL task.
     :param dag_start_date: Timestamp indicating when the DAG run started.
-    :param context: `op_kwargs` passed when defining the task in Airflow plus any
+    :param context:`op_kwargs` passed when defining the task in Airflow plus any
         additional Airflow keyword arguments automatically injected by Airflow. This
         parameter is not used in this function but is included to indicate the expected
         signature for replacement callables that may use it.
     """
-
     # Check existence of target directories.
     for state in [DataState.PROCESS, DataState.STORE, DataState.QUARANTINE]:
         dir_path = getattr(config.data_dirs, state.value)
@@ -465,7 +458,6 @@ def create_dag(config: ETLConfig, apply_default_task_sequence: bool = True) -> D
         sequence.
     :return: An Airflow DAG object configured with the tasks defined in this module.
     """
-
     dag = DAG(**config.dag_args)
 
     with dag:

@@ -30,11 +30,9 @@ class TestRandomBrowserHeaders:
         """
         The helper always returns a dict containing a User-Agent header.
 
-        ``ua_generator`` (when installed) emits lowercase header names while
-        the static fallback uses the canonical capitalized form, so this check
-        accepts either case.
+        ``ua_generator`` (when installed) emits lowercase header names while the static
+        fallback uses the canonical capitalized form, so this check accepts either case.
         """
-
         # Act.
         headers = _random_browser_headers()
 
@@ -55,7 +53,6 @@ class TestBuildBasicAuth:
         ``_build_basic_auth`` returns ``Basic <base64(client_id:)>`` per the DI OAuth2
         endpoint's expectations.
         """
-
         # Arrange.
         client_id = "GARMIN_TEST_CLIENT"
 
@@ -79,7 +76,6 @@ class TestNativeHeaders:
         Without extras the helper returns the static native Android headers including
         the GCM User-Agent and X-Garmin-User-Agent strings.
         """
-
         # Act.
         headers = _native_headers()
 
@@ -93,7 +89,6 @@ class TestNativeHeaders:
         """
         Extras override defaults when keys collide.
         """
-
         # Arrange.
         extra = {"Authorization": "Bearer abc", "User-Agent": "override"}
 
@@ -117,7 +112,6 @@ class TestModuleConstants:
         The Cloudflare-evading delay should sit in the 30-60s range and have a non-empty
         span (otherwise ``random.uniform`` would always return the same value).
         """
-
         assert 30.0 <= LOGIN_DELAY_MIN_S < LOGIN_DELAY_MAX_S
         assert LOGIN_DELAY_MAX_S <= 60.0
 
@@ -126,7 +120,6 @@ class TestModuleConstants:
         The DI exchange iterates this tuple in order, so it must be non-empty and
         contain only strings.
         """
-
         assert isinstance(DI_CLIENT_IDS, tuple)
         assert len(DI_CLIENT_IDS) >= 1
         assert all(isinstance(cid, str) and cid for cid in DI_CLIENT_IDS)
@@ -135,7 +128,6 @@ class TestModuleConstants:
         """
         The DI token endpoint and grant type are HTTPS URLs at garmin.com.
         """
-
         assert DI_TOKEN_URL.startswith("https://")
         assert "garmin.com" in DI_TOKEN_URL
         assert DI_GRANT_TYPE.startswith("https://")

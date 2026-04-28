@@ -92,7 +92,6 @@ class GarminProcessor(Processor):
         :param file_set: FileSet containing Garmin data files to process.
         :param session: SQLAlchemy Session object.
         """
-
         # Extract `user_id` from the first file and set instance attribute.
         # All files in a file set have same `user_id` and `timestamp`.
         first_file = file_set.file_paths[0]
@@ -178,7 +177,6 @@ class GarminProcessor(Processor):
         :param file_path: Path to the JSON file to load.
         :return: Parsed JSON data as a dictionary.
         """
-
         with open(file_path, "r", encoding="utf-8") as f:
             return json.load(f)
 
@@ -196,7 +194,6 @@ class GarminProcessor(Processor):
         :return: Dictionary with `user_id`, `data_type`, and `timestamp`.
         :raises ValueError: If filename doesn't match expected pattern.
         """
-
         pattern = r"^(\d+)_([A-Z_]+)(?:_\d+)?_([0-9T:\-Z\.]+)\.(json|fit)$"
         match = re.match(pattern, filename)
 
@@ -220,7 +217,6 @@ class GarminProcessor(Processor):
         :param field_name: Field name in camelCase.
         :return: Field name in snake_case.
         """
-
         # Insert underscore before capital letters and convert to lowercase.
         snake_case = re.sub(r"(?<!^)(?=[A-Z])", "_", field_name).lower()
         return snake_case
@@ -235,7 +231,6 @@ class GarminProcessor(Processor):
         :param user_id: User ID to check and create if necessary.
         :param session: SQLAlchemy Session object.
         """
-
         # Check if user exists in user table.
         existing_user = (
             session.execute(select(User).where(User.user_id == int(user_id)))
@@ -246,11 +241,11 @@ class GarminProcessor(Processor):
         if not existing_user:
             # Create minimal user record with conflict handling.
             session.execute(
-                text("""
-                INSERT INTO garmin.user (user_id, full_name, birth_date) 
-                VALUES (:user_id, NULL, NULL) 
-                ON CONFLICT (user_id) DO NOTHING
-            """),
+                text(
+                    "INSERT INTO garmin.user (user_id, full_name, birth_date) "
+                    "VALUES (:user_id, NULL, NULL) "
+                    "ON CONFLICT (user_id) DO NOTHING"
+                ),
                 {"user_id": int(user_id)},
             )
             session.flush()
@@ -274,7 +269,6 @@ class GarminProcessor(Processor):
         :param file_path: Path to the user profile JSON file.
         :param session: SQLAlchemy Session object.
         """
-
         # Load and parse the JSON data.
         data = self._load_json_file(file_path)
         profile_data = data["userData"]
@@ -365,7 +359,6 @@ class GarminProcessor(Processor):
         :param file_path: Path to the activities list JSON file.
         :param session: SQLAlchemy Session object.
         """
-
         # Load and parse the JSON data.
         activities_list = self._load_json_file(file_path)
 
@@ -385,7 +378,6 @@ class GarminProcessor(Processor):
         :param activity_data: Activity data from JSON.
         :param session: SQLAlchemy Session object.
         """
-
         # Determine activity type for sport-specific processing.
         activity_type_key = (
             activity_data.get("activityType", {}).get("typeKey", "").lower()
@@ -429,7 +421,6 @@ class GarminProcessor(Processor):
         :param session: SQLAlchemy Session object.
         :return: Activity ID from the processed record.
         """
-
         # Extract activity ID.
         activity_id = activity_data.pop("activityId")
 
@@ -599,7 +590,6 @@ class GarminProcessor(Processor):
         :param activity_id: Activity ID for foreign key reference.
         :param session: SQLAlchemy Session object.
         """
-
         # Extract fields requiring custom mapping first (all nullable).
         swimming_metrics = {
             "avg_swim_cadence": activity_data.pop(
@@ -649,7 +639,6 @@ class GarminProcessor(Processor):
         :param activity_id: Activity ID for foreign key reference.
         :param session: SQLAlchemy Session object.
         """
-
         # Extract fields requiring custom mapping first (all nullable).
         cycling_metrics = {
             "vo2_max_value": activity_data.pop("vO2MaxValue", None),
@@ -733,7 +722,6 @@ class GarminProcessor(Processor):
         :param activity_id: Activity ID for foreign key reference.
         :param session: SQLAlchemy Session object.
         """
-
         # Extract fields requiring custom mapping first (all nullable).
         running_metrics = {
             "vo2_max_value": activity_data.pop("vO2MaxValue", None),
@@ -806,7 +794,6 @@ class GarminProcessor(Processor):
         :param activity_id: Activity ID for foreign key reference.
         :param session: SQLAlchemy Session object.
         """
-
         # Pop strength-specific fields to prevent supplemental leakage.
         summarized_sets = activity_data.pop("summarizedExerciseSets", None)
         activity_data.pop("totalSets", None)
@@ -867,7 +854,6 @@ class GarminProcessor(Processor):
         :param file_path: Path to the EXERCISE_SETS JSON file.
         :param session: SQLAlchemy Session object.
         """
-
         with open(file_path, "r", encoding="utf-8") as f:
             data = json.load(f)
 
@@ -960,9 +946,7 @@ class GarminProcessor(Processor):
         :param activity_id: Activity ID for foreign key reference.
         :param session: SQLAlchemy Session object.
         """
-
         supplemental_metrics = {}
-
         for field_name, value in activity_data.items():
             # Skip dictionaries and lists (complex nested structures).
             if isinstance(value, (dict, list)):
@@ -1010,10 +994,8 @@ class GarminProcessor(Processor):
         :param file_path: Path to the SLEEP JSON file.
         :param session: SQLAlchemy Session object.
         """
-
         # Load and parse the JSON data.
         sleep_data = self._load_json_file(file_path)
-
         # Process main sleep record to database.
         sleep_id = self._process_sleep_base(sleep_data, session)
 
@@ -1044,7 +1026,6 @@ class GarminProcessor(Processor):
         :param session: SQLAlchemy Session object.
         :return: Sleep ID from the processed record, if the record was created.
         """
-
         # Extract dailySleepDTO section.
         daily_sleep_dto = sleep_data.pop("dailySleepDTO", {})
 
@@ -1277,15 +1258,14 @@ class GarminProcessor(Processor):
         Process sleep stage classification intervals from sleepLevels array.
 
         Each interval is a contiguous segment with a single discrete sleep stage (Deep,
-        Light, REM, Awake). Uses INSERT ... ON CONFLICT DO NOTHING on
-        (sleep_id, start_ts), matching the idempotency pattern of the sibling sleep
-        time-series tables.
+        Light, REM, Awake). Uses INSERT ... ON CONFLICT DO NOTHING on (sleep_id,
+        start_ts), matching the idempotency pattern of the sibling sleep time-series
+        tables.
 
         :param sleep_data: Complete JSON sleep data (modified by pop()).
         :param sleep_id: Sleep session ID.
         :param session: SQLAlchemy Session object.
         """
-
         sleep_levels = sleep_data.pop("sleepLevels", [])
         if not sleep_levels:
             LOGGER.warning("⚠️ No sleep level data found.")
@@ -1335,14 +1315,14 @@ class GarminProcessor(Processor):
         self, sleep_data: dict, sleep_id: int, session: Session
     ):
         """
-        Process sleep movement data from sleepMovement array. Uses pop() to remove
-        processed fields from sleep_data dictionary.
+        Process sleep movement data from sleepMovement array.
+
+        Uses pop() to remove processed fields from sleep_data dictionary.
 
         :param sleep_data: Complete JSON sleep data.
         :param sleep_id: Sleep session ID.
         :param session: SQLAlchemy Session object.
         """
-
         sleep_movement = sleep_data.pop("sleepMovement", [])
         if not sleep_movement:
             return
@@ -1377,14 +1357,14 @@ class GarminProcessor(Processor):
         self, sleep_data: dict, sleep_id: int, session: Session
     ):
         """
-        Process sleep restless moments from sleepRestlessMoments array. Uses pop() to
-        remove processed fields from sleep_data dictionary.
+        Process sleep restless moments from sleepRestlessMoments array.
+
+        Uses pop() to remove processed fields from sleep_data dictionary.
 
         :param sleep_data: Complete JSON sleep data.
         :param sleep_id: Sleep session ID.
         :param session: SQLAlchemy Session object.
         """
-
         restless_moments = sleep_data.pop("sleepRestlessMoments", [])
         if not restless_moments:
             return
@@ -1419,14 +1399,14 @@ class GarminProcessor(Processor):
         self, sleep_data: dict, sleep_id: int, session: Session
     ):
         """
-        Process SpO2 data from wellnessEpochSPO2DataDTOList array. Uses pop() to remove
-        processed fields from sleep_data dictionary.
+        Process SpO2 data from wellnessEpochSPO2DataDTOList array.
+
+        Uses pop() to remove processed fields from sleep_data dictionary.
 
         :param sleep_data: Complete JSON sleep data.
         :param sleep_id: Sleep session ID.
         :param session: SQLAlchemy Session object.
         """
-
         spo2_data = sleep_data.pop("wellnessEpochSPO2DataDTOList", [])
         if not spo2_data:
             LOGGER.warning("⚠️ No SpO2 data found.")
@@ -1462,14 +1442,14 @@ class GarminProcessor(Processor):
         self, sleep_data: dict, sleep_id: int, session: Session
     ):
         """
-        Process HRV data from hrvData array. Uses pop() to remove processed fields from
-        sleep_data dictionary.
+        Process HRV data from hrvData array.
+
+        Uses pop() to remove processed fields from sleep_data dictionary.
 
         :param sleep_data: Complete JSON sleep data.
         :param sleep_id: Sleep session ID.
         :param session: SQLAlchemy Session object.
         """
-
         hrv_data = sleep_data.pop("hrvData", [])
         if not hrv_data:
             LOGGER.warning("⚠️ No HRV data found.")
@@ -1503,14 +1483,14 @@ class GarminProcessor(Processor):
         self, sleep_data: dict, sleep_id: int, session: Session
     ):
         """
-        Process breathing disruption data from breathingDisruptionData array. Uses pop()
-        to remove processed fields from sleep_data dictionary.
+        Process breathing disruption data from breathingDisruptionData array.
+
+        Uses pop() to remove processed fields from sleep_data dictionary.
 
         :param sleep_data: Complete JSON sleep data.
         :param sleep_id: Sleep session ID.
         :param session: SQLAlchemy Session object.
         """
-
         breathing_data = sleep_data.pop("breathingDisruptionData", [])
         if not breathing_data:
             LOGGER.warning("⚠️ No breathing disruption data found.")
@@ -1544,16 +1524,15 @@ class GarminProcessor(Processor):
 
     def _process_training_status(self, file_path: Path, session: Session):
         """
-        Process a TRAINING_STATUS file. Extracts VO2 max data, acclimation metrics, and
-        training load information.
+        Process a TRAINING_STATUS file.
+
+        Extracts VO2 max data, acclimation metrics, and training load information.
 
         :param file_path: Path to the TRAINING_STATUS JSON file.
         :param session: SQLAlchemy Session object.
         """
-
         # Load and parse the JSON data.
         training_status_data = self._load_json_file(file_path)
-
         # Extract and process each data type.
         self._process_vo2_max_and_acclimation(training_status_data, session)
         self._process_training_load(training_status_data, session)
@@ -1569,7 +1548,6 @@ class GarminProcessor(Processor):
         :param training_status_data: Complete JSON training status data.
         :param session: SQLAlchemy Session object.
         """
-
         vo2_max_section = training_status_data.pop("mostRecentVO2Max", {})
         if not vo2_max_section:
             LOGGER.warning("⚠️ No VO2 max data found.")
@@ -1677,7 +1655,6 @@ class GarminProcessor(Processor):
         :param training_status_data: Complete JSON training status data.
         :param session: SQLAlchemy Session object.
         """
-
         balance_record = None
 
         # Extract training load balance data.
@@ -1815,7 +1792,6 @@ class GarminProcessor(Processor):
         :param file_path: Path to the TRAINING_READINESS JSON file.
         :param session: SQLAlchemy Session object.
         """
-
         # Load and parse the JSON data.
         training_readiness_list = self._load_json_file(file_path)
 
@@ -1880,7 +1856,6 @@ class GarminProcessor(Processor):
         :param file_path: Path to the STRESS JSON file.
         :param session: SQLAlchemy Session object.
         """
-
         # Load and parse the JSON data.
         stress_data = self._load_json_file(file_path)
 
@@ -1957,7 +1932,6 @@ class GarminProcessor(Processor):
         :param file_path: Path to the HEART_RATE JSON file.
         :param session: SQLAlchemy Session object.
         """
-
         # Load and parse the JSON data.
         heart_rate_data = self._load_json_file(file_path)
 
@@ -2002,7 +1976,6 @@ class GarminProcessor(Processor):
         :param file_path: Path to the STEPS JSON file.
         :param session: SQLAlchemy Session object.
         """
-
         # Load and parse the JSON data.
         steps_data = self._load_json_file(file_path)
 
@@ -2049,13 +2022,11 @@ class GarminProcessor(Processor):
         :param file_path: Path to the RESPIRATION JSON file.
         :param session: SQLAlchemy Session object.
         """
-
         # Load and parse the JSON data.
         respiration_data = self._load_json_file(file_path)
 
         # Extract respiration timeseries data.
         respiration_values = respiration_data.pop("respirationValuesArray", [])
-
         # Process respiration measurements.
         respiration_records = []
         for respiration_value in respiration_values if respiration_values else []:
@@ -2100,13 +2071,11 @@ class GarminProcessor(Processor):
         :param file_path: Path to the INTENSITY_MINUTES JSON file.
         :param session: SQLAlchemy Session object.
         """
-
         # Load and parse the JSON data.
         intensity_data = self._load_json_file(file_path)
 
         # Extract intensity minutes timeseries data.
         intensity_values = intensity_data.pop("imValuesArray", [])
-
         # Process intensity minute measurements.
         intensity_records = []
         for intensity_value in intensity_values if intensity_values else []:
@@ -2199,13 +2168,11 @@ class GarminProcessor(Processor):
         :param file_path: Path to the FLOORS JSON file.
         :param session: SQLAlchemy Session object.
         """
-
         # Load and parse the JSON data.
         floors_data = self._load_json_file(file_path)
 
         # Extract floors timeseries data.
         floor_values = floors_data.pop("floorValuesArray", [])
-
         # Process floors measurements.
         floors_records = []
         for floor_value in floor_values if floor_values else []:
@@ -2250,7 +2217,6 @@ class GarminProcessor(Processor):
         :param file_path: Path to the PERSONAL_RECORDS JSON file.
         :param session: SQLAlchemy Session object.
         """
-
         # Load and parse the JSON data.
         personal_records_data = self._load_json_file(file_path)
 
@@ -2258,7 +2224,6 @@ class GarminProcessor(Processor):
         all_latest_prs = []
         personal_records = []
         skipped_records_count = 0
-
         for record in personal_records_data if personal_records_data else []:
             type_id = record.pop("typeId")
             activity_id = record.pop("activityId")
@@ -2381,14 +2346,12 @@ class GarminProcessor(Processor):
         :param file_path: Path to the RACE_PREDICTIONS JSON file.
         :param session: SQLAlchemy Session object.
         """
-
         # Load and parse the JSON data.
         race_prediction_data = self._load_json_file(file_path)
 
         if not race_prediction_data:
             LOGGER.warning("⚠️ No race predictions data found.")
             return
-
         # Find all race predictions with `latest`=True for this user.
         latest_race_predictions = (
             session.execute(
@@ -2446,7 +2409,6 @@ class GarminProcessor(Processor):
         :param file_path: Path to the FIT file.
         :param session: SQLAlchemy Session object.
         """
-
         # Extract `activity_id` from filename.
         # FIT files have format: {user_id}_ACTIVITY_{activity_id}_{timestamp}.fit
         # Use regex to extract activity_id directly from filename.

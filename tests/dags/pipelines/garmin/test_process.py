@@ -59,12 +59,11 @@ def _make_test_processor() -> GarminProcessor:
     Construct a minimally-mocked GarminProcessor for unit tests.
 
     Shared by ``TestGarminProcessor.processor`` and
-    ``TestProcessFitSubSecond.processor`` so both classes use an identical
-    instance without duplicating the boilerplate.
+    ``TestProcessFitSubSecond.processor`` so both classes use an identical instance
+    without duplicating the boilerplate.
 
     :return: GarminProcessor instance bound to a mock ETLConfig.
     """
-
     mock_config = MagicMock(spec=ETLConfig)
     with patch("dags.lib.dag_utils.ETLResult"):
         return GarminProcessor(
@@ -88,7 +87,6 @@ class TestGarminProcessor:
 
         :return: Temporary directory path.
         """
-
         with tempfile.TemporaryDirectory() as temp_dir:
             yield Path(temp_dir)
 
@@ -99,7 +97,6 @@ class TestGarminProcessor:
 
         :return: GarminProcessor instance.
         """
-
         return _make_test_processor()
 
     @pytest.fixture
@@ -109,7 +106,6 @@ class TestGarminProcessor:
 
         :return: Mock session.
         """
-
         session = MagicMock()
         session.execute.return_value.scalars.return_value.first.return_value = None
         session.merge.return_value = None
@@ -123,7 +119,6 @@ class TestGarminProcessor:
 
         :return: Sample sleep JSON data.
         """
-
         return {
             "dailySleepDTO": {
                 "id": 123456789,
@@ -218,7 +213,6 @@ class TestGarminProcessor:
 
         :return: Sample user profile JSON data.
         """
-
         return {
             "full_name": "Test User",
             "userData": {
@@ -238,7 +232,6 @@ class TestGarminProcessor:
 
         :return: Sample activity JSON data.
         """
-
         return [
             {
                 "activityId": 987654321,
@@ -280,7 +273,6 @@ class TestGarminProcessor:
 
         :param processor: GarminProcessor fixture.
         """
-
         # Act.
         result = processor._parse_filename("123456789_SLEEP_2022-01-01T00-00-00Z.json")
 
@@ -296,7 +288,6 @@ class TestGarminProcessor:
 
         :param processor: GarminProcessor fixture.
         """
-
         # Act.
         result = processor._parse_filename(
             "123456789_ACTIVITY_987654321_2022-01-01T06-00-00Z.fit"
@@ -314,7 +305,6 @@ class TestGarminProcessor:
 
         :param processor: GarminProcessor fixture.
         """
-
         # Act & Assert.
         with pytest.raises(
             ValueError, match="Filename does not match expected pattern"
@@ -328,7 +318,6 @@ class TestGarminProcessor:
         :param processor: GarminProcessor fixture.
         :param mock_session: Mock session fixture.
         """
-
         # Arrange.
         mock_session.execute.return_value.scalars.return_value.first.return_value = None
 
@@ -347,7 +336,6 @@ class TestGarminProcessor:
         :param processor: GarminProcessor fixture.
         :param mock_session: Mock session fixture.
         """
-
         # Arrange.
         existing_user = User(user_id=123456789, full_name="Test User")
         mock_session.execute.return_value.scalars.return_value.first.return_value = (
@@ -367,7 +355,6 @@ class TestGarminProcessor:
         :param processor: GarminProcessor fixture.
         :param temp_dir: Temporary directory fixture.
         """
-
         # Arrange.
         test_data = {"test": "data"}
         test_file = temp_dir / "test.json"
@@ -386,7 +373,6 @@ class TestGarminProcessor:
 
         :param processor: GarminProcessor fixture.
         """
-
         # Act & Assert.
         assert processor._convert_field_name("camelCase") == "camel_case"
         assert processor._convert_field_name("HTTPResponse") == "h_t_t_p_response"
@@ -463,7 +449,6 @@ class TestGarminProcessor:
         :param processor: GarminProcessor fixture.
         :param mock_session: Mock session fixture.
         """
-
         # Arrange.
         sleep_data = {
             "dailySleepDTO": {
@@ -515,7 +500,6 @@ class TestGarminProcessor:
         :param processor: GarminProcessor fixture.
         :param mock_session: Mock session fixture.
         """
-
         # Arrange: dailySleepDTO without calendarDate.
         sleep_data = {
             "dailySleepDTO": {
@@ -545,7 +529,6 @@ class TestGarminProcessor:
         :param processor: GarminProcessor fixture.
         :param mock_session: Mock session fixture.
         """
-
         # Arrange.
         data = {
             "sleepLevels": [
@@ -621,10 +604,8 @@ class TestGarminProcessor:
         :param processor: GarminProcessor fixture.
         :param mock_session: Mock session fixture.
         """
-
         # Arrange: payload with no sleepLevels key.
         data = {}
-
         # Act.
         processor._process_sleep_level(data, 123456, mock_session)
 
@@ -644,7 +625,6 @@ class TestGarminProcessor:
         :param processor: GarminProcessor fixture.
         :param mock_session: Mock session fixture.
         """
-
         # Arrange: payload with only unknown stage codes.
         data = {
             "sleepLevels": [
@@ -676,7 +656,6 @@ class TestGarminProcessor:
         :param processor: GarminProcessor fixture.
         :param mock_session: Mock session fixture.
         """
-
         # Arrange.
         data = {
             "sleepMovement": [
@@ -707,7 +686,6 @@ class TestGarminProcessor:
         :param processor: GarminProcessor fixture.
         :param mock_session: Mock session fixture.
         """
-
         # Arrange.
         data = {
             "sleepRestlessMoments": [
@@ -738,7 +716,6 @@ class TestGarminProcessor:
         :param processor: GarminProcessor fixture.
         :param mock_session: Mock session fixture.
         """
-
         # Arrange.
         data = {
             "wellnessEpochSPO2DataDTOList": [
@@ -769,7 +746,6 @@ class TestGarminProcessor:
         :param processor: GarminProcessor fixture.
         :param mock_session: Mock session fixture.
         """
-
         # Arrange.
         data = {
             "hrvData": [
@@ -802,7 +778,6 @@ class TestGarminProcessor:
         :param processor: GarminProcessor fixture.
         :param mock_session: Mock session fixture.
         """
-
         # Arrange.
         data = {
             "breathingDisruptionData": [
@@ -835,7 +810,6 @@ class TestGarminProcessor:
         :param temp_dir: Temporary directory fixture.
         :param sample_user_profile_data: Sample user profile data fixture.
         """
-
         # Arrange.
         profile_file = temp_dir / "123456789_USER_PROFILE_2022-01-01T00-00-00Z.json"
         with open(profile_file, "w", encoding="utf-8") as f:
@@ -868,7 +842,6 @@ class TestGarminProcessor:
         :param temp_dir: Temporary directory fixture.
         :param sample_activity_data: Sample activity data fixture.
         """
-
         # Arrange.
         activities_file = (
             temp_dir / "123456789_ACTIVITIES_LIST_2022-01-01T00-00-00Z.json"
@@ -902,7 +875,6 @@ class TestGarminProcessor:
         :param processor: GarminProcessor fixture.
         :param mock_session: Mock session fixture.
         """
-
         # Arrange.
         activity_data = {
             "activityId": 987654321,
@@ -963,7 +935,6 @@ class TestGarminProcessor:
         :param processor: GarminProcessor fixture.
         :param mock_session: Mock session fixture.
         """
-
         # Arrange.
         activity_data = {
             "activityId": 987654321,
@@ -1101,9 +1072,10 @@ class TestGarminProcessor:
         self, mock_upsert, processor, mock_session
     ):
         """
-        Test that _process_activity_base handles missing device-related fields. This
-        ensures that historical activity data files without deviceId, manufacturer, and
-        timeZoneId fields are processed correctly with NULL values.
+        Test that _process_activity_base handles missing device-related fields.
+
+        This ensures that historical activity data files without deviceId, manufacturer,
+        and timeZoneId fields are processed correctly with NULL values.
 
         :param mock_upsert: Mock upsert function.
         :param processor: GarminProcessor fixture.
@@ -1261,9 +1233,10 @@ class TestGarminProcessor:
         self, mock_upsert, processor, mock_session
     ):
         """
-        Test that _process_activity_base handles missing activityName field. This
-        ensures that very old activity data files without activityName are processed
-        correctly with NULL value.
+        Test that _process_activity_base handles missing activityName field.
+
+        This ensures that very old activity data files without activityName are
+        processed correctly with NULL value.
 
         :param mock_upsert: Mock upsert function.
         :param processor: GarminProcessor fixture.
@@ -1333,7 +1306,6 @@ class TestGarminProcessor:
         :param temp_dir: Temporary directory fixture.
         :param sample_sleep_data: Sample sleep data fixture.
         """
-
         # Arrange.
         sleep_file = temp_dir / "123456789_SLEEP_2022-01-01T00-00-00Z.json"
         with open(sleep_file, "w", encoding="utf-8") as f:
@@ -1365,7 +1337,6 @@ class TestGarminProcessor:
 
         :return: Sample steps data list.
         """
-
         return [
             {
                 "startGMT": "2025-08-07T07:00:00.0",
@@ -1414,7 +1385,6 @@ class TestGarminProcessor:
         :param temp_dir: Temporary directory fixture.
         :param sample_steps_data: Sample steps data fixture.
         """
-
         # Arrange.
         steps_file = temp_dir / "15007510_STEPS_2025-08-07T12:00:00Z.json"
         with open(steps_file, "w", encoding="utf-8") as f:
@@ -1450,7 +1420,6 @@ class TestGarminProcessor:
         :param mock_session: Mock session fixture.
         :param temp_dir: Temporary directory fixture.
         """
-
         # Arrange.
         empty_data = []
         steps_file = temp_dir / "15007510_STEPS_2025-08-07T12:00:00Z.json"
@@ -1476,7 +1445,6 @@ class TestGarminProcessor:
         :param temp_dir: Temporary directory fixture.
         :param sample_steps_data: Sample steps data fixture.
         """
-
         # Arrange - add invalid values to the data.
         modified_data = copy.deepcopy(sample_steps_data)
         modified_data.extend(
@@ -1520,7 +1488,6 @@ class TestGarminProcessor:
         :param mock_session: Mock session fixture.
         :param temp_dir: Temporary directory fixture.
         """
-
         # Arrange.
         steps_file = temp_dir / "123456789_STEPS_2022-01-01T00:00:00Z.json"
         steps_file.write_text(
@@ -1550,7 +1517,6 @@ class TestGarminProcessor:
         :param mock_session: Mock session fixture.
         :param temp_dir: Temporary directory fixture.
         """
-
         # Arrange.
         invalid_data = {"otherData": "value"}
         sleep_file = temp_dir / "123456789_SLEEP_2022-01-01T00-00-00Z.json"
@@ -1572,7 +1538,6 @@ class TestGarminProcessor:
 
         :return: Sample training status data dictionary.
         """
-
         return {
             "userId": 15007510,
             "mostRecentVO2Max": {
@@ -1685,7 +1650,6 @@ class TestGarminProcessor:
         :param temp_dir: Temporary directory fixture.
         :param sample_training_status_data: Sample training status data fixture.
         """
-
         # Arrange.
         training_status_file = (
             temp_dir / "15007510_TRAINING_STATUS_2025-08-15T12-00-00Z.json"
@@ -1759,13 +1723,11 @@ class TestGarminProcessor:
         :param mock_session: Mock session fixture.
         :param sample_training_status_data: Sample training status data fixture.
         """
-
         # Act.
         processor.user_id = 1
         processor._process_vo2_max_and_acclimation(
             sample_training_status_data, mock_session
         )
-
         # Assert.
         # VO2Max and Acclimation records are now processed via separate
         # upsert_model_instances calls.
@@ -1831,11 +1793,9 @@ class TestGarminProcessor:
         :param mock_session: Mock session fixture.
         :param sample_training_status_data: Sample training status data fixture.
         """
-
         # Act.
         processor.user_id = 1
         processor._process_training_load(sample_training_status_data, mock_session)
-
         # Assert.
         # Should call upsert twice: once for balance, once for merged status data.
         assert mock_upsert.call_count == 2
@@ -1903,7 +1863,6 @@ class TestGarminProcessor:
         :param mock_session: Mock session fixture.
         :param sample_training_status_data: Sample training status data fixture.
         """
-
         # Arrange - modify data to have different dates.
         modified_data = copy.deepcopy(sample_training_status_data)
         modified_data["mostRecentTrainingStatus"]["latestTrainingStatusData"][
@@ -1946,14 +1905,12 @@ class TestGarminProcessor:
         :param processor: GarminProcessor fixture.
         :param mock_session: Mock session fixture.
         """
-
         # Arrange.
         empty_data = {}
 
         # Act.
         processor.user_id = 1
         processor._process_training_load(empty_data, mock_session)
-
         # Assert.
         mock_upsert.assert_not_called()  # No upsert calls with empty data.
         assert mock_session.merge.call_count == 0  # No merge calls.
@@ -1970,7 +1927,6 @@ class TestGarminProcessor:
         :param mock_session: Mock session fixture.
         :param sample_training_status_data: Sample training status data fixture.
         """
-
         # Arrange - add unexpected data types to balance data.
         modified_data = copy.deepcopy(sample_training_status_data)
         balance_data = modified_data["mostRecentTrainingLoadBalance"][
@@ -2020,7 +1976,6 @@ class TestGarminProcessor:
         :param mock_session: Mock session fixture.
         :param temp_dir: Temporary directory fixture.
         """
-
         # Arrange.
         training_status_file = (
             temp_dir / "123456789_TRAINING_STATUS_2022-01-01T00-00-00Z.json"
@@ -2056,7 +2011,6 @@ class TestGarminProcessor:
 
         :return: Sample training readiness data list.
         """
-
         return [
             {
                 "userProfilePK": 15007510,
@@ -2145,14 +2099,12 @@ class TestGarminProcessor:
         :param temp_dir: Temporary directory fixture.
         :param sample_training_readiness_data: Sample training readiness data fixture.
         """
-
         # Arrange.
         training_readiness_file = (
             temp_dir / "15007510_TRAINING_READINESS_2025-08-07T12:00:00Z.json"
         )
         with open(training_readiness_file, "w", encoding="utf-8") as f:
             json.dump(sample_training_readiness_data, f)
-
         # Mock upsert_model_instances.
         with patch(
             "dags.pipelines.garmin.process.upsert_model_instances"
@@ -2192,13 +2144,11 @@ class TestGarminProcessor:
         :param processor: GarminProcessor fixture.
         :param sample_training_readiness_data: Sample training readiness data fixture.
         """
-
         # Arrange - use first record from sample data.
         single_record = copy.deepcopy(sample_training_readiness_data[0])
 
         # Use the actual file processing logic to test field extraction.
         readiness_data = single_record
-
         # Extract and exclude fields as per implementation.
         readiness_data.pop("userProfilePK", None)
         readiness_data.pop("calendarDate", None)
@@ -2263,7 +2213,6 @@ class TestGarminProcessor:
         :param processor: GarminProcessor fixture.
         :param mock_session: Mock session fixture.
         """
-
         # Arrange.
         empty_data = []
 
@@ -2287,13 +2236,11 @@ class TestGarminProcessor:
         :param processor: GarminProcessor fixture.
         :param mock_session: Mock session fixture.
         """
-
         # Arrange.
         incomplete_data = [
             {"level": "HIGH", "score": 85},  # Missing timestamp.
             {"timestamp": "2025-08-07T12:00:00.0", "level": "LOW", "score": 30},
         ]
-
         # Act.
         with patch(
             "dags.pipelines.garmin.process.upsert_model_instances"
@@ -2319,7 +2266,6 @@ class TestGarminProcessor:
         :param mock_session: Mock session fixture.
         :param temp_dir: Temporary directory fixture.
         """
-
         # Arrange.
         training_readiness_file = (
             temp_dir / "123456789_TRAINING_READINESS_2022-01-01T00-00-00Z.json"
@@ -2330,7 +2276,6 @@ class TestGarminProcessor:
         file_set = FileSet(
             files={GARMIN_FILE_TYPES.TRAINING_READINESS: [training_readiness_file]}
         )
-
         # Mock user existence check.
         mock_session.execute.return_value.scalars.return_value.first.return_value = None
 
@@ -2360,7 +2305,6 @@ class TestGarminProcessor:
         :param processor: GarminProcessor fixture.
         :param mock_session: Mock session fixture.
         """
-
         # Arrange - data with mix of null and non-null values.
         data_with_nulls = [
             {
@@ -2421,7 +2365,6 @@ class TestGarminProcessor:
 
         :return: Sample stress JSON data.
         """
-
         return {
             "stressValuesArray": [
                 [1754550000000, 25],  # Valid stress value.
@@ -2452,7 +2395,6 @@ class TestGarminProcessor:
         :param temp_dir: Temporary directory fixture.
         :param sample_stress_data: Sample stress data fixture.
         """
-
         # Arrange.
         stress_file = temp_dir / "123456789_STRESS_2022-01-01T00-00-00Z.json"
         with open(stress_file, "w", encoding="utf-8") as f:
@@ -2497,7 +2439,6 @@ class TestGarminProcessor:
         :param mock_session: Mock session fixture.
         :param temp_dir: Temporary directory fixture.
         """
-
         # Arrange - data with negative and incomplete values.
         stress_data = {
             "stressValuesArray": [
@@ -2549,7 +2490,6 @@ class TestGarminProcessor:
         :param mock_session: Mock session fixture.
         :param temp_dir: Temporary directory fixture.
         """
-
         # Arrange - focus on body battery data.
         stress_data = {
             "stressValuesArray": [],
@@ -2601,7 +2541,6 @@ class TestGarminProcessor:
         :param mock_session: Mock session fixture.
         :param temp_dir: Temporary directory fixture.
         """
-
         # Arrange - empty arrays.
         stress_data = {
             "stressValuesArray": [],
@@ -2633,7 +2572,6 @@ class TestGarminProcessor:
         :param mock_session: Mock session fixture.
         :param temp_dir: Temporary directory fixture.
         """
-
         # Arrange - missing arrays (pop should handle gracefully).
         stress_data = {"otherData": "no stress or body battery arrays"}
 
@@ -2660,7 +2598,6 @@ class TestGarminProcessor:
         :param temp_dir: Temporary directory fixture.
         :param sample_stress_data: Sample stress data fixture.
         """
-
         # Arrange.
         stress_file = temp_dir / "123456789_STRESS_2022-01-01T00-00-00Z.json"
         with open(stress_file, "w", encoding="utf-8") as f:
@@ -2691,7 +2628,6 @@ class TestGarminProcessor:
         :param mock_session: Mock session fixture.
         :param temp_dir: Temporary directory fixture.
         """
-
         # Arrange.
         stress_file = temp_dir / "123456789_STRESS_2022-01-01T00-00-00Z.json"
         stress_file.write_text(
@@ -2722,7 +2658,6 @@ class TestGarminProcessor:
         """
         Test that Stress and BodyBattery models have correct field mappings.
         """
-
         # Act - create model instances to verify field mappings.
         test_timestamp = datetime.fromtimestamp(1640995200000 / 1000, tz=timezone.utc)
 
@@ -2755,7 +2690,6 @@ class TestGarminProcessor:
 
         :return: Sample heart rate data dictionary.
         """
-
         return {
             "userProfilePK": 15007510,
             "calendarDate": "2025-08-07",
@@ -2790,7 +2724,6 @@ class TestGarminProcessor:
         :param temp_dir: Temporary directory fixture.
         :param sample_heart_rate_data: Sample heart rate data fixture.
         """
-
         # Arrange.
         heart_rate_file = temp_dir / "15007510_HEART_RATE_2025-08-07T12:00:00Z.json"
         with open(heart_rate_file, "w", encoding="utf-8") as f:
@@ -2799,7 +2732,6 @@ class TestGarminProcessor:
         # Act.
         processor.user_id = 1
         processor._process_heart_rate(heart_rate_file, mock_session)
-
         # Assert.
         mock_upsert.assert_called_once()
         _, kwargs = mock_upsert.call_args
@@ -2827,7 +2759,6 @@ class TestGarminProcessor:
         :param mock_session: Mock session fixture.
         :param temp_dir: Temporary directory fixture.
         """
-
         # Arrange.
         data_no_values = {
             "userProfilePK": 15007510,
@@ -2858,7 +2789,6 @@ class TestGarminProcessor:
         :param mock_session: Mock session fixture.
         :param temp_dir: Temporary directory fixture.
         """
-
         # Arrange.
         data_empty_values = {
             "userProfilePK": 15007510,
@@ -2868,7 +2798,6 @@ class TestGarminProcessor:
         heart_rate_file = temp_dir / "15007510_HEART_RATE_2025-08-07T12:00:00Z.json"
         with open(heart_rate_file, "w", encoding="utf-8") as f:
             json.dump(data_empty_values, f)
-
         # Act.
         with patch(
             "dags.pipelines.garmin.process.upsert_model_instances"
@@ -2890,7 +2819,6 @@ class TestGarminProcessor:
         :param temp_dir: Temporary directory fixture.
         :param sample_heart_rate_data: Sample heart rate data fixture.
         """
-
         # Arrange - add invalid values to the data.
         modified_data = copy.deepcopy(sample_heart_rate_data)
         modified_data["heartRateValues"] = [
@@ -2932,7 +2860,6 @@ class TestGarminProcessor:
         :param mock_session: Mock session fixture.
         :param temp_dir: Temporary directory fixture.
         """
-
         # Arrange.
         heart_rate_file = temp_dir / "123456789_HEART_RATE_2022-01-01T00:00:00Z.json"
         heart_rate_file.write_text('{"heartRateValues": [[1640995200000, 65]]}')
@@ -2942,7 +2869,6 @@ class TestGarminProcessor:
 
         # Mock user existence check.
         mock_session.execute.return_value.scalars.return_value.first.return_value = None
-
         # Act.
         with patch.object(
             processor, "_process_heart_rate"
@@ -2962,7 +2888,6 @@ class TestGarminProcessor:
 
         :return: Sample respiration data dictionary.
         """
-
         return {
             "userProfilePK": 15007510,
             "calendarDate": "2025-08-07",
@@ -3022,7 +2947,6 @@ class TestGarminProcessor:
         :param temp_dir: Temporary directory fixture.
         :param sample_respiration_data: Sample respiration data fixture.
         """
-
         # Arrange.
         respiration_file = temp_dir / "15007510_RESPIRATION_2025-08-07T12:00:00Z.json"
         with open(respiration_file, "w", encoding="utf-8") as f:
@@ -3031,7 +2955,6 @@ class TestGarminProcessor:
         # Act.
         processor.user_id = 1
         processor._process_respiration(respiration_file, mock_session)
-
         # Assert.
         mock_upsert.assert_called_once()
         _, kwargs = mock_upsert.call_args
@@ -3062,7 +2985,6 @@ class TestGarminProcessor:
         :param mock_session: Mock session fixture.
         :param temp_dir: Temporary directory fixture.
         """
-
         # Arrange.
         data_no_values = {
             "userProfilePK": 15007510,
@@ -3075,7 +2997,6 @@ class TestGarminProcessor:
         respiration_file = temp_dir / "15007510_RESPIRATION_2025-08-07T12:00:00Z.json"
         with open(respiration_file, "w", encoding="utf-8") as f:
             json.dump(data_no_values, f)
-
         # Act and Assert.
         with patch("dags.lib.logging_utils.LOGGER.warning") as mock_logger:
             processor.user_id = 1
@@ -3090,7 +3011,6 @@ class TestGarminProcessor:
         :param mock_session: Mock session fixture.
         :param temp_dir: Temporary directory fixture.
         """
-
         # Arrange.
         data_empty_values = {
             "userProfilePK": 15007510,
@@ -3101,7 +3021,6 @@ class TestGarminProcessor:
         respiration_file = temp_dir / "15007510_RESPIRATION_2025-08-07T12:00:00Z.json"
         with open(respiration_file, "w", encoding="utf-8") as f:
             json.dump(data_empty_values, f)
-
         # Act and Assert.
         with patch("dags.lib.logging_utils.LOGGER.warning") as mock_logger:
             processor.user_id = 1
@@ -3120,7 +3039,6 @@ class TestGarminProcessor:
         :param mock_session: Mock session fixture.
         :param temp_dir: Temporary directory fixture.
         """
-
         # Arrange.
         data_invalid_values = {
             "userProfilePK": 15007510,
@@ -3168,7 +3086,6 @@ class TestGarminProcessor:
         :param mock_session: Mock session fixture.
         :param temp_dir: Temporary directory fixture.
         """
-
         # Arrange.
         data_no_valid_values = {
             "userProfilePK": 15007510,
@@ -3201,7 +3118,6 @@ class TestGarminProcessor:
         :param mock_session: Mock session fixture.
         :param temp_dir: Temporary directory fixture.
         """
-
         # Arrange.
         respiration_file = temp_dir / "123456789_RESPIRATION_2025-08-07T12:00:00Z.json"
         minimal_data = {
@@ -3238,7 +3154,6 @@ class TestGarminProcessor:
         :param mock_session: Mock session fixture.
         :param temp_dir: Temporary directory fixture.
         """
-
         # Arrange.
         intensity_data = {
             "userProfilePK": 15007510,
@@ -3309,7 +3224,6 @@ class TestGarminProcessor:
         :param mock_session: Mock session fixture.
         :param temp_dir: Temporary directory fixture.
         """
-
         # Arrange.
         data_no_values = {
             "userProfilePK": 15007510,
@@ -3324,7 +3238,6 @@ class TestGarminProcessor:
         )
         with open(intensity_file, "w", encoding="utf-8") as f:
             json.dump(data_no_values, f)
-
         # Act and Assert.
         with patch("dags.lib.logging_utils.LOGGER.warning") as mock_logger:
             processor.user_id = 1
@@ -3352,7 +3265,6 @@ class TestGarminProcessor:
         :param mock_session: Mock session fixture.
         :param temp_dir: Temporary directory fixture.
         """
-
         # Arrange.
         data_invalid_values = {
             "userProfilePK": 15007510,
@@ -3406,7 +3318,6 @@ class TestGarminProcessor:
         :param mock_session: Mock session fixture.
         :param temp_dir: Temporary directory fixture.
         """
-
         # Arrange.
         intensity_file = (
             temp_dir / "123456789_INTENSITY_MINUTES_2025-08-07T12:00:00Z.json"
@@ -3447,7 +3358,6 @@ class TestGarminProcessor:
         :param mock_session: Mock session fixture.
         :param temp_dir: Temporary directory fixture.
         """
-
         # Arrange.
         floors_data = {
             "userProfilePK": 15007510,
@@ -3503,7 +3413,6 @@ class TestGarminProcessor:
         :param mock_session: Mock session fixture.
         :param temp_dir: Temporary directory fixture.
         """
-
         # Arrange.
         floors_data = {
             "userProfilePK": 15007510,
@@ -3518,7 +3427,6 @@ class TestGarminProcessor:
         # Act.
         processor.user_id = 1
         processor._process_floors(floors_file, mock_session)
-
         # Assert.
         mock_upsert.assert_not_called()
 
@@ -3534,7 +3442,6 @@ class TestGarminProcessor:
         :param mock_session: Mock session fixture.
         :param temp_dir: Temporary directory fixture.
         """
-
         # Arrange.
         floors_data = {
             "userProfilePK": 15007510,
@@ -3569,7 +3476,6 @@ class TestGarminProcessor:
         :param mock_session: Mock session fixture.
         :param temp_dir: Temporary directory fixture.
         """
-
         # Arrange.
         floors_file = temp_dir / "123456789_FLOORS_2025-08-07T12:00:00Z.json"
         minimal_data = {
@@ -3600,7 +3506,6 @@ class TestGarminProcessor:
         """
         Sample personal records data for testing.
         """
-
         return [
             {
                 "id": 2071637774,
@@ -3661,7 +3566,6 @@ class TestGarminProcessor:
         """
         Test _process_personal_records with complete personal records data.
         """
-
         # Arrange.
         pr_file = temp_dir / "123456789_PERSONAL_RECORDS_2025-08-07T12:00:00Z.json"
         with open(pr_file, "w", encoding="utf-8") as f:
@@ -3674,7 +3578,6 @@ class TestGarminProcessor:
         def mock_execute_side_effect(stmt):
             result_mock = MagicMock()
             entity = stmt.column_descriptions[0]["entity"]
-
             if entity == Activity:
                 # Mock Activity queries - all activities exist for this test.
                 result_mock.scalars.return_value.first.return_value = (
@@ -3731,7 +3634,6 @@ class TestGarminProcessor:
         """
         Test _process_personal_records with latest flag management.
         """
-
         # Arrange.
         sample_data = [
             {
@@ -3748,7 +3650,6 @@ class TestGarminProcessor:
 
         user_id = 1
         processor.user_id = user_id
-
         # Mock existing latest records.
         existing_record1 = MagicMock()
         existing_record1.latest = True
@@ -3792,7 +3693,6 @@ class TestGarminProcessor:
         """
         Test _process_personal_records with missing essential data.
         """
-
         # Arrange.
         incomplete_data = [
             {"typeId": 3, "activityId": 12345},  # Missing prStartTimeGmt and value.
@@ -3806,7 +3706,6 @@ class TestGarminProcessor:
         pr_file = temp_dir / "123456789_PERSONAL_RECORDS_2025-08-07T12:00:00Z.json"
         with open(pr_file, "w", encoding="utf-8") as f:
             json.dump(incomplete_data, f)
-
         user_id = 1
         processor.user_id = user_id
 
@@ -3820,7 +3719,6 @@ class TestGarminProcessor:
         """
         Test _process_personal_records with invalid JSON format.
         """
-
         # Arrange.
         pr_file = temp_dir / "123456789_PERSONAL_RECORDS_2025-08-07T12:00:00Z.json"
         with open(pr_file, "w", encoding="utf-8") as f:
@@ -3839,7 +3737,6 @@ class TestGarminProcessor:
         """
         Test _process_personal_records with unknown type_id.
         """
-
         # Arrange.
         sample_data = [
             {
@@ -3896,7 +3793,6 @@ class TestGarminProcessor:
         """
         Test that PERSONAL_RECORDS files are properly routed to processing method.
         """
-
         # Arrange.
         pr_file = temp_dir / "123456789_PERSONAL_RECORDS_2025-08-07T12:00:00Z.json"
         with open(pr_file, "w", encoding="utf-8") as f:
@@ -3920,7 +3816,6 @@ class TestGarminProcessor:
         """
         Test that personal record type labels are correctly mapped.
         """
-
         # Verify some key mappings from the prompt.
         assert PR_TYPE_LABELS[1] == "Run: 1 km"
         assert PR_TYPE_LABELS[3] == "Run: 5 km"
@@ -3939,7 +3834,6 @@ class TestGarminProcessor:
         activity IDs that don't exist in the database yet, ensuring proper handling by
         skipping those records and logging appropriate warnings.
         """
-
         # Arrange.
         sample_data = [
             {
@@ -4038,7 +3932,6 @@ class TestGarminProcessor:
         exist in the database, ensuring all records are skipped with appropriate
         logging.
         """
-
         # Arrange.
         sample_data = [
             {
@@ -4112,7 +4005,6 @@ class TestGarminProcessor:
         Steps records should have activity_id set to NULL since they represent
         daily/weekly/monthly aggregates not tied to specific activities.
         """
-
         # Arrange.
         sample_data = [
             {
@@ -4218,7 +4110,6 @@ class TestGarminProcessor:
         """
         Sample race predictions data for testing.
         """
-
         return {
             "userId": 15007510,
             "fromCalendarDate": None,
@@ -4242,7 +4133,6 @@ class TestGarminProcessor:
         """
         Test _process_race_predictions with complete race predictions data.
         """
-
         # Arrange.
         rp_file = temp_dir / "123456789_RACE_PREDICTIONS_2025-08-07T12:00:00Z.json"
         with open(rp_file, "w", encoding="utf-8") as f:
@@ -4286,7 +4176,6 @@ class TestGarminProcessor:
         """
         Test _process_race_predictions with latest flag management.
         """
-
         # Arrange.
         sample_data = {
             "calendarDate": "2025-08-08",
@@ -4336,7 +4225,6 @@ class TestGarminProcessor:
         """
         Test _process_race_predictions with missing calendar date raises KeyError.
         """
-
         # Arrange.
         sample_data = {
             "time5K": 1200,
@@ -4361,7 +4249,6 @@ class TestGarminProcessor:
         """
         Test that RACE_PREDICTIONS files are routed correctly.
         """
-
         # Arrange.
         rp_file = temp_dir / "123456789_RACE_PREDICTIONS_2025-08-07T12:00:00Z.json"
         with open(rp_file, "w", encoding="utf-8") as f:
@@ -4388,7 +4275,6 @@ class TestGarminProcessor:
         """
         Test _process_race_predictions with partial race time data.
         """
-
         # Arrange.
         sample_data = {
             "calendarDate": "2025-08-08",
@@ -4405,7 +4291,6 @@ class TestGarminProcessor:
 
         # Mock no existing records.
         mock_session.execute.return_value.scalars.return_value.all.return_value = []
-
         # Act.
         processor._process_race_predictions(rp_file, mock_session)
 
@@ -4430,7 +4315,6 @@ class TestGarminProcessor:
         """
         Create mock FIT frame for testing.
         """
-
         frame = MagicMock()
         frame.frame_type = 4  # fitdecode.FIT_FRAME_DATA
         frame.name = "record"
@@ -4442,7 +4326,6 @@ class TestGarminProcessor:
         """
         Create mock FIT field for testing.
         """
-
         field = MagicMock()
         field.name = "heart_rate"
         field.value = 150
@@ -4453,7 +4336,6 @@ class TestGarminProcessor:
         """
         Test successful FIT file processing.
         """
-
         # Arrange.
         activity_id = 12345
         fit_file = (
@@ -4464,7 +4346,6 @@ class TestGarminProcessor:
         # Mock existing activity.
         mock_activity = MagicMock()
         mock_activity.activity_id = activity_id
-
         mock_session.execute.return_value.scalars.return_value.first.return_value = (
             mock_activity
         )
@@ -4509,7 +4390,6 @@ class TestGarminProcessor:
         Reprocessing should delete existing metrics and insert fresh data. This is the
         core fix for the UNIQUE constraint violation (#14).
         """
-
         # Arrange.
         activity_id = 12345
         fit_file = (
@@ -4572,7 +4452,6 @@ class TestGarminProcessor:
         """
         Test FIT file processing when activity doesn't exist.
         """
-
         # Arrange.
         activity_id = 12345
         fit_file = (
@@ -4590,7 +4469,6 @@ class TestGarminProcessor:
         """
         Test FIT file processing with invalid filename.
         """
-
         # Arrange.
         fit_file = temp_dir / "invalid_filename.fit"
         fit_file.write_bytes(b"dummy fit data")
@@ -4607,7 +4485,6 @@ class TestGarminProcessor:
         """
         Test that FIT file processing filters out UNKNOWN fields.
         """
-
         # Arrange.
         activity_id = 12345
         fit_file = (
@@ -4625,7 +4502,6 @@ class TestGarminProcessor:
         mock_timestamp_field = MagicMock()
         mock_timestamp_field.name = "timestamp"
         mock_timestamp_field.value = datetime(2025, 8, 7, 14, 30, tzinfo=timezone.utc)
-
         mock_valid_field = MagicMock()
         mock_valid_field.name = "heart_rate"
         mock_valid_field.value = 150
@@ -4661,7 +4537,6 @@ class TestGarminProcessor:
         """
         Test FIT file processing raises fitdecode errors.
         """
-
         # Arrange.
         activity_id = 12345
         fit_file = (
@@ -4686,7 +4561,6 @@ class TestGarminProcessor:
         """
         Test that process_file_set handles FIT files after JSON files.
         """
-
         # Arrange.
         json_file = temp_dir / "15007510_USER_PROFILE_2025-08-07T12:00:00Z.json"
         json_file.write_text(
@@ -4723,7 +4597,6 @@ class TestGarminProcessor:
         """
         Test FIT file processing with lap frames.
         """
-
         # Arrange.
         activity_id = 12345
         fit_file = (
@@ -4796,7 +4669,6 @@ class TestGarminProcessor:
         """
         Test FIT file processing with split frames.
         """
-
         # Arrange.
         activity_id = 12345
         fit_file = (
@@ -4879,7 +4751,6 @@ class TestGarminProcessor:
         """
         Test FIT file processing with lap frames containing array fields.
         """
-
         # Arrange.
         activity_id = 12345
         fit_file = (
@@ -4946,7 +4817,6 @@ class TestGarminProcessor:
         """
         Test FIT file processing with split frames containing array fields.
         """
-
         # Arrange.
         activity_id = 12345
         fit_file = (
@@ -5009,7 +4879,6 @@ class TestGarminProcessor:
         """
         Test FIT file processing with multiple lap and split frames.
         """
-
         # Arrange.
         activity_id = 12345
         fit_file = (
@@ -5136,7 +5005,6 @@ class TestGarminProcessor:
         """
         Test FIT file processing error handling for lap and split frames.
         """
-
         # Arrange.
         activity_id = 12345
         fit_file = (
@@ -5197,7 +5065,6 @@ class TestGarminProcessor:
         UNIQUE constraint violations on re-runs. Delete+insert ensures idempotent
         reprocessing regardless of which frame types are present.
         """
-
         # Arrange.
         activity_id = 12345
         fit_file = (
@@ -5248,7 +5115,6 @@ class TestGarminProcessor:
         points sorted ascending by timestamp. Records are emitted out of timestamp order
         to verify the explicit sort.
         """
-
         # Arrange.
         activity_id = 12345
         fit_file = (
@@ -5338,7 +5204,6 @@ class TestGarminProcessor:
         activity_path delete must still fire so any stale row from a prior reprocess is
         cleaned up.
         """
-
         # Arrange.
         activity_id = 12345
         fit_file = (
@@ -5411,7 +5276,6 @@ class TestGarminProcessor:
         A timestamp with only one of position_lat / position_long is dropped from the
         path; only timestamps with BOTH coordinates contribute a point.
         """
-
         # Arrange.
         activity_id = 12345
         fit_file = (
@@ -5489,7 +5353,6 @@ class TestGarminProcessor:
         Two record frames sharing the same timestamp must each contribute their own
         point to the path; the per-frame capture must not overwrite earlier samples.
         """
-
         # Arrange.
         activity_id = 12345
         fit_file = (
@@ -5579,7 +5442,6 @@ class TestGarminProcessor:
         :param processor: GarminProcessor fixture.
         :param mock_session: Mock session fixture.
         """
-
         # Arrange.
         activity_data = {
             "summarizedExerciseSets": [
@@ -5666,7 +5528,6 @@ class TestGarminProcessor:
         :param processor: GarminProcessor fixture.
         :param mock_session: Mock session fixture.
         """
-
         # Arrange.
         activity_data = {
             "summarizedExerciseSets": [
@@ -5692,10 +5553,8 @@ class TestGarminProcessor:
             "activeSets": 6,
             "totalReps": 45,
         }
-
         # Act.
         processor._process_strength_metrics(activity_data, 12345, mock_session)
-
         # Assert - only 1 record added (2 skipped for missing PK fields).
         mock_session.add_all.assert_called_once()
         records = mock_session.add_all.call_args[0][0]
@@ -5709,7 +5568,6 @@ class TestGarminProcessor:
         :param processor: GarminProcessor fixture.
         :param mock_session: Mock session fixture.
         """
-
         # Arrange.
         activity_data = {
             "totalSets": 0,
@@ -5761,7 +5619,6 @@ class TestGarminProcessor:
         :param processor: GarminProcessor fixture.
         :param mock_session: Mock session fixture.
         """
-
         # Arrange.
         processor.user_id = 123456789
         activity_data = {
@@ -5820,7 +5677,6 @@ class TestGarminProcessor:
         :param mock_session: Mock session fixture.
         :param temp_dir: Temporary directory fixture.
         """
-
         # Arrange.
         exercise_sets_data = {
             "activityId": 22320029355,
@@ -5943,7 +5799,6 @@ class TestGarminProcessor:
         :param mock_session: Mock session fixture.
         :param temp_dir: Temporary directory fixture.
         """
-
         # Arrange.
         exercise_sets_data = {
             "activityId": 22320029355,
@@ -5990,7 +5845,6 @@ class TestGarminProcessor:
         :param mock_session: Mock session fixture.
         :param temp_dir: Temporary directory fixture.
         """
-
         # Arrange.
         data = {"activityId": 12345, "exerciseSets": None}
         file_path = temp_dir / "123_EXERCISE_SETS_12345_2025-03-27.json"
@@ -6016,7 +5870,6 @@ class TestProcessFitSubSecond:
         """
         Create temporary directory for testing.
         """
-
         with tempfile.TemporaryDirectory() as td:
             yield Path(td)
 
@@ -6025,7 +5878,6 @@ class TestProcessFitSubSecond:
         """
         Create mock SQLAlchemy session for testing.
         """
-
         session = MagicMock()
         return session
 
@@ -6034,7 +5886,6 @@ class TestProcessFitSubSecond:
         """
         Create a GarminProcessor instance via the shared module-level helper.
         """
-
         return _make_test_processor()
 
     def test_fractional_timestamp_preserves_subsecond_precision(
@@ -6045,7 +5896,6 @@ class TestProcessFitSubSecond:
         values produce two distinct rows with sub-second precision (no UNIQUE constraint
         collision).
         """
-
         # Arrange.
         activity_id = 12345
         fit_file = (
@@ -6115,7 +5965,6 @@ class TestProcessFitSubSecond:
 
         Prevents UNIQUE constraint failure on (activity_id, timestamp, name).
         """
-
         activity_id = 12345
         fit_file = (
             temp_dir / f"15007510_ACTIVITY_{activity_id}_2025-08-07T12:00:00Z.fit"

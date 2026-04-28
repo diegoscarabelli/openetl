@@ -53,9 +53,9 @@ class UserProfile(InsertBase):
     """
     User fitness profile data from Garmin Connect.
 
-    Contains physical characteristics and fitness metrics. The latest column
-    indicates the most recent profile record for each user. Multiple records
-    can exist per `user_id`, but only one can have `latest`=True.
+    Contains physical characteristics and fitness metrics. The latest column indicates
+    the most recent profile record for each user. Multiple records can exist per
+    `user_id`, but only one can have `latest`=True.
     """
 
     __tablename__ = "user_profile"
@@ -912,12 +912,12 @@ class ActivityPath(InsertBase):
     """
     Eagerly materialized GPS path for activities.
 
-    Stores a deck.gl-compatible coordinate array built from per-timestamp GPS samples
-    in `ActivityTsMetric` during FIT file processing. One row per activity that has
-    GPS data; activities without GPS samples (indoor workouts, etc.) have no row.
-    Uses delete+insert in `_process_fit_file` for reprocessing idempotency. Stored
-    as JSONB; Superset's virtual dataset casts to text so the legacy DeckPathViz
-    path layer receives a JSON string.
+    Stores a deck.gl-compatible coordinate array built from per-timestamp GPS samples in
+    `ActivityTsMetric` during FIT file processing. One row per activity that has GPS
+    data; activities without GPS samples (indoor workouts, etc.) have no row. Uses
+    delete+insert in `_process_fit_file` for reprocessing idempotency. Stored as JSONB;
+    Superset's virtual dataset casts to text so the legacy DeckPathViz path layer
+    receives a JSON string.
     """
 
     __tablename__ = "activity_path"
