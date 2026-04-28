@@ -8,14 +8,6 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
-- **Garmin extraction: failure isolation, retries, and ACTIVITIES_LIST disk-read** ([#134](https://github.com/diegoscarabelli/openetl/issues/134)): back-port of the Garmin pipeline hardening from [garmin-health-data#38](https://github.com/diegoscarabelli/garmin-health-data/pull/38). The Garmin extract task now isolates failures at three levels (per-date, per-data-type, per-activity), retries transient network errors with exponential backoff (2s → 8s → 30s, 4 attempts), and reads the saved `ACTIVITIES_LIST` JSON from `ingest/` instead of re-calling `get_activities_by_date` for every multi-day extract.
-  - `_with_retries(fn, *args, **kwargs)` helper wraps every Garmin API call (per-day data, NO_DATE types, activity-list fetch, activity download, exercise-sets fetch) for transient-error absorption.
-  - Per-date isolation in `_extract_day_by_day` (renamed from `_process_day_by_day`): one failed day no longer aborts the rest of the date range.
-  - Per-data-type isolation in `extract_garmin_data`: one failed type no longer aborts the rest of the account.
-  - Per-activity isolation in `extract_fit_activities`: any exception on one activity download is logged with the activity ID; the loop continues. The `get_activities_by_date` call is wrapped so a list-fetch failure records an `ACTIVITIES_LIST` failure cleanly instead of silently producing zero activities.
-  - `_load_activities_list_from_disk()` reads and merges all per-day `ACTIVITIES_LIST_<date>.json` files, deduping by `activityId`. Falls back to a live API call if any file is unreadable.
-  - End-of-task summary lists every per-data-type / per-date / per-activity failure (capped at 5 per type) so the Airflow log surfaces what was skipped.
-
 - **Garmin strength training data** ([#113](https://github.com/diegoscarabelli/openetl/issues/113), [#114](https://github.com/diegoscarabelli/openetl/pull/114)): First-class support for strength training activities with two new tables and a new API data source.
   - `garmin.strength_exercise`: Per-exercise aggregates (sets, reps, volume, duration, max weight) derived from `summarizedExerciseSets` in the activities list.
   - `garmin.strength_set`: Per-set granular data (set type, duration, reps, weight, ML-classified exercise name/category) from the `/activity-service/activity/{id}/exerciseSets` API endpoint.
@@ -50,6 +42,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   ```bash
   psql -U postgres -d lens -f dags/iam.sql
   ```
+
+- **Garmin extraction: failure isolation, retries, and ACTIVITIES_LIST disk-read** ([#134](https://github.com/diegoscarabelli/openetl/issues/134)): back-port of the Garmin pipeline hardening from [garmin-health-data#38](https://github.com/diegoscarabelli/garmin-health-data/pull/38). The Garmin extract task now isolates failures at three levels (per-date, per-data-type, per-activity), retries transient network errors with exponential backoff (2s → 8s → 30s, 4 attempts), and reads the saved `ACTIVITIES_LIST` JSON from `ingest/` instead of re-calling `get_activities_by_date` for every multi-day extract.
+  - `_with_retries(fn, *args, **kwargs)` helper wraps every Garmin API call (per-day data, NO_DATE types, activity-list fetch, activity download, exercise-sets fetch) for transient-error absorption.
+  - Per-date isolation in `_extract_day_by_day` (renamed from `_process_day_by_day`): one failed day no longer aborts the rest of the date range.
+  - Per-data-type isolation in `extract_garmin_data`: one failed type no longer aborts the rest of the account.
+  - Per-activity isolation in `extract_fit_activities`: any exception on one activity download is logged with the activity ID; the loop continues. The `get_activities_by_date` call is wrapped so a list-fetch failure records an `ACTIVITIES_LIST` failure cleanly instead of silently producing zero activities.
+  - `_load_activities_list_from_disk()` reads and merges all per-day `ACTIVITIES_LIST_<date>.json` files, deduping by `activityId`. Falls back to a live API call if any file is unreadable.
+  - End-of-task summary lists every per-data-type / per-date / per-activity failure (capped at 5 per type) so the Airflow log surfaces what was skipped.
 
 ### Fixed
 

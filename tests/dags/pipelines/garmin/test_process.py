@@ -54,6 +54,27 @@ from dags.pipelines.garmin.sqla_models import (
 )
 
 
+def _make_test_processor() -> GarminProcessor:
+    """
+    Construct a minimally-mocked GarminProcessor for unit tests.
+
+    Shared by ``TestGarminProcessor.processor`` and
+    ``TestProcessFitSubSecond.processor`` so both classes use an identical
+    instance without duplicating the boilerplate.
+
+    :return: GarminProcessor instance bound to a mock ETLConfig.
+    """
+
+    mock_config = MagicMock(spec=ETLConfig)
+    with patch("dags.lib.dag_utils.ETLResult"):
+        return GarminProcessor(
+            config=mock_config,
+            dag_run_id="test_run_123",
+            dag_start_date=datetime(2022, 1, 1),
+            file_sets=[],
+        )
+
+
 # pylint: disable=protected-access,too-many-public-methods
 class TestGarminProcessor:
     """
@@ -79,16 +100,7 @@ class TestGarminProcessor:
         :return: GarminProcessor instance.
         """
 
-        # Create mock config.
-        mock_config = MagicMock(spec=ETLConfig)
-
-        with patch("dags.lib.dag_utils.ETLResult"):
-            return GarminProcessor(
-                config=mock_config,
-                dag_run_id="test_run_123",
-                dag_start_date=datetime(2022, 1, 1),
-                file_sets=[],
-            )
+        return _make_test_processor()
 
     @pytest.fixture
     def mock_session(self) -> MagicMock:
@@ -6020,18 +6032,10 @@ class TestProcessFitSubSecond:
     @pytest.fixture
     def processor(self) -> GarminProcessor:
         """
-        Create a GarminProcessor instance, matching the construction used by
-        TestGarminProcessor.processor.
+        Create a GarminProcessor instance via the shared module-level helper.
         """
 
-        mock_config = MagicMock(spec=ETLConfig)
-        with patch("dags.lib.dag_utils.ETLResult"):
-            return GarminProcessor(
-                config=mock_config,
-                dag_run_id="test_run_123",
-                dag_start_date=datetime(2022, 1, 1),
-                file_sets=[],
-            )
+        return _make_test_processor()
 
     def test_fractional_timestamp_preserves_subsecond_precision(
         self, processor, mock_session, temp_dir
