@@ -5,6 +5,10 @@ venv:
 	if [ ! -d ".venv" ]; then python -m venv .venv; fi
 	$(PIP) install -q -r requirements_dev.txt
 
+# Explicit subdirs for per-file Python formatters (autoflake/docformatter/black).
+# Do NOT change to ".": docformatter's recursive walk has a bug where hitting
+# .venv calls `break` and aborts the whole walk, returning 0 files (treated as
+# FormatResult.error → exit 1). Add new top-level Python packages here.
 PY_DIRS = dags tests iac
 
 format: venv
