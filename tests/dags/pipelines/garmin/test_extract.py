@@ -44,7 +44,6 @@ class TestGarminExtractor:
 
         :return: Temporary directory path.
         """
-
         with tempfile.TemporaryDirectory() as temp_dir:
             yield Path(temp_dir)
 
@@ -56,7 +55,6 @@ class TestGarminExtractor:
         :param temp_dir: Temporary directory fixture.
         :return: GarminExtractor instance.
         """
-
         return GarminExtractor(
             start_date=date(2025, 1, 1),
             end_date=date(2025, 1, 3),
@@ -70,7 +68,6 @@ class TestGarminExtractor:
 
         :return: Mock Garmin client.
         """
-
         mock_client = MagicMock()
         mock_client.full_name = "Test User"
         mock_client.get_user_profile.return_value = {"id": "123456789"}
@@ -82,7 +79,6 @@ class TestGarminExtractor:
 
         :param temp_dir: Temporary directory fixture.
         """
-
         # Act.
         extractor = GarminExtractor(
             start_date=date(2025, 1, 1),
@@ -110,7 +106,6 @@ class TestGarminExtractor:
         :param extractor: GarminExtractor fixture.
         :param mock_garmin_client: Mock GarminClient instance fixture.
         """
-
         # Arrange.
         mock_garmin_client_class.from_tokens.return_value = mock_garmin_client
 
@@ -136,7 +131,6 @@ class TestGarminExtractor:
         :param mock_garmin_client_class: Mock GarminClient class.
         :param extractor: GarminExtractor fixture.
         """
-
         # Arrange.
         mock_garmin_client_class.from_tokens.side_effect = Exception("401 Unauthorized")
 
@@ -154,7 +148,6 @@ class TestGarminExtractor:
         :param mock_logger: Mock logger.
         :param extractor: GarminExtractor fixture.
         """
-
         # Act.
         result = extractor._get_data_types_to_extract([])
 
@@ -174,7 +167,6 @@ class TestGarminExtractor:
         :param mock_garmin_client: Mock Garmin client fixture.
         :param temp_dir: Temporary directory fixture.
         """
-
         # Arrange.
         extractor.garmin_client = mock_garmin_client
         extractor.user_id = "123456789"
@@ -216,7 +208,6 @@ class TestGarminExtractor:
         :param mock_logger: Mock logger.
         :param extractor: GarminExtractor fixture.
         """
-
         # Arrange.
         extractor.data_types = []
 
@@ -245,7 +236,6 @@ class TestGarminExtractor:
         :param extractor: GarminExtractor fixture.
         :param mock_garmin_client: Mock Garmin client fixture.
         """
-
         # Arrange.
         extractor.garmin_client = mock_garmin_client
         extractor.user_id = "123456789"
@@ -288,7 +278,6 @@ class TestGarminExtractor:
         :param extractor: GarminExtractor fixture.
         :param mock_garmin_client: Mock Garmin client fixture.
         """
-
         # Arrange.
         extractor.garmin_client = mock_garmin_client
         extractor.user_id = "123456789"
@@ -333,7 +322,6 @@ class TestGarminExtractor:
         :param extractor: GarminExtractor fixture.
         :param mock_garmin_client: Mock Garmin client fixture.
         """
-
         # Arrange.
         extractor.garmin_client = mock_garmin_client
         extractor.user_id = "123456789"
@@ -365,7 +353,6 @@ class TestGarminExtractor:
         :param extractor: GarminExtractor fixture.
         :param temp_dir: Temporary directory fixture.
         """
-
         # Arrange.
         extractor.user_id = "123456789"
         data = {"sleepScores": [], "date": "2025-01-01"}
@@ -411,7 +398,6 @@ class TestGarminExtractor:
         :param mock_garmin_client: Mock Garmin client fixture.
         :param temp_dir: Temporary directory fixture.
         """
-
         # Arrange.
         extractor.garmin_client = mock_garmin_client
         extractor.user_id = "123456789"
@@ -480,7 +466,6 @@ class TestGarminExtractor:
         :param extractor: GarminExtractor fixture.
         :param mock_garmin_client: Mock Garmin client fixture.
         """
-
         # Arrange.
         extractor.garmin_client = mock_garmin_client
         mock_garmin_client.get_activities_by_date.return_value = []
@@ -508,7 +493,6 @@ class TestGarminExtractor:
         :param mock_garmin_client: Mock Garmin client fixture.
         :param temp_dir: Temporary directory fixture.
         """
-
         # Arrange.
         extractor.garmin_client = mock_garmin_client
         extractor.user_id = "123456789"
@@ -552,7 +536,6 @@ class TestGarminExtractor:
         :param mock_garmin_client: Mock Garmin client fixture.
         :param temp_dir: Temporary directory fixture.
         """
-
         # Arrange.
         extractor.garmin_client = mock_garmin_client
         extractor.user_id = "123456789"
@@ -595,7 +578,6 @@ class TestExtractFunction:
         :param tmp_path: Pytest temporary path fixture.
         :return: Mock ETL config.
         """
-
         return MagicMock(data_dirs=MagicMock(ingest=tmp_path))
 
     @patch("dags.pipelines.garmin.extract.discover_accounts")
@@ -612,7 +594,6 @@ class TestExtractFunction:
         :param mock_discover: Mock discover_accounts function.
         :param mock_config: Mock ETL config.
         """
-
         # Arrange.
         mock_discover.return_value = [("123456789", Path("/fake/token/dir"))]
 
@@ -651,7 +632,6 @@ class TestExtractFunction:
         :param mock_discover: Mock discover_accounts function.
         :param mock_config: Mock ETL config.
         """
-
         # Arrange.
         mock_discover.return_value = [("123456789", Path("/fake/token/dir"))]
 
@@ -684,10 +664,8 @@ class TestExtractFunction:
         :param mock_discover: Mock discover_accounts function.
         :param mock_config: Mock ETL config.
         """
-
         # Arrange.
         mock_discover.return_value = [("123456789", Path("/fake/token/dir"))]
-
         mock_extractor = MagicMock()
         mock_extractor.extract_fit_activities.return_value = []
         mock_extractor.extract_garmin_data.return_value = []
@@ -714,10 +692,8 @@ class TestExtractFunction:
         :param mock_discover: Mock discover_accounts function.
         :param mock_config: Mock ETL config.
         """
-
         # Arrange.
         mock_discover.return_value = [("123456789", Path("/fake/token/dir"))]
-
         mock_extractor = MagicMock()
         mock_extractor.extract_garmin_data.return_value = [Path("data.json")]
         mock_extractor_class.return_value = mock_extractor
@@ -755,7 +731,6 @@ class TestExtractFunction:
         :param mock_discover: Mock discover_accounts function.
         :param mock_config: Mock ETL config.
         """
-
         # Arrange.
         mock_discover.return_value = [("123456789", Path("/fake/token/dir"))]
 
@@ -787,7 +762,6 @@ class TestExtractFunction:
         :param mock_extractor_class: Mock GarminExtractor class.
         :param mock_config: Mock ETL config.
         """
-
         # Arrange.
         data_interval_start = pendulum.datetime(2025, 1, 1, tz="UTC")
         data_interval_end = pendulum.datetime(2025, 1, 3, tz="UTC")
@@ -818,7 +792,6 @@ class TestExtractFunction:
         :param mock_extractor_class: Mock GarminExtractor class.
         :param mock_config: Mock ETL config.
         """
-
         # Arrange.
         data_interval_start = pendulum.datetime(2025, 1, 1, tz="UTC")
         data_interval_end = pendulum.datetime(2025, 1, 3, tz="UTC")
@@ -849,7 +822,6 @@ class TestExtractFunction:
         :param mock_discover: Mock discover_accounts function.
         :param mock_config: Mock ETL config.
         """
-
         # Arrange.
         mock_discover.return_value = [("123456789", Path("/fake/token/dir"))]
 
@@ -890,7 +862,6 @@ class TestExtractFunction:
         :param mock_discover: Mock discover_accounts function.
         :param mock_config: Mock ETL config.
         """
-
         # Arrange.
         mock_discover.return_value = [("123456789", Path("/fake/token/dir"))]
 
@@ -930,7 +901,6 @@ class TestCliExtractFunction:
 
         :param mock_extract: Mock extract function.
         """
-
         # Act.
         cli_extract("/tmp/test", "2025-01-01", "2025-01-03")
 
@@ -950,7 +920,6 @@ class TestCliExtractFunction:
 
         :param mock_extract: Mock extract function.
         """
-
         # Act.
         cli_extract(
             "/tmp/test",
@@ -958,7 +927,6 @@ class TestCliExtractFunction:
             "2025-01-03",
             data_types=["SLEEP", "HRV"],
         )
-
         # Assert.
         mock_extract.assert_called_once()
         _, kwargs = mock_extract.call_args
@@ -972,10 +940,8 @@ class TestCliExtractFunction:
 
         :param mock_extract: Mock extract function.
         """
-
         # Act.
         cli_extract("/tmp/test", "2025-01-01", "2025-01-03", data_types=[])
-
         # Assert.
         mock_extract.assert_called_once()
         _, kwargs = mock_extract.call_args
@@ -988,7 +954,6 @@ class TestCliExtractFunction:
 
         :param mock_extract: Mock extract function.
         """
-
         # Act.
         cli_extract("/tmp/test", "2025-12-25", "2025-12-31")
 
@@ -1013,7 +978,6 @@ class TestExerciseSetsExtraction:
 
         :return: Temporary directory path.
         """
-
         with tempfile.TemporaryDirectory() as temp_dir:
             yield Path(temp_dir)
 
@@ -1025,7 +989,6 @@ class TestExerciseSetsExtraction:
         :param temp_dir: Temporary directory fixture.
         :return: GarminExtractor instance.
         """
-
         return GarminExtractor(
             start_date=date(2025, 1, 1),
             end_date=date(2025, 1, 3),
@@ -1039,7 +1002,6 @@ class TestExerciseSetsExtraction:
 
         :return: Mock Garmin client.
         """
-
         mock_client = MagicMock()
         mock_client.full_name = "Test User"
         return mock_client
@@ -1054,7 +1016,6 @@ class TestExerciseSetsExtraction:
         :param mock_garmin_client: Mock Garmin client fixture.
         :param temp_dir: Temporary directory fixture.
         """
-
         # Arrange.
         extractor.garmin_client = mock_garmin_client
         extractor.user_id = "123456789"
@@ -1102,7 +1063,6 @@ class TestExerciseSetsExtraction:
         :param extractor: GarminExtractor fixture.
         :param mock_garmin_client: Mock Garmin client fixture.
         """
-
         # Arrange.
         extractor.garmin_client = mock_garmin_client
         extractor.user_id = "123456789"
@@ -1126,7 +1086,6 @@ class TestExerciseSetsExtraction:
         :param extractor: GarminExtractor fixture.
         :param mock_garmin_client: Mock Garmin client fixture.
         """
-
         # Arrange.
         extractor.garmin_client = mock_garmin_client
         extractor.user_id = "123456789"
@@ -1155,7 +1114,6 @@ class TestExerciseSetsExtraction:
         :param mock_garmin_client: Mock Garmin client fixture.
         :param temp_dir: Temporary directory fixture.
         """
-
         # Arrange.
         extractor.garmin_client = mock_garmin_client
         extractor.user_id = "123456789"
@@ -1217,7 +1175,6 @@ class TestExerciseSetsExtraction:
         :param mock_garmin_client: Mock Garmin client fixture.
         :param temp_dir: Temporary directory fixture.
         """
-
         # Arrange.
         extractor.garmin_client = mock_garmin_client
         extractor.user_id = "123456789"
@@ -1258,7 +1215,6 @@ class TestDiscoverAccounts:
 
         :return: Temporary directory path.
         """
-
         with tempfile.TemporaryDirectory() as temp_dir:
             yield Path(temp_dir)
 
@@ -1268,14 +1224,12 @@ class TestDiscoverAccounts:
 
         :param temp_dir: Temporary directory fixture.
         """
-
         # Arrange.
         account_dir = temp_dir / "12345678"
         account_dir.mkdir()
 
         # Act.
         result = discover_accounts(str(temp_dir))
-
         # Assert.
         assert result == [("12345678", account_dir)]
 
@@ -1285,7 +1239,6 @@ class TestDiscoverAccounts:
 
         :param temp_dir: Temporary directory fixture.
         """
-
         # Arrange.
         account_dir_b = temp_dir / "87654321"
         account_dir_b.mkdir()
@@ -1306,7 +1259,6 @@ class TestDiscoverAccounts:
 
         :param temp_dir: Temporary directory fixture.
         """
-
         # Arrange.
         account_dir = temp_dir / "12345678"
         account_dir.mkdir()
@@ -1323,7 +1275,6 @@ class TestDiscoverAccounts:
         """
         Test discover_accounts raises FileNotFoundError when base dir does not exist.
         """
-
         # Act & Assert.
         with pytest.raises(FileNotFoundError, match="does not exist"):
             discover_accounts("/nonexistent/path/that/does/not/exist")
@@ -1334,26 +1285,23 @@ class TestDiscoverAccounts:
 
         :param temp_dir: Temporary directory fixture.
         """
-
         # Act & Assert.
         with pytest.raises(RuntimeError, match="No account directories found"):
             discover_accounts(str(temp_dir))
 
     def test_discover_accounts_legacy_layout(self, temp_dir) -> None:
         """
-        Test backward compatibility: tokens at root level (no subdirectories) returns
-        a single legacy account entry pointing to the base directory.
+        Test backward compatibility: tokens at root level (no subdirectories) returns a
+        single legacy account entry pointing to the base directory.
 
         :param temp_dir: Temporary directory fixture.
         """
-
         # Arrange: create token files at root level (pre-multi-account layout).
         (temp_dir / "oauth1_token.json").touch()
         (temp_dir / "oauth2_token.json").touch()
 
         # Act.
         result = discover_accounts(str(temp_dir))
-
         # Assert: single account with "legacy" placeholder and base dir as token path.
         assert result == [("legacy", temp_dir)]
 
@@ -1363,7 +1311,6 @@ class TestDiscoverAccounts:
 
         :param temp_dir: Temporary directory fixture.
         """
-
         # Arrange.
         file_path = temp_dir / "not_a_dir"
         file_path.touch()
@@ -1386,7 +1333,6 @@ class TestExtractMultiAccount:
         :param tmp_path: Pytest temporary path fixture.
         :return: Mock ETL config.
         """
-
         return MagicMock(data_dirs=MagicMock(ingest=tmp_path))
 
     @patch("dags.pipelines.garmin.extract.discover_accounts")
@@ -1404,7 +1350,6 @@ class TestExtractMultiAccount:
         :param mock_discover: Mock discover_accounts function.
         :param mock_config: Mock ETL config.
         """
-
         # Arrange.
         mock_discover.return_value = [
             ("12345678", Path("/tokens/12345678")),
@@ -1454,7 +1399,6 @@ class TestExtractMultiAccount:
         :param mock_discover: Mock discover_accounts function.
         :param mock_config: Mock ETL config.
         """
-
         # Arrange.
         mock_discover.return_value = [
             ("12345678", Path("/tokens/12345678")),
@@ -1505,7 +1449,6 @@ class TestExtractMultiAccount:
         :param mock_discover: Mock discover_accounts function.
         :param mock_config: Mock ETL config.
         """
-
         # Arrange.
         mock_discover.return_value = [
             ("12345678", Path("/tokens/12345678")),
@@ -1544,7 +1487,6 @@ class TestExtractMultiAccount:
         :param mock_discover: Mock discover_accounts function.
         :param mock_config: Mock ETL config.
         """
-
         # Arrange.
         mock_discover.return_value = [
             ("12345678", Path("/tokens/12345678")),
@@ -1592,7 +1534,6 @@ class TestExtractMultiAccount:
         :param mock_discover: Mock discover_accounts function.
         :param mock_config: Mock ETL config.
         """
-
         # Arrange.
         mock_discover.return_value = [
             ("12345678", Path("/tokens/12345678")),
@@ -1602,7 +1543,6 @@ class TestExtractMultiAccount:
         mock_dag_run.conf = {"data_types": "SLEEP"}
         mock_task = MagicMock()
         mock_task.task_id = "extract"
-
         data_interval_start = pendulum.datetime(2025, 1, 1, tz="UTC")
         data_interval_end = pendulum.datetime(2025, 1, 3, tz="UTC")
 
@@ -1631,7 +1571,6 @@ class TestExtractMultiAccount:
         :param mock_discover: Mock discover_accounts function.
         :param mock_config: Mock ETL config.
         """
-
         # Arrange.
         mock_discover.return_value = [
             ("12345678", Path("/tokens/12345678")),
@@ -1641,7 +1580,6 @@ class TestExtractMultiAccount:
         mock_dag_run.conf = {"data_types": []}
         mock_task = MagicMock()
         mock_task.task_id = "extract"
-
         data_interval_start = pendulum.datetime(2025, 1, 1, tz="UTC")
         data_interval_end = pendulum.datetime(2025, 1, 3, tz="UTC")
 
@@ -1662,8 +1600,9 @@ class TestExtractMultiAccount:
         self, mock_logger, mock_extractor_class, mock_discover, mock_config
     ) -> None:
         """
-        Test that one account failing does not block extraction for other accounts. When
-        one account raises an exception but another succeeds, the extract function
+        Test that one account failing does not block extraction for other accounts.
+
+        When one account raises an exception but another succeeds, the extract function
         should not raise AirflowSkipException.
 
         :param mock_logger: Mock logger.
@@ -1671,7 +1610,6 @@ class TestExtractMultiAccount:
         :param mock_discover: Mock discover_accounts function.
         :param mock_config: Mock ETL config.
         """
-
         # Arrange.
         mock_discover.return_value = [
             ("12345678", Path("/tokens/12345678")),
@@ -1713,18 +1651,16 @@ class TestExtractMultiAccount:
         Test that AirflowFailException is raised when every discovered account hits an
         account-level exception.
 
-        AirflowSkipException would mark the run Success in the UI, hide the
-        failure from the operator, and advance prev_data_interval_end_success
-        past the failure window — silently losing data and breaking the
-        resume mechanism. AirflowFailException keeps the failure visible so
-        the next run auto-backfills the gap.
+        AirflowSkipException would mark the run Success in the UI, hide the failure from
+        the operator, and advance prev_data_interval_end_success past the failure window
+        — silently losing data and breaking the resume mechanism. AirflowFailException
+        keeps the failure visible so the next run auto-backfills the gap.
 
         :param mock_logger: Mock logger.
         :param mock_extractor_class: Mock GarminExtractor class.
         :param mock_discover: Mock discover_accounts function.
         :param mock_config: Mock ETL config.
         """
-
         # Arrange.
         mock_discover.return_value = [
             ("12345678", Path("/tokens/12345678")),
@@ -1764,7 +1700,6 @@ class TestRetryHelper:
         """
         The helper retries on transient errors and returns the eventual success.
         """
-
         from dags.pipelines.garmin import extract as extract_mod
         from dags.pipelines.garmin.garmin_client.exceptions import (
             GarminConnectionError,
@@ -1790,7 +1725,6 @@ class TestRetryHelper:
         """
         After exhausting all retries the last transient exception is re-raised.
         """
-
         from dags.pipelines.garmin import extract as extract_mod
         from dags.pipelines.garmin.garmin_client.exceptions import (
             GarminConnectionError,
@@ -1810,7 +1744,6 @@ class TestRetryHelper:
         """
         Non-transient exceptions (e.g. ValueError) propagate immediately.
         """
-
         from dags.pipelines.garmin import extract as extract_mod
 
         monkeypatch.setattr(extract_mod.time, "sleep", lambda _: None)
@@ -1834,7 +1767,6 @@ class TestExtractionFailureIsolation:
         A transient API failure on one date does not abort extraction of the rest of the
         date range; the failure is recorded on extractor.failures.
         """
-
         from dags.pipelines.garmin import extract as extract_mod
         from dags.pipelines.garmin.constants import GARMIN_DATA_REGISTRY
 
@@ -1879,7 +1811,6 @@ class TestExtractionFailureIsolation:
         """
         A failure inside _extract_data_by_type for one type does not abort the others.
         """
-
         from dags.pipelines.garmin import extract as extract_mod
 
         monkeypatch.setattr(extract_mod.time, "sleep", lambda _: None)
@@ -1912,7 +1843,6 @@ class TestExtractionFailureIsolation:
         NO_DATE data types (USER_PROFILE / PERSONAL_RECORDS / RACE_PREDICTIONS) go
         through _with_retries like DAILY/RANGE types do.
         """
-
         from dags.pipelines.garmin import extract as extract_mod
         from dags.pipelines.garmin.constants import GARMIN_DATA_REGISTRY
         from dags.pipelines.garmin.garmin_client.exceptions import (
@@ -1920,7 +1850,6 @@ class TestExtractionFailureIsolation:
         )
 
         monkeypatch.setattr(extract_mod.time, "sleep", lambda _: None)
-
         instance = GarminExtractor(
             start_date=date(2025, 1, 1),
             end_date=date(2025, 1, 1),
@@ -1962,7 +1891,6 @@ class TestActivitiesListFromDisk:
 
         The helper must merge all of them and dedupe by activityId.
         """
-
         instance = GarminExtractor(
             start_date=date(2025, 1, 1),
             end_date=date(2025, 1, 3),
@@ -1971,7 +1899,6 @@ class TestActivitiesListFromDisk:
         )
         instance.user_id = "test-user"
         instance.garmin_client = MagicMock()
-
         (tmp_path / "test-user_ACTIVITIES_LIST_2025-01-01T12-00-00Z.json").write_text(
             json.dumps([{"activityId": 100, "name": "day1"}])
         )
@@ -1997,7 +1924,6 @@ class TestActivitiesListFromDisk:
         """
         A single corrupt file returns None so the caller hits the API.
         """
-
         instance = GarminExtractor(
             start_date=date(2025, 1, 1),
             end_date=date(2025, 1, 2),
@@ -2005,7 +1931,6 @@ class TestActivitiesListFromDisk:
             data_types=("ACTIVITY",),
         )
         instance.user_id = "test-user"
-
         (tmp_path / "test-user_ACTIVITIES_LIST_2025-01-01T12-00-00Z.json").write_text(
             "{not valid json"
         )
@@ -2019,7 +1944,6 @@ class TestActivitiesListFromDisk:
         """
         With no matching files the helper returns None (caller falls back).
         """
-
         instance = GarminExtractor(
             start_date=date(2025, 1, 1),
             end_date=date(2025, 1, 1),
@@ -2027,7 +1951,6 @@ class TestActivitiesListFromDisk:
             data_types=("ACTIVITY",),
         )
         instance.user_id = "test-user"
-
         assert instance._load_activities_list_from_disk() is None
 
     def test_skips_files_outside_date_window(self, tmp_path):
@@ -2035,7 +1958,6 @@ class TestActivitiesListFromDisk:
         Stale ACTIVITIES_LIST files from a previous run with a different window must not
         leak activities into the current extract.
         """
-
         instance = GarminExtractor(
             start_date=date(2025, 1, 10),
             end_date=date(2025, 1, 12),
@@ -2043,7 +1965,6 @@ class TestActivitiesListFromDisk:
             data_types=("ACTIVITY",),
         )
         instance.user_id = "test-user"
-
         # Stale leftover from a previous run with an earlier window.
         (tmp_path / "test-user_ACTIVITIES_LIST_2025-01-01T12-00-00Z.json").write_text(
             json.dumps([{"activityId": 999, "name": "stale"}])
@@ -2070,7 +1991,6 @@ class TestActivitiesListFromDisk:
         If every matching file is outside the window the helper returns None so the
         caller falls back to a fresh API call.
         """
-
         instance = GarminExtractor(
             start_date=date(2025, 2, 1),
             end_date=date(2025, 2, 3),
@@ -2078,7 +1998,6 @@ class TestActivitiesListFromDisk:
             data_types=("ACTIVITY",),
         )
         instance.user_id = "test-user"
-
         (tmp_path / "test-user_ACTIVITIES_LIST_2025-01-01T12-00-00Z.json").write_text(
             json.dumps([{"activityId": 1}])
         )
@@ -2090,7 +2009,6 @@ class TestActivitiesListFromDisk:
         Entries that aren't dicts or are missing ``activityId`` must be dropped so
         downstream code can assume every item has an ``activityId``.
         """
-
         instance = GarminExtractor(
             start_date=date(2025, 1, 1),
             end_date=date(2025, 1, 1),
@@ -2098,7 +2016,6 @@ class TestActivitiesListFromDisk:
             data_types=("ACTIVITY",),
         )
         instance.user_id = "test-user"
-
         (tmp_path / "test-user_ACTIVITIES_LIST_2025-01-01T12-00-00Z.json").write_text(
             json.dumps(
                 [
@@ -2124,7 +2041,6 @@ class TestActivitiesListFromDisk:
         using the partial data, otherwise extract_fit_activities would never download
         FITs for the missing day.
         """
-
         instance = GarminExtractor(
             start_date=date(2025, 1, 1),
             end_date=date(2025, 1, 3),
@@ -2132,7 +2048,6 @@ class TestActivitiesListFromDisk:
             data_types=("ACTIVITY",),
         )
         instance.user_id = "test-user"
-
         # Day 1 + day 3 present; day 2 missing (simulates a per-date
         # ACTIVITIES_LIST failure that recorded a failure record but no file).
         (tmp_path / "test-user_ACTIVITIES_LIST_2025-01-01T12-00-00Z.json").write_text(
@@ -2146,10 +2061,9 @@ class TestActivitiesListFromDisk:
 
     def test_returns_data_when_full_window_covered(self, tmp_path):
         """
-        Sanity check: when every day in the window has a file, the helper
-        returns the merged data without falling back to the API.
+        Sanity check: when every day in the window has a file, the helper returns the
+        merged data without falling back to the API.
         """
-
         instance = GarminExtractor(
             start_date=date(2025, 1, 1),
             end_date=date(2025, 1, 2),
@@ -2157,7 +2071,6 @@ class TestActivitiesListFromDisk:
             data_types=("ACTIVITY",),
         )
         instance.user_id = "test-user"
-
         (tmp_path / "test-user_ACTIVITIES_LIST_2025-01-01T12-00-00Z.json").write_text(
             json.dumps([{"activityId": 100}])
         )
