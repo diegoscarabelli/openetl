@@ -6,6 +6,12 @@ These exceptions mirror the upstream ``python-garminconnect`` library's
 explicit.
 """
 
+__all__ = [
+    "GarminAuthenticationError",
+    "GarminConnectionError",
+    "GarminTooManyRequestsError",
+]
+
 
 class GarminAuthenticationError(Exception):
     """
