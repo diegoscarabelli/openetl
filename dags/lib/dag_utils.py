@@ -113,10 +113,10 @@ def batch(config: ETLConfig, **context: dict) -> list[tuple[FileSet, ...]]:
     pipeline configuration.
 
     :param config: Configuration parameters for Airflow DAGs and pipeline tasks.
-    :param context:`op_kwargs` passed when defining the task in Airflow plus any
-        additional Airflow keyword arguments automatically injected by Airflow. This
-        parameter is not used in this function but is included to indicate the expected
-        signature for replacement callables that may use it.
+    :param context: The ``op_kwargs`` dictionary passed when defining the task in
+        Airflow, plus any additional Airflow keyword arguments automatically injected by
+        Airflow. This parameter is not used in this function but is included to indicate
+        the expected signature for replacement callables that may use it.
     :return: Batched file sets.
     """
     # ----------------------------------------------------------------------------------
@@ -354,8 +354,9 @@ def process_wrapper(
     :param config: Configuration parameters for Airflow DAGs and pipeline tasks.
     :param dag_run_id: Unique identifier of the Airflow DAG that executed the ETL task.
     :param dag_start_date: Timestamp indicating when the DAG run started.
-    :param context:`op_kwargs` passed when defining the task in Airflow plus any
-        additional Airflow keyword arguments automatically injected by Airflow.
+    :param context: The ``op_kwargs`` dictionary passed when defining the task in
+        Airflow, plus any additional Airflow keyword arguments automatically injected by
+        Airflow.
     """
     # Deserialize file sets from XCom data.
     file_sets = []
@@ -400,10 +401,10 @@ def store(
     :param config: Configuration parameters for Airflow DAGs and pipeline tasks.
     :param dag_run_id: Unique identifier of the Airflow DAG that executed the ETL task.
     :param dag_start_date: Timestamp indicating when the DAG run started.
-    :param context:`op_kwargs` passed when defining the task in Airflow plus any
-        additional Airflow keyword arguments automatically injected by Airflow. This
-        parameter is not used in this function but is included to indicate the expected
-        signature for replacement callables that may use it.
+    :param context: The ``op_kwargs`` dictionary passed when defining the task in
+        Airflow, plus any additional Airflow keyword arguments automatically injected by
+        Airflow. This parameter is not used in this function but is included to indicate
+        the expected signature for replacement callables that may use it.
     """
     # Check existence of target directories.
     for state in [DataState.PROCESS, DataState.STORE, DataState.QUARANTINE]:
