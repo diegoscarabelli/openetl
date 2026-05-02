@@ -31,6 +31,7 @@ from dags.pipelines.garmin.sqla_models import (
     Acclimation,
     Activity,
     BodyBattery,
+    BodyComposition,
     BreathingDisruption,
     HeartRate,
     HRV,
@@ -3345,6 +3346,168 @@ class TestGarminProcessor:
         mock_process_intensity_minutes.assert_called_once_with(
             intensity_file, mock_session
         )
+        mock_ensure_user.assert_called_once_with("123456789", mock_session)
+
+    # Body composition tests.
+    @patch("dags.pipelines.garmin.process.upsert_model_instances")
+    def test_process_body_composition_file(
+        self, mock_upsert, processor, mock_session, temp_dir
+    ):
+        """
+        Test _process_body_composition with complete data including sample_pk.
+        """
+        # Arrange. One fully-populated INDEX_SCALE entry plus one partial MANUAL entry
+        # to confirm null fields propagate through .get().
+        # Timestamps: 1714564800000 ms = 2024-05-01 12:00 UTC,
+        #             1714651200000 ms = 2024-05-02 12:00 UTC.
+        data = {
+            "startDate": "2024-05-01",
+            "endDate": "2024-05-01",
+            "dateWeightList": [
+                {
+                    "samplePk": 1714564800000,
+                    "date": 1714564800000,
+                    "calendarDate": "2024-05-01",
+                    "timestampGMT": 1714564800000,
+                    "weight": 75300.0,
+                    "bmi": 24.5,
+                    "bodyFat": 22.5,
+                    "bodyWater": 55.2,
+                    "boneMass": 3500.0,
+                    "muscleMass": 60000.0,
+                    "physiqueRating": 5,
+                    "visceralFat": 8,
+                    "metabolicAge": 30,
+                    "sourceType": "INDEX_SCALE",
+                },
+                {
+                    "timestampGMT": 1714651200000,
+                    "weight": 75100.0,
+                    "sourceType": "MANUAL",
+                },
+            ],
+        }
+
+        body_file = temp_dir / "123_BODY_COMPOSITION_2024-05-01T12:00:00Z.json"
+        with open(body_file, "w", encoding="utf-8") as f:
+            json.dump(data, f)
+
+        # Act.
+        processor.user_id = 123456789
+        processor._process_body_composition(body_file, mock_session)
+
+        # Assert.
+        mock_upsert.assert_called_once()
+        kwargs = mock_upsert.call_args.kwargs
+        assert kwargs["session"] == mock_session
+        assert kwargs["conflict_columns"] == ["user_id", "timestamp"]
+        assert kwargs["on_conflict_update"] is False
+
+        records = kwargs["model_instances"]
+        assert len(records) == 2
+        assert all(isinstance(r, BodyComposition) for r in records)
+
+        first = records[0]
+        assert first.user_id == 123456789
+        assert first.timestamp == datetime(2024, 5, 1, 12, 0, 0, tzinfo=timezone.utc)
+        assert first.weight == 75300.0
+        assert first.bmi == 24.5
+        assert first.body_fat == 22.5
+        assert first.body_water == 55.2
+        assert first.bone_mass == 3500.0
+        assert first.muscle_mass == 60000.0
+        assert first.physique_rating == 5
+        assert first.visceral_fat == 8
+        assert first.metabolic_age == 30
+        assert first.source_type == "INDEX_SCALE"
+        assert first.sample_pk == 1714564800000
+
+        second = records[1]
+        assert second.weight == 75100.0
+        assert second.source_type == "MANUAL"
+        assert second.bmi is None
+        assert second.body_fat is None
+        assert second.sample_pk is None
+
+    @patch("dags.pipelines.garmin.process.upsert_model_instances")
+    def test_process_body_composition_empty_list(
+        self, mock_upsert, processor, mock_session, temp_dir
+    ):
+        """
+        Days with no weigh-in (empty ``dateWeightList``) must not call upsert and must
+        emit a yellow ``No body composition data found.`` warning.
+        """
+        data = {"dateWeightList": [], "totalAverage": {}}
+        body_file = temp_dir / "123_BODY_COMPOSITION_2024-05-01T12:00:00Z.json"
+        with open(body_file, "w", encoding="utf-8") as f:
+            json.dump(data, f)
+
+        processor.user_id = 123456789
+        with patch("dags.lib.logging_utils.LOGGER.warning") as mock_logger:
+            processor._process_body_composition(body_file, mock_session)
+            mock_logger.assert_called_with("⚠️ No body composition data found.")
+
+        mock_upsert.assert_not_called()
+
+    @patch("dags.pipelines.garmin.process.upsert_model_instances")
+    def test_process_body_composition_falls_back_to_date(
+        self, mock_upsert, processor, mock_session, temp_dir
+    ):
+        """
+        Some payloads omit ``timestampGMT``; ``date`` is the fallback.
+
+        Entries with neither are skipped with a warning so silent data loss surfaces in
+        the run log.
+        """
+        data = {
+            "dateWeightList": [
+                {"date": 1714564800000, "weight": 75000.0},
+                {"weight": 76000.0},  # No timestamp at all -- skipped with warning.
+            ],
+        }
+        body_file = temp_dir / "123_BODY_COMPOSITION_2024-05-01T12:00:00Z.json"
+        with open(body_file, "w", encoding="utf-8") as f:
+            json.dump(data, f)
+
+        processor.user_id = 123456789
+        with patch("dags.lib.logging_utils.LOGGER.warning") as mock_logger:
+            processor._process_body_composition(body_file, mock_session)
+
+            warning_calls = [
+                call
+                for call in mock_logger.call_args_list
+                if "no timestamp" in call.args[0]
+            ]
+            assert len(warning_calls) == 1
+
+        mock_upsert.assert_called_once()
+        records = mock_upsert.call_args.kwargs["model_instances"]
+        assert len(records) == 1
+        assert records[0].weight == 75000.0
+        assert records[0].timestamp == datetime(
+            2024, 5, 1, 12, 0, 0, tzinfo=timezone.utc
+        )
+
+    def test_process_body_composition_file_routing(
+        self, processor, mock_session, temp_dir
+    ):
+        """
+        Test that BODY_COMPOSITION files are routed to _process_body_composition.
+        """
+        body_file = temp_dir / "123456789_BODY_COMPOSITION_2024-05-01T12:00:00Z.json"
+        with open(body_file, "w", encoding="utf-8") as f:
+            json.dump({"dateWeightList": []}, f)
+
+        file_set = FileSet(files={GARMIN_FILE_TYPES.BODY_COMPOSITION: [body_file]})
+
+        with patch.object(
+            processor, "_process_body_composition"
+        ) as mock_process_body_composition, patch.object(
+            processor, "_ensure_user_exists", return_value=1
+        ) as mock_ensure_user:
+            processor.process_file_set(file_set, mock_session)
+
+        mock_process_body_composition.assert_called_once_with(body_file, mock_session)
         mock_ensure_user.assert_called_once_with("123456789", mock_session)
 
     # Floors tests.
