@@ -1927,6 +1927,77 @@ COMMENT ON COLUMN garmin.intensity_minutes.create_ts IS
 
 ----------------------------------------------------------------------------------------
 
+-- Body composition table for storing scale weigh-ins.
+CREATE TABLE IF NOT EXISTS garmin.body_composition (
+    user_id BIGINT REFERENCES garmin.user (user_id)
+    , timestamp TIMESTAMPTZ
+    , weight FLOAT
+    , bmi FLOAT
+    , body_fat FLOAT
+    , body_water FLOAT
+    , bone_mass FLOAT
+    , muscle_mass FLOAT
+    , physique_rating INTEGER
+    , visceral_fat INTEGER
+    , metabolic_age INTEGER
+    , source_type TEXT
+    , sample_pk BIGINT
+
+    -- Audit fields.
+    , create_ts TIMESTAMPTZ NOT NULL DEFAULT NOW()
+
+    -- Primary key.
+    , PRIMARY KEY (user_id, timestamp)
+);
+
+-- Create indexes on body_composition table.
+CREATE INDEX IF NOT EXISTS body_composition_user_id_idx
+ON garmin.body_composition (user_id);
+CREATE INDEX IF NOT EXISTS body_composition_timestamp_brin_idx
+ON garmin.body_composition USING brin (timestamp);
+CREATE INDEX IF NOT EXISTS body_composition_sample_pk_idx
+ON garmin.body_composition (sample_pk);
+
+-- Table comment.
+COMMENT ON TABLE garmin.body_composition IS
+'Scale weigh-ins from a connected smart scale (e.g. Index S2) or manual entry. '
+'One row per weigh-in keyed by (user_id, timestamp); a user may weigh more than '
+'once per day. Weight and bone/muscle mass are stored in grams to match the '
+'Garmin Connect API and the existing user_profile.weight convention.';
+
+-- Column comments for body_composition table.
+COMMENT ON COLUMN garmin.body_composition.user_id IS
+'References garmin.user(user_id). Identifies which user this weigh-in belongs to.';
+COMMENT ON COLUMN garmin.body_composition.timestamp IS
+'UTC timestamp of the weigh-in (timestampGMT from the API).';
+COMMENT ON COLUMN garmin.body_composition.weight IS
+'Body weight in grams.';
+COMMENT ON COLUMN garmin.body_composition.bmi IS
+'Body Mass Index.';
+COMMENT ON COLUMN garmin.body_composition.body_fat IS
+'Body fat percentage (0-100).';
+COMMENT ON COLUMN garmin.body_composition.body_water IS
+'Body water percentage (0-100).';
+COMMENT ON COLUMN garmin.body_composition.bone_mass IS
+'Bone mass in grams.';
+COMMENT ON COLUMN garmin.body_composition.muscle_mass IS
+'Muscle mass in grams.';
+COMMENT ON COLUMN garmin.body_composition.physique_rating IS
+'Garmin physique rating (1-9).';
+COMMENT ON COLUMN garmin.body_composition.visceral_fat IS
+'Visceral fat rating.';
+COMMENT ON COLUMN garmin.body_composition.metabolic_age IS
+'Metabolic age in years.';
+COMMENT ON COLUMN garmin.body_composition.source_type IS
+'Origin of the measurement (e.g., ''INDEX_SCALE'', ''MANUAL'').';
+COMMENT ON COLUMN garmin.body_composition.sample_pk IS
+'Garmin''s stable per-sample ID (samplePk). Nullable for manual entries lacking '
+'the field. Use to reconcile deletions made in Garmin Connect.';
+COMMENT ON COLUMN garmin.body_composition.create_ts IS
+'Timestamp when the record was created in the database.';
+
+----------------------------------------------------------------------------------------
+
 -- Floors table for storing floors climbed measurements.
 CREATE TABLE IF NOT EXISTS garmin.floors (
     user_id BIGINT REFERENCES garmin.user (user_id)
