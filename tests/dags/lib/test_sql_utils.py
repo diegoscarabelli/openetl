@@ -214,6 +214,116 @@ class TestUpsertModelInstances:
         assert result1.col_a == "A"
         assert result2.col_a == "B"
 
+    def test_upsert_values_insert_ignore_returning_position_aligned(self, db_session):
+        """
+        INSERT_IGNORE with `returning_columns` returns one row per input row, in input
+        order (position-aligned), with existing values preserved for conflicted rows.
+
+        Implemented via the no-op DO UPDATE trick.
+        """
+        # Pre-seed two rows that will conflict on the second pass.
+        _upsert_values(
+            MyTest,
+            [{"id": 1, "col_a": "A"}, {"id": 3, "col_a": "C"}],
+            db_session,
+            conflict_columns=["id"],
+            on_conflict_update=False,
+            returning_columns=["id", "col_a"],
+        )
+        db_session.commit()
+
+        # Mix of conflict (id=1), new (id=2), conflict (id=3) in non-trivial
+        # order to stress position-alignment.
+        rows = _upsert_values(
+            MyTest,
+            [
+                {"id": 1, "col_a": "Z"},  # conflict, existing A wins
+                {"id": 2, "col_a": "B"},  # new
+                {"id": 3, "col_a": "Z"},  # conflict, existing C wins
+            ],
+            db_session,
+            conflict_columns=["id"],
+            on_conflict_update=False,
+            returning_columns=["id", "col_a"],
+        )
+        db_session.commit()
+        assert [r["id"] for r in rows] == [1, 2, 3]
+        assert [r["col_a"] for r in rows] == ["A", "B", "C"]
+        db_session.execute(delete(MyTest))
+        db_session.commit()
+
+    def test_upsert_values_returning_columns_validation(self, db_session):
+        """
+        `returning_columns=[]` and unknown column names raise clear ValueErrors instead
+        of opaque downstream failures (silent empty list / bare AttributeError from
+        getattr).
+        """
+        with pytest.raises(ValueError, match="non-empty"):
+            _upsert_values(
+                MyTest,
+                [{"id": 1, "col_a": "A"}],
+                db_session,
+                conflict_columns=["id"],
+                on_conflict_update=True,
+                returning_columns=[],
+            )
+        with pytest.raises(ValueError, match="not_a_column"):
+            _upsert_values(
+                MyTest,
+                [{"id": 1, "col_a": "A"}],
+                db_session,
+                conflict_columns=["id"],
+                on_conflict_update=True,
+                returning_columns=["id", "not_a_column"],
+            )
+
+    def test_upsert_values_default_update_columns_exclude_pk(self, db_session):
+        """
+        Default `update_columns` excludes primary-key columns even when the PK is
+        not in `conflict_columns`. Prevents `SET pk = NULL` corruption when an
+        auto-increment PK is upserted with a separate uniqueness key.
+        """
+        from sqlalchemy import Column, Integer, String, UniqueConstraint
+        from sqlalchemy.orm import DeclarativeBase
+
+        class Base(DeclarativeBase):
+            pass
+
+        class AutoPK(Base):
+            __tablename__ = "sql_utils_test_autopk"
+            __table_args__ = (UniqueConstraint("user_id", "ts", name="autopk_unique"),)
+            pk = Column(Integer, primary_key=True, autoincrement=True)
+            user_id = Column(Integer, nullable=False)
+            ts = Column(Integer, nullable=False)
+            payload = Column(String, nullable=False)
+
+        engine = db_session.get_bind()
+        Base.metadata.create_all(engine)
+        try:
+            first = _upsert_values(
+                AutoPK,
+                [{"user_id": 1, "ts": 100, "payload": "v1"}],
+                db_session,
+                conflict_columns=["user_id", "ts"],
+                on_conflict_update=True,
+                returning_columns=["pk", "payload"],
+            )
+            db_session.commit()
+            second = _upsert_values(
+                AutoPK,
+                [{"user_id": 1, "ts": 100, "payload": "v2"}],
+                db_session,
+                conflict_columns=["user_id", "ts"],
+                on_conflict_update=True,
+                returning_columns=["pk", "payload"],
+            )
+            db_session.commit()
+            # PK is preserved across the conflict update; payload is updated.
+            assert first[0]["pk"] == second[0]["pk"]
+            assert second[0]["payload"] == "v2"
+        finally:
+            Base.metadata.drop_all(engine)
+
     def test_upsert_values_rollback(self, db_session):
         """
         Test that rollback undoes inserted rows.
@@ -710,7 +820,8 @@ class TestChunkedUpsert:
 
     def test_insert_ignore_returning_across_chunks(self, db_session):
         """
-        Test INSERT_IGNORE with RETURNING re-queries per chunk.
+        INSERT_IGNORE with `returning_columns` returns one row per input row across
+        chunked statements, with existing values preserved for conflicted rows.
         """
         # Seed a subset of rows.
         seed = [{"id": 1, "col_a": "A"}, {"id": 3, "col_a": "C"}]
@@ -735,14 +846,12 @@ class TestChunkedUpsert:
         )
         assert results is not None
         assert len(results) == 5
-        by_id = {r["id"]: r["col_a"] for r in results}
-        # Existing rows keep original values.
-        assert by_id[1] == "A"
-        assert by_id[3] == "C"
-        # New rows have the inserted values.
-        assert by_id[2] == "new_2"
-        assert by_id[4] == "new_4"
-        assert by_id[5] == "new_5"
+        # Position-aligned: result[i] corresponds to input[i] across chunk
+        # boundaries. Locks in the no-op DO UPDATE trick's input-order
+        # guarantee even when the batch is split.
+        assert [r["id"] for r in results] == [1, 2, 3, 4, 5]
+        # Existing rows keep their original values; new rows take the input.
+        assert [r["col_a"] for r in results] == ["A", "new_2", "C", "new_4", "new_5"]
 
     def test_plain_insert_across_chunks(self, db_session):
         """
