@@ -278,27 +278,31 @@ def upsert_model_instances(
         is True) the existing value. Useful for time/version-based updates.
     :param latest_check_inclusive: If True, use >= comparison for latest_check_column
         instead of >. Defaults to False (strict greater than).
-    :param returning_columns: List of column names to return via RETURNING clause. If
-        None, no RETURNING is issued and the function returns None. When provided, the
-        returned list contains one entry per input row in input order (position-
-        aligned) for the INSERT, INSERT_IGNORE, and plain UPSERT modes. Must be a
-        non-empty list of valid model column names.
+    :param returning_columns: List of column names to return via RETURNING.
+        Must be a non-empty list of valid model column names. If None, no
+        RETURNING is issued and the function returns None.
 
-        Exception: when `latest_check_column` is also set, conflicted rows whose
-        incoming value fails the latest-check `WHERE` clause produce no `RETURNING`
-        row (PostgreSQL treats the conflict as DO NOTHING in that case), so the
-        result list will be SHORTER than the input list and is no longer
-        position-aligned. Callers that combine `latest_check_column` with
-        `returning_columns` must look up rows by their conflict-key values rather
-        than by index.
+        Result-shape contract by mode:
 
-        Operational side effect (INSERT_IGNORE + returning_columns): the helper
-        rewrites internally as a no-op `ON CONFLICT DO UPDATE SET <conflict_col>
-        = excluded.<conflict_col>` to make `RETURNING` fire for conflicted rows.
-        This still executes an UPDATE in PostgreSQL: it can fire UPDATE triggers,
-        generate a new row version (WAL traffic), and take stronger locks than
-        pure `DO NOTHING`. The pure `DO NOTHING` path is preserved when
-        `returning_columns` is None.
+        - INSERT (no conflict_columns), INSERT_IGNORE, plain UPSERT: result
+          contains exactly one entry per input row in input order
+          (position-aligned).
+        - UPSERT + `latest_check_column`: NOT position-aligned. Conflicted rows
+          whose incoming value fails the latest-check `WHERE` clause produce
+          no `RETURNING` row (PostgreSQL treats the conflict as DO NOTHING in
+          that case), so the result list is SHORTER than the input list.
+          Callers in this regime must reconcile rows by their conflict-key
+          values, not by index.
+
+        Operational side effect (INSERT_IGNORE + returning_columns only): the
+        helper rewrites internally as a no-op `ON CONFLICT DO UPDATE SET
+        <conflict_col> = excluded.<conflict_col>` so `RETURNING` fires for
+        conflicted rows. This still executes an UPDATE in PostgreSQL: it can
+        fire UPDATE triggers, generate a new row version (WAL traffic), and
+        take stronger locks than pure `DO NOTHING`. The pure `DO NOTHING`
+        path is preserved when `returning_columns` is None, so callers that
+        want to skip the row-write entirely on conflict still can by
+        omitting `returning_columns`.
     :param chunk_size: Maximum rows per INSERT statement. Clamped internally so the
         total parameter count never exceeds the psycopg3 limit.
     :return: List of SQLAlchemy model instances (with only the requested columns
@@ -374,21 +378,26 @@ def _upsert_values(
         is True) the existing value. Useful for time/version-based updates.
     :param latest_check_inclusive: If True, use >= comparison for latest_check_column
         instead of >. Defaults to False (strict greater than).
-    :param returning_columns: List of columns to return after the operation. If
-        specified, returns one row per input row (in input order, position-aligned)
-        for INSERT, INSERT_IGNORE, and plain UPSERT. For INSERT_IGNORE the helper
-        internally rewrites the statement using a no-op `DO UPDATE` (assigning a
-        conflict column to itself) so `RETURNING` fires for both newly-inserted and
-        conflicted rows; this means an UPDATE actually executes in PostgreSQL on
-        conflict (UPDATE triggers can fire, a new row version is written to WAL,
-        stronger locks are taken than under pure DO NOTHING). The pure DO NOTHING
-        path is preserved when `returning_columns` is None.
-
-        Exception: UPSERT + `latest_check_column` does NOT preserve the position-
-        aligned guarantee. When the latest-check `WHERE` clause prevents the
-        update, PostgreSQL treats it as DO NOTHING and emits no `RETURNING` row
-        for that input, so the result list will be shorter than the input list.
+    :param returning_columns: List of columns to return after the operation.
         Must be a non-empty list of valid model column names.
+
+        Result-shape contract by mode:
+
+        - INSERT, INSERT_IGNORE, plain UPSERT: one row per input row in input
+          order (position-aligned).
+        - UPSERT + `latest_check_column`: NOT position-aligned. When the
+          latest-check `WHERE` clause prevents the update, PostgreSQL treats
+          the conflict as DO NOTHING and emits no `RETURNING` row, so the
+          result list is shorter than the input list. Reconcile by
+          conflict-key value, not by index.
+
+        For INSERT_IGNORE the helper internally rewrites the statement using
+        a no-op `DO UPDATE` (assigning a conflict column to itself) so
+        `RETURNING` fires for both newly-inserted and conflicted rows; this
+        means an UPDATE actually executes in PostgreSQL on conflict (UPDATE
+        triggers can fire, a new row version is written to WAL, stronger
+        locks are taken than under pure DO NOTHING). The pure DO NOTHING
+        path is preserved when `returning_columns` is None.
     :param chunk_size: Maximum rows per INSERT statement. Clamped internally so the
         total parameter count never exceeds the psycopg3 limit.
     :return: List of dictionaries with returned values if returning_columns is
@@ -406,9 +415,13 @@ def _upsert_values(
     conflict_columns = conflict_columns or []
     model_columns = model.__table__.columns.keys()
 
-    # Validate `returning_columns` so callers get a clear ValueError instead of
-    # an opaque AttributeError from `getattr(model, col)` further down, or the
-    # silent "result list shorter than input" surprise of an empty list.
+    # Validate `returning_columns` so callers get a clear ValueError up front
+    # instead of either an opaque AttributeError from `getattr(model, col)`
+    # further down (unknown column case) or a silent empty-list result that
+    # superficially looks like "no rows came back" (empty-list case). This
+    # validation is unrelated to the documented `latest_check_column`
+    # shorter-than-input result; that case is intentional and handled in the
+    # main result-shape contract in the docstring.
     if returning_columns is not None:
         if not returning_columns:
             raise ValueError(
