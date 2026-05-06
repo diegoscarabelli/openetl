@@ -266,43 +266,54 @@ def upsert_model_instances(
     :param session: SQLAlchemy ORM session for database operations.
     :param model_instances: List of SQLAlchemy ORM model instances to upsert. All
         instances must be of the same model type representing a SQL database table.
-    :param update_columns: List of columns to update in case of conflict. If None, all
-        columns except the conflict columns will be updated.
-    :param conflict_columns: List of columns to check for conflicts (e.g., primary
-        key(s) or unique constraints). If None, a simple insert is performed and
-        database conflicts may occur.
+    :param update_columns: Column **keys** (Python attribute names, matching
+        ``Column.key``) to update on conflict. Defaults to all columns except
+        the conflict columns, primary-key columns, ``create_ts``, and
+        ``update_ts``.
+    :param conflict_columns: Column **names** (database column names, matching
+        ``Column.name``) forming the unique conflict target. SQLAlchemy's
+        ``index_elements`` parameter expects names, which is why this list
+        uses the names namespace; ``update_columns``, ``returning_columns``,
+        and ``latest_check_column`` use the keys namespace instead. For the
+        common case ``Column('foo', ...)`` the two are identical and the
+        distinction does not matter; it only diverges when callers do
+        ``Column('db_name', key='attr_name')``. If None, a simple insert is
+        performed and database conflicts may occur.
     :param on_conflict_update: If True, update rows on conflict; if False, ignore
         conflicts and do not update existing rows.
-    :param latest_check_column: If specified, only update rows where the value in this
-        column is greater than (or greater than or equal to, if latest_check_inclusive
-        is True) the existing value. Useful for time/version-based updates.
-    :param latest_check_inclusive: If True, use >= comparison for latest_check_column
-        instead of >. Defaults to False (strict greater than).
-    :param returning_columns: List of column names to return via RETURNING.
-        Must be a non-empty list of valid model column names. If None, no
-        RETURNING is issued and the function returns None.
+    :param latest_check_column: Column **key** (Python attribute name, matching
+        ``Column.key``) to gate the update on. Only updates rows where the
+        incoming value is greater than (or >= if ``latest_check_inclusive``)
+        the existing value. Useful for time/version-based updates.
+    :param latest_check_inclusive: If True, use >= comparison for
+        ``latest_check_column`` instead of >. Defaults to False (strict greater
+        than).
+    :param returning_columns: Column **keys** (Python attribute names, matching
+        ``Column.key``) to return via RETURNING. Must be a non-empty list of
+        valid model column keys. If None, no RETURNING is issued and the
+        function returns None.
 
         Result-shape contract by mode:
 
         - INSERT (no conflict_columns), INSERT_IGNORE, plain UPSERT: result
           contains exactly one entry per input row in input order
           (position-aligned).
-        - UPSERT + `latest_check_column`: NOT position-aligned. Conflicted rows
-          whose incoming value fails the latest-check `WHERE` clause produce
-          no `RETURNING` row (PostgreSQL treats the conflict as DO NOTHING in
-          that case), so the result list is SHORTER than the input list.
-          Callers in this regime must reconcile rows by their conflict-key
-          values, not by index.
+        - UPSERT + ``latest_check_column``: NOT position-aligned. Conflicted
+          rows whose incoming value fails the latest-check ``WHERE`` clause
+          produce no ``RETURNING`` row (PostgreSQL treats the conflict as DO
+          NOTHING in that case), so the result list is SHORTER than the input
+          list. Callers in this regime must reconcile rows by their
+          conflict-key values, not by index.
 
         Operational side effect (INSERT_IGNORE + returning_columns only): the
-        helper rewrites internally as a no-op `ON CONFLICT DO UPDATE SET
-        <conflict_col> = excluded.<conflict_col>` so `RETURNING` fires for
+        helper rewrites internally as a no-op ``ON CONFLICT DO UPDATE SET
+        <conflict_col> = excluded.<conflict_col>`` so ``RETURNING`` fires for
         conflicted rows. This still executes an UPDATE in PostgreSQL: it can
         fire UPDATE triggers, generate a new row version (WAL traffic), and
-        take stronger locks than pure `DO NOTHING`. The pure `DO NOTHING`
-        path is preserved when `returning_columns` is None, so callers that
+        take stronger locks than pure ``DO NOTHING``. The pure ``DO NOTHING``
+        path is preserved when ``returning_columns`` is None, so callers that
         want to skip the row-write entirely on conflict still can by
-        omitting `returning_columns`.
+        omitting ``returning_columns``.
     :param chunk_size: Maximum rows per INSERT statement. Clamped internally so the
         total parameter count never exceeds the psycopg3 limit.
     :return: List of SQLAlchemy model instances (with only the requested columns
@@ -363,41 +374,52 @@ def _upsert_values(
     value lists are split into chunks to stay within the psycopg3 parameter limit.
 
     :param model: SQLAlchemy ORM model class representing a SQL database table.
-    :param values: List of dictionaries containing the data to upsert. Each dictionary
-        should map SQL database column names to values.
+    :param values: List of dictionaries mapping column **keys** (Python
+        attribute names, matching ``Column.key``) to values. SQLAlchemy
+        translates keys to database column names when emitting SQL.
     :param session: SQLAlchemy ORM session for database operations.
-    :param update_columns: List of columns to update in case of conflict. If None, all
-        columns except the conflict columns will be updated.
-    :param conflict_columns: List of columns to check for conflicts (e.g., primary
-        key(s) or unique constraints). If None, a simple insert is performed and
-        database conflicts may occur.
+    :param update_columns: Column **keys** (Python attribute names, matching
+        ``Column.key``) to update on conflict. Defaults to all columns except
+        the conflict columns, primary-key columns, ``create_ts``, and
+        ``update_ts``.
+    :param conflict_columns: Column **names** (database column names, matching
+        ``Column.name``) forming the unique conflict target. SQLAlchemy's
+        ``index_elements`` parameter expects names, which is why this list
+        uses the names namespace; ``update_columns``, ``returning_columns``,
+        and ``latest_check_column`` use the keys namespace instead. For the
+        common case ``Column('foo', ...)`` the two are identical; they only
+        diverge for ``Column('db_name', key='attr_name')``. If None, a simple
+        insert is performed and database conflicts may occur.
     :param on_conflict_update: If True, update rows on conflict; if False, ignore
         conflicts and do not update existing rows.
-    :param latest_check_column: If specified, only update rows where the value in this
-        column is greater than (or greater than or equal to, if latest_check_inclusive
-        is True) the existing value. Useful for time/version-based updates.
-    :param latest_check_inclusive: If True, use >= comparison for latest_check_column
-        instead of >. Defaults to False (strict greater than).
-    :param returning_columns: List of columns to return after the operation.
-        Must be a non-empty list of valid model column names.
+    :param latest_check_column: Column **key** (Python attribute name, matching
+        ``Column.key``) to gate the update on. Only updates rows where the
+        incoming value is greater than (or >= if ``latest_check_inclusive``)
+        the existing value. Useful for time/version-based updates.
+    :param latest_check_inclusive: If True, use >= comparison for
+        ``latest_check_column`` instead of >. Defaults to False (strict greater
+        than).
+    :param returning_columns: Column **keys** (Python attribute names, matching
+        ``Column.key``) to return via RETURNING. Must be a non-empty list of
+        valid model column keys.
 
         Result-shape contract by mode:
 
         - INSERT, INSERT_IGNORE, plain UPSERT: one row per input row in input
           order (position-aligned).
-        - UPSERT + `latest_check_column`: NOT position-aligned. When the
-          latest-check `WHERE` clause prevents the update, PostgreSQL treats
-          the conflict as DO NOTHING and emits no `RETURNING` row, so the
+        - UPSERT + ``latest_check_column``: NOT position-aligned. When the
+          latest-check ``WHERE`` clause prevents the update, PostgreSQL treats
+          the conflict as DO NOTHING and emits no ``RETURNING`` row, so the
           result list is shorter than the input list. Reconcile by
           conflict-key value, not by index.
 
         For INSERT_IGNORE the helper internally rewrites the statement using
-        a no-op `DO UPDATE` (assigning a conflict column to itself) so
-        `RETURNING` fires for both newly-inserted and conflicted rows; this
+        a no-op ``DO UPDATE`` (assigning a conflict column to itself) so
+        ``RETURNING`` fires for both newly-inserted and conflicted rows; this
         means an UPDATE actually executes in PostgreSQL on conflict (UPDATE
         triggers can fire, a new row version is written to WAL, stronger
         locks are taken than under pure DO NOTHING). The pure DO NOTHING
-        path is preserved when `returning_columns` is None.
+        path is preserved when ``returning_columns`` is None.
     :param chunk_size: Maximum rows per INSERT statement. Clamped internally so the
         total parameter count never exceeds the psycopg3 limit.
     :return: List of dictionaries with returned values if returning_columns is
@@ -413,27 +435,83 @@ def _upsert_values(
         query_type = QueryType.INSERT_IGNORE if conflict_columns else QueryType.INSERT
 
     conflict_columns = conflict_columns or []
-    model_columns = model.__table__.columns.keys()
+    model_columns = model.__table__.columns.keys()  # KEYS namespace.
+    column_names = {col.name for col in model.__table__.columns}  # NAMES namespace.
+    name_to_key = {col.name: col.key for col in model.__table__.columns}
 
-    # Validate `returning_columns` so callers get a clear ValueError up front
-    # instead of either an opaque AttributeError from `getattr(model, col)`
-    # further down (unknown column case) or a silent empty-list result that
-    # superficially looks like "no rows came back" (empty-list case). This
-    # validation is unrelated to the documented `latest_check_column`
-    # shorter-than-input result; that case is intentional and handled in the
-    # main result-shape contract in the docstring.
+    # SQLAlchemy uses two namespaces for the same column:
+    # - col.name = the database column name (used by the SQL emitted by
+    #   `index_elements=conflict_columns` in `on_conflict_do_update`).
+    # - col.key  = the Python attribute name (used by `excluded[col]` and
+    #   `getattr(model, col)`).
+    # They are equal for the common case `Column('foo', ...)`, but diverge
+    # when callers do `Column('db_name', key='attr_name')`. The contract
+    # this helper enforces:
+    #   - `conflict_columns` entries are NAMES (matching SQLAlchemy's
+    #     `index_elements`).
+    #   - `update_columns`, `returning_columns`, and `latest_check_column`
+    #     are KEYS (matching `excluded[...]` and `getattr(model, ...)`).
+    # Validate up front so a mismatch fails with a clear error here rather
+    # than an opaque AttributeError / KeyError deep in execution.
+    def _duplicates(seq: List[str]) -> List[str]:
+        seen: set = set()
+        dups: List[str] = []
+        for item in seq:
+            if item in seen and item not in dups:
+                dups.append(item)
+            seen.add(item)
+        return dups
+
+    unknown_conflict = [c for c in conflict_columns if c not in column_names]
+    if unknown_conflict:
+        raise ValueError(
+            f"`conflict_columns` references column name(s) not present on "
+            f"{model.__name__}: {unknown_conflict}. Valid column names: "
+            f"{sorted(column_names)}"
+        )
+    dup_conflict = _duplicates(conflict_columns)
+    if dup_conflict:
+        raise ValueError(
+            f"`conflict_columns` contains duplicate entries: {dup_conflict}."
+        )
+    if update_columns is not None:
+        unknown_update = [c for c in update_columns if c not in model_columns]
+        if unknown_update:
+            raise ValueError(
+                f"`update_columns` references column key(s) not present on "
+                f"{model.__name__}: {unknown_update}. Valid column keys: "
+                f"{sorted(model_columns)}"
+            )
+        dup_update = _duplicates(update_columns)
+        if dup_update:
+            raise ValueError(
+                f"`update_columns` contains duplicate entries: {dup_update}."
+            )
+    if latest_check_column is not None and latest_check_column not in model_columns:
+        raise ValueError(
+            f"`latest_check_column` is not a valid column key on "
+            f"{model.__name__}: {latest_check_column!r}. Valid column keys: "
+            f"{sorted(model_columns)}"
+        )
     if returning_columns is not None:
         if not returning_columns:
             raise ValueError(
                 "`returning_columns` must be a non-empty list when provided. "
                 "Pass None to opt out of the RETURNING path."
             )
-        unknown = [col for col in returning_columns if col not in model_columns]
-        if unknown:
+        unknown_returning = [c for c in returning_columns if c not in model_columns]
+        if unknown_returning:
             raise ValueError(
-                f"`returning_columns` references column(s) not present on "
-                f"{model.__name__}: {unknown}. Valid columns: "
-                f"{sorted(model_columns)}"
+                f"`returning_columns` references column key(s) not present "
+                f"on {model.__name__}: {unknown_returning}. Valid column "
+                f"keys: {sorted(model_columns)}"
+            )
+        dup_returning = _duplicates(returning_columns)
+        if dup_returning:
+            raise ValueError(
+                f"`returning_columns` contains duplicate entries: "
+                f"{dup_returning}. Duplicate column labels in RETURNING would "
+                f"silently collide in the result dict."
             )
 
     returned_values: List[Dict[str, Any]] = []
@@ -441,13 +519,20 @@ def _upsert_values(
     # Default update_columns excludes:
     # - conflict columns (used to identify the row, must not change),
     # - primary-key columns (immutable; for an auto-increment PK that's not
-    #   present on the input dict, leaving it would generate `SET pk = NULL`
-    #   and either fail or assign a new sequence value),
+    #   present on the input dict, leaving it would generate `SET pk =
+    #   excluded.pk` which substitutes the next sequence value and silently
+    #   renumbers the PK on every conflict),
     # - create_ts (audit column; `make_base` defaults populate it on insert),
     # - update_ts (set explicitly inside the UPSERT branch below if present).
-    pk_columns = {col.name for col in model.__table__.primary_key.columns}
+    #
+    # All comparisons happen in the KEYS namespace. We translate
+    # `conflict_columns` (names per the public contract) to keys via
+    # `name_to_key` so the set membership actually matches; PK columns use
+    # `col.key` directly.
+    pk_columns = {col.key for col in model.__table__.primary_key.columns}
     if update_columns is None:
-        excluded_cols = set(conflict_columns) | pk_columns | {"create_ts", "update_ts"}
+        conflict_keys = {name_to_key[c] for c in conflict_columns}
+        excluded_cols = conflict_keys | pk_columns | {"create_ts", "update_ts"}
         update_columns = [col for col in model_columns if col not in excluded_cols]
 
     # Clamp chunk_size so total parameters stay within the psycopg3 limit.
@@ -467,6 +552,20 @@ def _upsert_values(
             # Automatically update update_ts column if it exists in the model.
             if hasattr(model, "update_ts") and "update_ts" not in update_dict:
                 update_dict["update_ts"] = datetime.now(tz=timezone.utc)
+
+            # Defensive fallback: if update_dict is empty (e.g. a table with
+            # only PK + conflict + audit columns and no `update_ts`), the
+            # default `update_columns` list is empty and we'd otherwise emit
+            # `ON CONFLICT (...) DO UPDATE SET` with no SET targets, which is
+            # invalid SQL. Use the no-op DO UPDATE trick (assign a conflict
+            # column to itself) so the conflict path still fires and RETURNING
+            # works if requested. Operational footprint matches the documented
+            # INSERT_IGNORE+returning_columns path. `name_to_key` translates
+            # the name namespace (per the conflict_columns contract) to keys
+            # (what `excluded[...]` expects).
+            if not update_dict:
+                key_col = name_to_key[conflict_columns[0]]
+                update_dict[key_col] = insert_stmt.excluded[key_col]
 
             if latest_check_column:
                 excluded_col = insert_stmt.excluded[latest_check_column]
@@ -523,7 +622,14 @@ def _upsert_values(
                 # The pure DO NOTHING path is still used when
                 # returning_columns is None, so callers that want to skip the
                 # row-write entirely on conflict are unaffected.
-                key_col = conflict_columns[0]
+                #
+                # NOTE: `conflict_columns` is in the NAMES namespace per the
+                # public contract, but `set_` keys and `excluded[...]` are in
+                # the KEYS namespace. Translate via `name_to_key` so the trick
+                # works for models with `Column('db_name', key='attr_name')`
+                # (where the two diverge). For the common case the translation
+                # is a no-op.
+                key_col = name_to_key[conflict_columns[0]]
                 upsert_stmt = insert_stmt.on_conflict_do_update(
                     index_elements=conflict_columns,
                     set_={key_col: insert_stmt.excluded[key_col]},
