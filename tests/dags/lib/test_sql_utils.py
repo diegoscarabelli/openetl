@@ -590,6 +590,74 @@ class TestUpsertModelInstances:
         assert record.name == "newer_version"  # Should be updated.
         assert record.version == 6
 
+    def test_upsert_values_latest_check_column_returning_shorter_than_input(
+        self, db_session
+    ):
+        """
+        UPSERT + ``latest_check_column`` + ``returning_columns`` is the documented
+        exception to the "one row per input row" guarantee: when the latest-check
+        ``WHERE`` clause prevents the update, PostgreSQL treats the conflict as DO
+        NOTHING and emits no ``RETURNING`` row, so the result list is shorter than the
+        input.
+
+        Locks in the contract documented in the helper docstring.
+        """
+        db_session.execute(
+            text(
+                "CREATE TEMP TABLE test_version_returning_temp ("
+                " id INTEGER PRIMARY KEY,"
+                " name TEXT,"
+                " version INTEGER NOT NULL)"
+            )
+        )
+
+        class TempBase(DeclarativeBase):
+            pass
+
+        class TempVersionModel(TempBase):
+            __tablename__ = "test_version_returning_temp"
+            id = Column(Integer, primary_key=True)
+            name = Column(String)
+            version = Column(Integer)
+
+        # Seed: id=1 at version 5.
+        _upsert_values(
+            TempVersionModel,
+            [{"id": 1, "name": "initial", "version": 5}],
+            db_session,
+            conflict_columns=["id"],
+            on_conflict_update=True,
+            latest_check_column="version",
+        )
+        db_session.commit()
+
+        # Mix: id=1 with stale version (will be blocked) + id=2 fresh insert.
+        # Position-aligned guarantee NOT held: result has 1 row (only id=2),
+        # not 2 rows.
+        result = _upsert_values(
+            TempVersionModel,
+            [
+                {"id": 1, "name": "stale", "version": 3},
+                {"id": 2, "name": "fresh", "version": 1},
+            ],
+            db_session,
+            conflict_columns=["id"],
+            on_conflict_update=True,
+            latest_check_column="version",
+            returning_columns=["id", "name", "version"],
+        )
+        db_session.commit()
+        assert len(result) == 1
+        assert result[0]["id"] == 2
+        # id=1 was NOT updated (stale).
+        existing = (
+            db_session.execute(select(TempVersionModel).where(TempVersionModel.id == 1))
+            .scalars()
+            .first()
+        )
+        assert existing.name == "initial"
+        assert existing.version == 5
+
     def test_upsert_values_latest_check_column_inclusive(self, db_session):
         """
         Test latest_check_column with >= comparison (inclusive).

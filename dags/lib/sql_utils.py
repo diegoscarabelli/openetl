@@ -280,9 +280,25 @@ def upsert_model_instances(
         instead of >. Defaults to False (strict greater than).
     :param returning_columns: List of column names to return via RETURNING clause. If
         None, no RETURNING is issued and the function returns None. When provided, the
-        returned list contains exactly one entry per input row, in input order
-        (position-aligned), regardless of which `query_type` is used internally. Must be
-        a non-empty list of valid model column names.
+        returned list contains one entry per input row in input order (position-
+        aligned) for the INSERT, INSERT_IGNORE, and plain UPSERT modes. Must be a
+        non-empty list of valid model column names.
+
+        Exception: when `latest_check_column` is also set, conflicted rows whose
+        incoming value fails the latest-check `WHERE` clause produce no `RETURNING`
+        row (PostgreSQL treats the conflict as DO NOTHING in that case), so the
+        result list will be SHORTER than the input list and is no longer
+        position-aligned. Callers that combine `latest_check_column` with
+        `returning_columns` must look up rows by their conflict-key values rather
+        than by index.
+
+        Operational side effect (INSERT_IGNORE + returning_columns): the helper
+        rewrites internally as a no-op `ON CONFLICT DO UPDATE SET <conflict_col>
+        = excluded.<conflict_col>` to make `RETURNING` fire for conflicted rows.
+        This still executes an UPDATE in PostgreSQL: it can fire UPDATE triggers,
+        generate a new row version (WAL traffic), and take stronger locks than
+        pure `DO NOTHING`. The pure `DO NOTHING` path is preserved when
+        `returning_columns` is None.
     :param chunk_size: Maximum rows per INSERT statement. Clamped internally so the
         total parameter count never exceeds the psycopg3 limit.
     :return: List of SQLAlchemy model instances (with only the requested columns
@@ -359,12 +375,20 @@ def _upsert_values(
     :param latest_check_inclusive: If True, use >= comparison for latest_check_column
         instead of >. Defaults to False (strict greater than).
     :param returning_columns: List of columns to return after the operation. If
-        specified, returns one row per input row (in input order, position-aligned),
-        including for rows that conflicted. Must be a non-empty list of valid model
-        column names. For the `INSERT_IGNORE` mode the helper internally rewrites the
-        statement using a no-op `DO UPDATE` (assigning a conflict column to itself) so
-        `RETURNING` fires for both newly-inserted and conflicted rows. See the inline
-        comment in the chunked execution loop for the full rationale.
+        specified, returns one row per input row (in input order, position-aligned)
+        for INSERT, INSERT_IGNORE, and plain UPSERT. For INSERT_IGNORE the helper
+        internally rewrites the statement using a no-op `DO UPDATE` (assigning a
+        conflict column to itself) so `RETURNING` fires for both newly-inserted and
+        conflicted rows; this means an UPDATE actually executes in PostgreSQL on
+        conflict (UPDATE triggers can fire, a new row version is written to WAL,
+        stronger locks are taken than under pure DO NOTHING). The pure DO NOTHING
+        path is preserved when `returning_columns` is None.
+
+        Exception: UPSERT + `latest_check_column` does NOT preserve the position-
+        aligned guarantee. When the latest-check `WHERE` clause prevents the
+        update, PostgreSQL treats it as DO NOTHING and emits no `RETURNING` row
+        for that input, so the result list will be shorter than the input list.
+        Must be a non-empty list of valid model column names.
     :param chunk_size: Maximum rows per INSERT statement. Clamped internally so the
         total parameter count never exceeds the psycopg3 limit.
     :return: List of dictionaries with returned values if returning_columns is
@@ -506,8 +530,14 @@ def _upsert_values(
         if returning_columns:
             # All three branches above attach RETURNING when returning_columns
             # is set (UPSERT and INSERT directly; INSERT_IGNORE via the no-op
-            # DO UPDATE trick), so we always have one row per input row in
-            # input order.
+            # DO UPDATE trick). The result is one row per input row in input
+            # order for the INSERT, INSERT_IGNORE, and plain-UPSERT paths.
+            #
+            # Caveat: UPSERT + `latest_check_column` may emit fewer rows than
+            # the input chunk — when the WHERE clause on the DO UPDATE blocks
+            # an update, PostgreSQL treats the conflict as DO NOTHING and
+            # emits no RETURNING row for that input. Callers in this regime
+            # must reconcile by conflict-key value, not by index.
             returned_values.extend([row._asdict() for row in result.fetchall()])
 
     return returned_values if returning_columns else None
