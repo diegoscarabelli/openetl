@@ -265,16 +265,19 @@ class TestGarminExtractor:
         )
         mock_sleep.assert_called()
 
-    @patch("dags.pipelines.garmin.extract.time.sleep")
     @patch("dags.pipelines.garmin.extract.LOGGER")
     def test_extract_data_by_type_range(
-        self, mock_logger, mock_sleep, extractor, mock_garmin_client
+        self, mock_logger, extractor, mock_garmin_client
     ) -> None:
         """
         Test _extract_data_by_type with RANGE parameter type.
 
+        Post-port (PR #65), RANGE types issue ONE API call covering the full window (not
+        one per day). For unsplittable RANGE types (anything not BODY_COMPOSITION or
+        ACTIVITIES_LIST), the response is written as a single file stamped with
+        end_date. The synthetic BODY_BATTERY type used here exercises that path.
+
         :param mock_logger: Mock logger.
-        :param mock_sleep: Mock sleep function.
         :param extractor: GarminExtractor fixture.
         :param mock_garmin_client: Mock Garmin client fixture.
         """
@@ -292,7 +295,7 @@ class TestGarminExtractor:
             emoji="battery",
         )
 
-        mock_garmin_client.get_body_battery.return_value = {"data": []}
+        mock_garmin_client.get_body_battery.return_value = {"data": [{"x": 1}]}
 
         # Act.
         result = extractor._extract_data_by_type(
@@ -300,16 +303,13 @@ class TestGarminExtractor:
         )
 
         # Assert.
-        assert len(result) == 3  # 3 days (inclusive end date).
-        assert mock_garmin_client.get_body_battery.call_count == 3
-        mock_garmin_client.get_body_battery.assert_has_calls(
-            [
-                call("2025-01-01", "2025-01-01"),
-                call("2025-01-02", "2025-01-02"),
-                call("2025-01-03", "2025-01-03"),
-            ]
+        # One API call for the full window (the perf win), and one file stamped with
+        # end_date for the unsplittable RANGE type.
+        assert len(result) == 1
+        mock_garmin_client.get_body_battery.assert_called_once_with(
+            "2025-01-01", "2025-01-03"
         )
-        mock_sleep.assert_called()
+        assert "2025-01-03" in result[0].name
 
     @patch("dags.pipelines.garmin.extract.LOGGER")
     def test_extract_data_by_type_no_date(

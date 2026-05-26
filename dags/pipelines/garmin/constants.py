@@ -20,6 +20,7 @@ class APIMethodTimeParam(Enum):
     DAILY = "daily"  # Single date parameter: get_method(date_str).
     RANGE = "range"  # Date range parameters: get_method(start_str, end_str).
     NO_DATE = "no_date"  # No date parameters: get_method().
+    PER_ACTIVITY = "per_activity"  # Called per activity_id by extract_fit_activities.
 
 
 @dataclass
@@ -33,7 +34,7 @@ class GarminDataType:
 
     name: str  # "SLEEP".
     api_method: str  # "get_sleep_data()".
-    api_method_time_param: APIMethodTimeParam  # DAILY/RANGE/NO_DATE.
+    api_method_time_param: APIMethodTimeParam  # DAILY/RANGE/NO_DATE/PER_ACTIVITY.
     api_endpoint: str  # API endpoint string.
     description: str  # Description of the data type.
     emoji: str  # Emoji for pretty logging.
@@ -54,6 +55,7 @@ class GarminDataRegistry:
             APIMethodTimeParam.DAILY: [],
             APIMethodTimeParam.RANGE: [],
             APIMethodTimeParam.NO_DATE: [],
+            APIMethodTimeParam.PER_ACTIVITY: [],
         }
         self._all_data_types: List[GarminDataType] = []
 
@@ -174,7 +176,7 @@ class GarminDataRegistry:
             GarminDataType(
                 "EXERCISE_SETS",
                 "get_activity_exercise_sets",
-                APIMethodTimeParam.RANGE,
+                APIMethodTimeParam.PER_ACTIVITY,
                 "/activity-service/activity/{activity_id}/exerciseSets",
                 "Per-set granular strength training data with ML-classified "
                 "exercises, reps, weight, duration, and set type.",
@@ -212,7 +214,7 @@ class GarminDataRegistry:
             GarminDataType(
                 "ACTIVITY",
                 "download_activity",
-                APIMethodTimeParam.RANGE,
+                APIMethodTimeParam.PER_ACTIVITY,
                 "/download-service/files/activity/{activity_id}",
                 "Binary FIT files containing detailed time-series activity data.",
                 "🏃",
@@ -293,6 +295,15 @@ class GarminDataRegistry:
         :return: List of data types with NO_DATE time parameter.
         """
         return self.get_by_time_param(APIMethodTimeParam.NO_DATE)
+
+    @property
+    def per_activity_data_types(self) -> List[GarminDataType]:
+        """
+        Get all per-activity data types (shorthand).
+
+        :return: List of data types with PER_ACTIVITY time parameter.
+        """
+        return self.get_by_time_param(APIMethodTimeParam.PER_ACTIVITY)
 
 
 def _create_garmin_file_types() -> type:
