@@ -105,10 +105,17 @@ class TestGarminProcessor:
         """
         Create mock SQLAlchemy session for testing.
 
+        The default ``session.execute().scalar_one_or_none()`` returns ``None`` so the
+        activity processor's duplicate-detection check (which queries for an existing
+        ``(user_id, start_ts)`` row with a different ``activity_id``) treats the
+        activity as new in mock-based tests. Tests that want to exercise the duplicate
+        path should override this on their session instance.
+
         :return: Mock session.
         """
         session = MagicMock()
         session.execute.return_value.scalars.return_value.first.return_value = None
+        session.execute.return_value.scalar_one_or_none.return_value = None
         session.merge.return_value = None
         session.add.return_value = None
         return session
@@ -1295,6 +1302,210 @@ class TestGarminProcessor:
         assert activity_instance.purposeful is False
         assert activity_instance.favorite is False
         assert activity_instance.pr is False
+
+    # --- Activity base duplicate-dedup tests --------------------------------
+    # Tests for the (user_id, start_ts) duplicate-detection guard in
+    # ``_process_activity_base`` (port of garmin-health-data#67).
+    #
+    # Garmin Connect accepts multiple activities with identical start times
+    # (manual entries, two devices recording the same session, etc.) and
+    # returns each as a distinct ``activityId``. The activity table's
+    # ``UNIQUE (user_id, start_ts)`` constraint correctly rejects the second
+    # insert, but a raw ``IntegrityError`` from the upsert would quarantine
+    # the whole ``(user, day)`` FileSet, losing sleep / HR / stress / etc.
+    # for that day along with the duplicate. The processor detects the
+    # conflict before the upsert, skips the duplicate with a warning, and
+    # keeps processing the rest of the day's data.
+
+    @patch("dags.pipelines.garmin.process.upsert_model_instances")
+    def test_duplicate_start_ts_with_different_activity_id_is_skipped(
+        self, mock_upsert, processor, mock_session
+    ):
+        """
+        A second activity with the same ``(user_id, start_ts)`` as a
+        previously persisted activity (but a different ``activity_id``) must
+        be dropped with a warning: ``_process_activity_base`` returns
+        ``None``, no ``upsert_model_instances`` call is made, and the new
+        ``activity_id`` is registered in ``_skipped_activity_ids`` so
+        downstream per-activity file processors also skip it.
+
+        :param mock_upsert: Mock upsert function.
+        :param processor: GarminProcessor fixture.
+        :param mock_session: Mock session fixture.
+        """
+        # Arrange. Dedup SELECT returns an existing activity_id different
+        # from the one being processed.
+        mock_session.execute.return_value.scalar_one_or_none.return_value = 12345
+
+        activity_data = {
+            "activityId": 99999,  # Distinct from the seeded 12345.
+            "activityName": "Morning Run",
+            "activityType": {"typeId": 1, "typeKey": "running"},
+            "eventType": {"typeId": 1, "typeKey": "other"},
+            "startTimeGMT": "2022-01-01T07:00:00",
+            "startTimeLocal": "2022-01-01T00:00:00",
+            "endTimeGMT": "2022-01-01T08:30:00",
+            "deviceId": 123456789,
+            "manufacturer": "GARMIN",
+            "timeZoneId": 1,
+            "parent": False,
+            "purposeful": True,
+            "favorite": False,
+            "pr": False,
+            "hasPolyline": True,
+            "hasImages": False,
+            "hasVideo": False,
+            "hasSplits": True,
+            "hasHeatMap": False,
+            "elevationCorrected": True,
+            "atpActivity": False,
+            "manualActivity": False,
+            "autoCalcCalories": True,
+        }
+
+        # Act.
+        processor.user_id = 1
+        with patch("dags.lib.logging_utils.LOGGER.warning") as mock_logger:
+            result = processor._process_activity_base(activity_data, mock_session)
+
+        # Assert.
+        # Skip signaled to caller.
+        assert result is None
+        # Warning was logged.
+        mock_logger.assert_called_once()
+        warning_msg = mock_logger.call_args[0][0]
+        assert "Skipping duplicate activity 99999" in warning_msg
+        assert "activity_id=12345" in warning_msg
+        # Duplicate id was registered for child-processor skipping.
+        assert 99999 in processor._skipped_activity_ids
+        # No upsert was attempted for the duplicate.
+        mock_upsert.assert_not_called()
+
+    @patch("dags.pipelines.garmin.process.upsert_model_instances")
+    def test_reextract_same_activity_id_does_not_trip_dedup(
+        self, mock_upsert, processor, mock_session
+    ):
+        """
+        Idempotency guard: re-processing the same ``activity_id`` with the same
+        ``start_ts`` (e.g. a user re-running the extractor) must NOT trip the duplicate
+        path. The existence query excludes rows with the same ``activity_id`` from the
+        conflict set, so the normal UPSERT-by-PK path runs unchanged.
+
+        :param mock_upsert: Mock upsert function.
+        :param processor: GarminProcessor fixture.
+        :param mock_session: Mock session fixture.
+        """
+        # Arrange. Dedup SELECT returns None (no different activity_id
+        # exists at this start_ts), so the upsert path proceeds.
+        mock_session.execute.return_value.scalar_one_or_none.return_value = None
+
+        activity_data = {
+            "activityId": 12345,
+            "activityName": "Morning Run",
+            "activityType": {"typeId": 1, "typeKey": "running"},
+            "eventType": {"typeId": 1, "typeKey": "other"},
+            "startTimeGMT": "2022-01-01T07:00:00",
+            "startTimeLocal": "2022-01-01T00:00:00",
+            "endTimeGMT": "2022-01-01T08:30:00",
+            "deviceId": 123456789,
+            "manufacturer": "GARMIN",
+            "timeZoneId": 1,
+            "parent": False,
+            "purposeful": True,
+            "favorite": False,
+            "pr": False,
+            "hasPolyline": True,
+            "hasImages": False,
+            "hasVideo": False,
+            "hasSplits": True,
+            "hasHeatMap": False,
+            "elevationCorrected": True,
+            "atpActivity": False,
+            "manualActivity": False,
+            "autoCalcCalories": True,
+        }
+
+        mock_activity_with_id = Activity()
+        mock_activity_with_id.activity_id = 12345
+        mock_upsert.return_value = [mock_activity_with_id]
+
+        # Act.
+        processor.user_id = 1
+        result = processor._process_activity_base(activity_data, mock_session)
+
+        # Assert.
+        assert result == 12345
+        assert 12345 not in processor._skipped_activity_ids
+        mock_upsert.assert_called_once()
+
+    def test_fit_file_for_deduped_activity_is_skipped(
+        self, processor, mock_session, temp_dir
+    ):
+        """
+        After ``_process_activity_base`` skips a duplicate, the per-activity file
+        processors must also skip files for that ``activity_id`` instead of FK-failing
+        on the missing parent row. Covers the FIT path: registers the activity_id as
+        skipped, then asserts ``_process_fit_file`` returns early without inserting rows
+        or querying for the activity.
+
+        :param processor: GarminProcessor fixture.
+        :param mock_session: Mock session fixture.
+        :param temp_dir: Temporary directory fixture.
+        """
+        # Arrange.
+        activity_id = 99999
+        processor._skipped_activity_ids.add(activity_id)
+        # Filename pattern: <user_id>_ACTIVITY_<activity_id>_<timestamp>.fit
+        fake_fit = temp_dir / f"1_ACTIVITY_{activity_id}_2024-01-01T08:00:00Z.fit"
+        fake_fit.write_bytes(b"not a real fit file")
+
+        # Act.
+        with patch("dags.lib.logging_utils.LOGGER.warning") as mock_logger:
+            processor._process_fit_file(fake_fit, mock_session)
+
+        # Assert.
+        mock_logger.assert_called_once()
+        warning_msg = mock_logger.call_args[0][0]
+        assert "Skipping FIT file for activity 99999" in warning_msg
+        # No DB queries, no inserts.
+        mock_session.execute.assert_not_called()
+        mock_session.add_all.assert_not_called()
+
+    def test_exercise_sets_for_deduped_activity_is_skipped(
+        self, processor, mock_session, temp_dir
+    ):
+        """
+        Same as the FIT case, for the EXERCISE_SETS path.
+
+        ``_process_exercise_sets`` must skip files whose activity_id was deduped earlier
+        in the same FileSet rather than running the delete+insert and FK-failing on the
+        missing parent row.
+
+        :param processor: GarminProcessor fixture.
+        :param mock_session: Mock session fixture.
+        :param temp_dir: Temporary directory fixture.
+        """
+        # Arrange.
+        activity_id = 99999
+        processor._skipped_activity_ids.add(activity_id)
+        data = {
+            "activityId": activity_id,
+            "exerciseSets": [{"messageIndex": 0, "setType": "ACTIVE"}],
+        }
+        fake_es = temp_dir / f"1_EXERCISE_SETS_{activity_id}_2024-01-01.json"
+        fake_es.write_text(json.dumps(data))
+
+        # Act.
+        with patch("dags.lib.logging_utils.LOGGER.warning") as mock_logger:
+            processor._process_exercise_sets(fake_es, mock_session)
+
+        # Assert.
+        mock_logger.assert_called_once()
+        warning_msg = mock_logger.call_args[0][0]
+        assert "Skipping EXERCISE_SETS for activity 99999" in warning_msg
+        # No deletes, no inserts.
+        mock_session.execute.assert_not_called()
+        mock_session.add_all.assert_not_called()
 
     def test_process_file_set(
         self, processor, mock_session, temp_dir, sample_sleep_data
@@ -6040,8 +6251,13 @@ class TestProcessFitSubSecond:
     def mock_session(self) -> MagicMock:
         """
         Create mock SQLAlchemy session for testing.
+
+        The default ``session.execute().scalar_one_or_none()`` returns ``None`` so the
+        activity processor's duplicate-detection check treats the activity as new in
+        mock-based tests.
         """
         session = MagicMock()
+        session.execute.return_value.scalar_one_or_none.return_value = None
         return session
 
     @pytest.fixture
