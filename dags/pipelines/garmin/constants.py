@@ -20,6 +20,7 @@ class APIMethodTimeParam(Enum):
     DAILY = "daily"  # Single date parameter: get_method(date_str).
     RANGE = "range"  # Date range parameters: get_method(start_str, end_str).
     NO_DATE = "no_date"  # No date parameters: get_method().
+    PER_ACTIVITY = "per_activity"  # Called per activity_id by extract_fit_activities.
 
 
 @dataclass
@@ -32,8 +33,8 @@ class GarminDataType:
     """
 
     name: str  # "SLEEP".
-    api_method: str  # "get_sleep_data()".
-    api_method_time_param: APIMethodTimeParam  # DAILY/RANGE/NO_DATE.
+    api_method: str  # GarminClient attribute name, e.g. "get_sleep_data".
+    api_method_time_param: APIMethodTimeParam  # DAILY/RANGE/NO_DATE/PER_ACTIVITY.
     api_endpoint: str  # API endpoint string.
     description: str  # Description of the data type.
     emoji: str  # Emoji for pretty logging.
@@ -54,6 +55,7 @@ class GarminDataRegistry:
             APIMethodTimeParam.DAILY: [],
             APIMethodTimeParam.RANGE: [],
             APIMethodTimeParam.NO_DATE: [],
+            APIMethodTimeParam.PER_ACTIVITY: [],
         }
         self._all_data_types: List[GarminDataType] = []
 
@@ -152,6 +154,16 @@ class GarminDataRegistry:
                 "time-series data and goal tracking.",
                 "⚡",
             ),
+            GarminDataType(
+                "MENSTRUAL_CYCLE_DAY",
+                "get_menstrual_data_for_date",
+                APIMethodTimeParam.DAILY,
+                "/periodichealth-service/menstrualcycle/dayview/{date}",
+                "Per-day menstrual cycle state: phase, day-in-cycle, predicted cycle "
+                "length, plus user-logged data (symptoms, moods, discharge, flow, "
+                "sex drive, sexual activity, notes, ovulation flag).",
+                "🩸",
+            ),
             # Range Data - Date range parameters: get_method(start_str, end_str)
             GarminDataType(
                 "BODY_COMPOSITION",
@@ -172,9 +184,19 @@ class GarminDataRegistry:
                 "📋",
             ),
             GarminDataType(
+                "MENSTRUAL_CYCLE_SUMMARY",
+                "get_menstrual_calendar_data",
+                APIMethodTimeParam.RANGE,
+                "/periodichealth-service/menstrualcycle/calendar",
+                "Per-cycle summaries (observed cycles and Garmin's projections). "
+                "Predicted cycles are wiped and re-inserted on every extract; "
+                "observed cycles upsert by (user_id, start_date).",
+                "📅",
+            ),
+            GarminDataType(
                 "EXERCISE_SETS",
                 "get_activity_exercise_sets",
-                APIMethodTimeParam.RANGE,
+                APIMethodTimeParam.PER_ACTIVITY,
                 "/activity-service/activity/{activity_id}/exerciseSets",
                 "Per-set granular strength training data with ML-classified "
                 "exercises, reps, weight, duration, and set type.",
@@ -212,7 +234,7 @@ class GarminDataRegistry:
             GarminDataType(
                 "ACTIVITY",
                 "download_activity",
-                APIMethodTimeParam.RANGE,
+                APIMethodTimeParam.PER_ACTIVITY,
                 "/download-service/files/activity/{activity_id}",
                 "Binary FIT files containing detailed time-series activity data.",
                 "🏃",
@@ -294,6 +316,15 @@ class GarminDataRegistry:
         """
         return self.get_by_time_param(APIMethodTimeParam.NO_DATE)
 
+    @property
+    def per_activity_data_types(self) -> List[GarminDataType]:
+        """
+        Get all per-activity data types (shorthand).
+
+        :return: List of data types with PER_ACTIVITY time parameter.
+        """
+        return self.get_by_time_param(APIMethodTimeParam.PER_ACTIVITY)
+
 
 def _create_garmin_file_types() -> type:
     """
@@ -347,6 +378,20 @@ class SleepStage(IntEnum):
     LIGHT = 1
     REM = 2
     AWAKE = 3
+
+
+class MenstrualCyclePhase(IntEnum):
+    """
+    Phase classification for menstrual cycle days from Garmin's periodic-health service.
+
+    Values are the integer codes returned in dayview.daySummary.currentPhase. Names are
+    persisted in garmin.menstrual_cycle_day.current_phase as denormalized labels.
+    """
+
+    MENSTRUAL = 1
+    FOLLICULAR = 2
+    OVULATORY = 3
+    LUTEAL = 4
 
 
 PR_TYPE_LABELS = {

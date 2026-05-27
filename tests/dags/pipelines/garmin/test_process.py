@@ -12,7 +12,7 @@ This test suite covers:
 import copy
 import json
 import tempfile
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Dict, List
 from unittest.mock import MagicMock, patch
@@ -35,6 +35,9 @@ from dags.pipelines.garmin.sqla_models import (
     BreathingDisruption,
     HeartRate,
     HRV,
+    MenstrualCycleDay,
+    MenstrualCycleSummary,
+    MenstrualCycleTag,
     PersonalRecord,
     RacePredictions,
     Respiration,
@@ -105,10 +108,17 @@ class TestGarminProcessor:
         """
         Create mock SQLAlchemy session for testing.
 
+        The default ``session.execute().scalar_one_or_none()`` returns ``None`` so the
+        activity processor's duplicate-detection check (which queries for an existing
+        ``(user_id, start_ts)`` row with a different ``activity_id``) treats the
+        activity as new in mock-based tests. Tests that want to exercise the duplicate
+        path should override this on their session instance.
+
         :return: Mock session.
         """
         session = MagicMock()
         session.execute.return_value.scalars.return_value.first.return_value = None
+        session.execute.return_value.scalar_one_or_none.return_value = None
         session.merge.return_value = None
         session.add.return_value = None
         return session
@@ -1069,6 +1079,41 @@ class TestGarminProcessor:
         assert activity_instance.activity_id == 123456789
 
     @patch("dags.pipelines.garmin.process.upsert_model_instances")
+    def test_process_activity_base_skips_when_end_ts_cannot_be_derived(
+        self, mock_upsert, processor, mock_session
+    ):
+        """
+        When both ``endTimeGMT`` and ``duration`` are missing, the activity has no way
+        to derive ``end_ts`` (a NOT NULL column). The processor must log a warning and
+        return ``None`` rather than raise on ``datetime.fromisoformat(None)``.
+
+        :param mock_upsert: Mock upsert function.
+        :param processor: GarminProcessor fixture.
+        :param mock_session: Mock session fixture.
+        """
+        # Arrange: minimal activity payload with no endTimeGMT and no duration.
+        activity_data = {
+            "activityId": 555,
+            "activityName": "Broken",
+            "activityType": {"typeId": 1, "typeKey": "running"},
+            "eventType": {"typeId": 1, "typeKey": "other"},
+            "startTimeGMT": "2016-01-01T07:00:00",
+            "startTimeLocal": "2016-01-01T00:00:00",
+            # Note: BOTH endTimeGMT and duration are absent.
+        }
+
+        # Act.
+        processor.user_id = 1
+        result = processor._process_activity_base(activity_data, mock_session)
+
+        # Assert: skipped with no upsert call. Activity_id must also be
+        # registered in _skipped_activity_ids so the FIT file processor
+        # short-circuits instead of FK-failing on the missing parent.
+        assert result is None
+        mock_upsert.assert_not_called()
+        assert 555 in processor._skipped_activity_ids
+
+    @patch("dags.pipelines.garmin.process.upsert_model_instances")
     def test_process_activity_base_handles_missing_device_fields(
         self, mock_upsert, processor, mock_session
     ):
@@ -1295,6 +1340,241 @@ class TestGarminProcessor:
         assert activity_instance.purposeful is False
         assert activity_instance.favorite is False
         assert activity_instance.pr is False
+
+    # --- Activity base duplicate-dedup tests --------------------------------
+    # Tests for the (user_id, start_ts) duplicate-detection guard in
+    # ``_process_activity_base`` (port of garmin-health-data#67).
+    #
+    # Garmin Connect accepts multiple activities with identical start times
+    # (manual entries, two devices recording the same session, etc.) and
+    # returns each as a distinct ``activityId``. The activity table's
+    # ``UNIQUE (user_id, start_ts)`` constraint correctly rejects the second
+    # insert, but a raw ``IntegrityError`` from the upsert would quarantine
+    # the whole ``(user, day)`` FileSet, losing sleep / HR / stress / etc.
+    # for that day along with the duplicate. The processor detects the
+    # conflict before the upsert, skips the duplicate with a warning, and
+    # keeps processing the rest of the day's data.
+
+    @patch("dags.pipelines.garmin.process.upsert_model_instances")
+    def test_duplicate_start_ts_with_different_activity_id_is_skipped(
+        self, mock_upsert, processor, mock_session
+    ):
+        """
+        A second activity with the same ``(user_id, start_ts)`` as a
+        previously persisted activity (but a different ``activity_id``) must
+        be dropped with a warning: ``_process_activity_base`` returns
+        ``None``, no ``upsert_model_instances`` call is made, and the new
+        ``activity_id`` is registered in ``_skipped_activity_ids`` so
+        downstream per-activity file processors also skip it.
+
+        :param mock_upsert: Mock upsert function.
+        :param processor: GarminProcessor fixture.
+        :param mock_session: Mock session fixture.
+        """
+        # Arrange. Dedup SELECT returns an existing activity_id different
+        # from the one being processed.
+        mock_session.execute.return_value.scalar_one_or_none.return_value = 12345
+
+        activity_data = {
+            "activityId": 99999,  # Distinct from the seeded 12345.
+            "activityName": "Morning Run",
+            "activityType": {"typeId": 1, "typeKey": "running"},
+            "eventType": {"typeId": 1, "typeKey": "other"},
+            "startTimeGMT": "2022-01-01T07:00:00",
+            "startTimeLocal": "2022-01-01T00:00:00",
+            "endTimeGMT": "2022-01-01T08:30:00",
+            "deviceId": 123456789,
+            "manufacturer": "GARMIN",
+            "timeZoneId": 1,
+            "parent": False,
+            "purposeful": True,
+            "favorite": False,
+            "pr": False,
+            "hasPolyline": True,
+            "hasImages": False,
+            "hasVideo": False,
+            "hasSplits": True,
+            "hasHeatMap": False,
+            "elevationCorrected": True,
+            "atpActivity": False,
+            "manualActivity": False,
+            "autoCalcCalories": True,
+        }
+
+        # Act.
+        processor.user_id = 1
+        with patch("dags.lib.logging_utils.LOGGER.warning") as mock_logger:
+            result = processor._process_activity_base(activity_data, mock_session)
+
+        # Assert.
+        # Skip signaled to caller.
+        assert result is None
+        # Warning was logged.
+        mock_logger.assert_called_once()
+        warning_msg = mock_logger.call_args[0][0]
+        assert "Skipping duplicate activity 99999" in warning_msg
+        assert "activity_id=12345" in warning_msg
+        # Duplicate id was registered for child-processor skipping.
+        assert 99999 in processor._skipped_activity_ids
+        # No upsert was attempted for the duplicate.
+        mock_upsert.assert_not_called()
+
+    @patch("dags.pipelines.garmin.process.upsert_model_instances")
+    def test_reextract_same_activity_id_does_not_trip_dedup(
+        self, mock_upsert, processor, mock_session
+    ):
+        """
+        Idempotency guard: re-processing the same ``activity_id`` with the same
+        ``start_ts`` (e.g. a user re-running the extractor) must NOT trip the duplicate
+        path. The existence query excludes rows with the same ``activity_id`` from the
+        conflict set, so the normal UPSERT-by-PK path runs unchanged.
+
+        :param mock_upsert: Mock upsert function.
+        :param processor: GarminProcessor fixture.
+        :param mock_session: Mock session fixture.
+        """
+        # Arrange. Dedup SELECT returns None (no different activity_id
+        # exists at this start_ts), so the upsert path proceeds.
+        mock_session.execute.return_value.scalar_one_or_none.return_value = None
+
+        activity_data = {
+            "activityId": 12345,
+            "activityName": "Morning Run",
+            "activityType": {"typeId": 1, "typeKey": "running"},
+            "eventType": {"typeId": 1, "typeKey": "other"},
+            "startTimeGMT": "2022-01-01T07:00:00",
+            "startTimeLocal": "2022-01-01T00:00:00",
+            "endTimeGMT": "2022-01-01T08:30:00",
+            "deviceId": 123456789,
+            "manufacturer": "GARMIN",
+            "timeZoneId": 1,
+            "parent": False,
+            "purposeful": True,
+            "favorite": False,
+            "pr": False,
+            "hasPolyline": True,
+            "hasImages": False,
+            "hasVideo": False,
+            "hasSplits": True,
+            "hasHeatMap": False,
+            "elevationCorrected": True,
+            "atpActivity": False,
+            "manualActivity": False,
+            "autoCalcCalories": True,
+        }
+
+        mock_activity_with_id = Activity()
+        mock_activity_with_id.activity_id = 12345
+        mock_upsert.return_value = [mock_activity_with_id]
+
+        # Act.
+        processor.user_id = 1
+        result = processor._process_activity_base(activity_data, mock_session)
+
+        # Assert.
+        assert result == 12345
+        assert 12345 not in processor._skipped_activity_ids
+        mock_upsert.assert_called_once()
+
+    def test_fit_file_for_deduped_activity_is_skipped(
+        self, processor, mock_session, temp_dir
+    ):
+        """
+        After ``_process_activity_base`` skips a duplicate, the per-activity file
+        processors must also skip files for that ``activity_id`` instead of FK-failing
+        on the missing parent row. Covers the FIT path: registers the activity_id as
+        skipped, then asserts ``_process_fit_file`` returns early without inserting rows
+        or querying for the activity.
+
+        :param processor: GarminProcessor fixture.
+        :param mock_session: Mock session fixture.
+        :param temp_dir: Temporary directory fixture.
+        """
+        # Arrange.
+        activity_id = 99999
+        processor._skipped_activity_ids.add(activity_id)
+        # Filename pattern: <user_id>_ACTIVITY_<activity_id>_<timestamp>.fit
+        fake_fit = temp_dir / f"1_ACTIVITY_{activity_id}_2024-01-01T08:00:00Z.fit"
+        fake_fit.write_bytes(b"not a real fit file")
+
+        # Act.
+        with patch("dags.lib.logging_utils.LOGGER.warning") as mock_logger:
+            processor._process_fit_file(fake_fit, mock_session)
+
+        # Assert.
+        mock_logger.assert_called_once()
+        warning_msg = mock_logger.call_args[0][0]
+        assert "Skipping FIT file for activity 99999" in warning_msg
+        # No DB queries, no inserts.
+        mock_session.execute.assert_not_called()
+        mock_session.add_all.assert_not_called()
+
+    def test_exercise_sets_for_deduped_activity_is_skipped(
+        self, processor, mock_session, temp_dir
+    ):
+        """
+        Same as the FIT case, for the EXERCISE_SETS path.
+
+        ``_process_exercise_sets`` must skip files whose activity_id was deduped earlier
+        in the same FileSet rather than running the delete+insert and FK-failing on the
+        missing parent row.
+
+        :param processor: GarminProcessor fixture.
+        :param mock_session: Mock session fixture.
+        :param temp_dir: Temporary directory fixture.
+        """
+        # Arrange.
+        activity_id = 99999
+        processor._skipped_activity_ids.add(activity_id)
+        data = {
+            "activityId": activity_id,
+            "exerciseSets": [{"messageIndex": 0, "setType": "ACTIVE"}],
+        }
+        fake_es = temp_dir / f"1_EXERCISE_SETS_{activity_id}_2024-01-01.json"
+        fake_es.write_text(json.dumps(data))
+
+        # Act.
+        with patch("dags.lib.logging_utils.LOGGER.warning") as mock_logger:
+            processor._process_exercise_sets(fake_es, mock_session)
+
+        # Assert.
+        mock_logger.assert_called_once()
+        warning_msg = mock_logger.call_args[0][0]
+        assert "Skipping EXERCISE_SETS for activity 99999" in warning_msg
+        # No deletes, no inserts.
+        mock_session.execute.assert_not_called()
+        mock_session.add_all.assert_not_called()
+
+    def test_process_file_set_resets_skipped_activity_ids(
+        self, processor, mock_session, temp_dir, sample_sleep_data
+    ):
+        """
+        _skipped_activity_ids must be cleared at the start of each FileSet.
+
+        A GarminProcessor instance is reused across FileSets in one batch. Without the
+        reset, activity_ids skipped in one FileSet would leak into the next, causing
+        unrelated activities (e.g. an activity reused on a later day) to be silently
+        dropped and the set to grow unbounded.
+
+        :param processor: GarminProcessor fixture.
+        :param mock_session: Mock session fixture.
+        :param temp_dir: Temporary directory fixture.
+        :param sample_sleep_data: Sample sleep data fixture (any valid file content).
+        """
+        # Arrange: pre-populate the skip set as if a previous FileSet had filled it.
+        processor._skipped_activity_ids.add(99999)
+        sleep_file = temp_dir / "123456789_SLEEP_2022-01-01T00-00-00Z.json"
+        with open(sleep_file, "w", encoding="utf-8") as f:
+            json.dump(sample_sleep_data, f)
+        file_set = FileSet(files={GARMIN_FILE_TYPES.SLEEP: [sleep_file]})
+        mock_session.execute.return_value.scalars.return_value.first.return_value = None
+
+        # Act.
+        with patch.object(processor, "_process_sleep"):
+            processor.process_file_set(file_set, mock_session)
+
+        # Assert: skip set was cleared (the 99999 from the prior FileSet is gone).
+        assert processor._skipped_activity_ids == set()
 
     def test_process_file_set(
         self, processor, mock_session, temp_dir, sample_sleep_data
@@ -6022,6 +6302,374 @@ class TestGarminProcessor:
         mock_session.add_all.assert_not_called()
 
 
+def _menstrual_day_payload(
+    symptoms=None,
+    moods=None,
+    discharge=None,
+    phase=1,
+    flow="HEAVY",
+    notes="test",
+    ovulation_day=True,
+    report_ts="2026-05-25T18:34:49.9",
+    calendar_date="2026-05-25",
+    cycle_start_date="2026-05-23",
+):
+    """
+    Build a representative MENSTRUAL_CYCLE_DAY JSON payload (probe-shaped).
+
+    :param symptoms: List of symptom names; defaults to ``['BACKACHE', 'CRAMPS']``.
+    :param moods: List of mood names; defaults to ``['HAPPY']``.
+    :param discharge: List of discharge names; defaults to ``['CREAMY']``.
+    :param phase: Integer phase code (1=MENSTRUAL through 4=LUTEAL).
+    :param flow: Flow level string.
+    :param notes: User freeform notes.
+    :param ovulation_day: User-marked ovulation flag.
+    :param report_ts: ISO 8601 reportTimestamp string from Garmin.
+    :param calendar_date: dayLog.calendarDate string.
+    :param cycle_start_date: daySummary.startDate string.
+    :return: Dict matching the Garmin dayview response shape.
+    """
+    return {
+        "daySummary": {
+            "startDate": cycle_start_date,
+            "dayInCycle": 3,
+            "periodLength": 3,
+            "currentPhase": phase,
+            "lengthOfCurrentPhase": 3,
+            "daysUntilNextPhase": 1,
+            "predictedCycleLength": 28,
+            "cycleType": "REGULAR",
+            "predictedCycle": False,
+        },
+        "dayLog": {
+            "userProfilePk": 999,
+            "calendarDate": calendar_date,
+            "symptoms": symptoms if symptoms is not None else ["BACKACHE", "CRAMPS"],
+            "moods": moods if moods is not None else ["HAPPY"],
+            "discharge": discharge if discharge is not None else ["CREAMY"],
+            "flow": flow,
+            "sexDrive": "AVERAGE",
+            "sexualActivity": "PROTECTED",
+            "notes": notes,
+            "reportTimestamp": report_ts,
+            "hasBabyMovement": False,
+            "ovulationDay": ovulation_day,
+        },
+    }
+
+
+class TestMenstrualCycleProcessing:
+    """
+    Tests for MENSTRUAL_CYCLE_DAY and MENSTRUAL_CYCLE_SUMMARY processors.
+
+    Uses MagicMock for the session and patches ``upsert_model_instances`` to verify
+    call shape. The delete-then-insert tag pattern is exercised via ``session.execute``
+    + ``session.add_all`` assertions.
+    """
+
+    @pytest.fixture
+    def temp_dir(self):
+        """
+        Create temporary directory for testing.
+
+        :return: Temporary directory path.
+        """
+        with tempfile.TemporaryDirectory() as td:
+            yield Path(td)
+
+    @pytest.fixture
+    def mock_session(self) -> MagicMock:
+        """
+        Create mock SQLAlchemy session for testing.
+
+        :return: Mock session.
+        """
+        session = MagicMock()
+        return session
+
+    @pytest.fixture
+    def processor(self) -> GarminProcessor:
+        """
+        Create a GarminProcessor with ``user_id`` pre-set so processors can run.
+
+        :return: GarminProcessor instance with ``user_id=999``.
+        """
+        proc = _make_test_processor()
+        proc.user_id = 999
+        return proc
+
+    @patch("dags.pipelines.garmin.process.upsert_model_instances")
+    def test_menstrual_cycle_day_upserts_scalar_row(
+        self, mock_upsert, processor, mock_session, temp_dir
+    ):
+        """
+        A populated dayview file must upsert the scalar row and add all tag children.
+
+        :param mock_upsert: Patched upsert_model_instances.
+        :param processor: GarminProcessor fixture.
+        :param mock_session: Mock session fixture.
+        :param temp_dir: Temporary directory fixture.
+        """
+        data = _menstrual_day_payload(
+            symptoms=["BACKACHE"], moods=[], discharge=[], phase=2
+        )
+        file_path = temp_dir / "999_MENSTRUAL_CYCLE_DAY_2026-05-25T12-00-00Z.json"
+        with open(file_path, "w", encoding="utf-8") as f:
+            json.dump(data, f)
+
+        processor._process_menstrual_cycle_day(file_path, mock_session)
+
+        # Assert one upsert call carrying a single MenstrualCycleDay with the
+        # denormalized phase label.
+        mock_upsert.assert_called_once()
+        kwargs = mock_upsert.call_args.kwargs
+        assert kwargs["session"] == mock_session
+        assert kwargs["conflict_columns"] == ["user_id", "date"]
+        assert kwargs["on_conflict_update"] is True
+        records = kwargs["model_instances"]
+        assert len(records) == 1
+        day_record = records[0]
+        assert isinstance(day_record, MenstrualCycleDay)
+        assert day_record.user_id == 999
+        assert day_record.date == date(2026, 5, 25)
+        assert day_record.current_phase == "FOLLICULAR"
+        assert day_record.day_in_cycle == 3
+        assert day_record.predicted_cycle is False
+        assert day_record.flow == "HEAVY"
+        assert day_record.notes == "test"
+        assert day_record.ovulation_day is True
+        # report_ts must be parsed as a timezone-aware UTC datetime so the
+        # TIMESTAMPTZ column round-trips correctly. "2026-05-25T18:34:49.9"
+        # has no offset suffix; the parser stamps UTC.
+        assert day_record.report_ts == datetime(
+            2026, 5, 25, 18, 34, 49, 900000, tzinfo=timezone.utc
+        )
+
+        # Assert the tag delete was issued before the insert.
+        assert mock_session.execute.call_count >= 1
+
+        # Assert session.add_all received the single SYMPTOM tag.
+        mock_session.add_all.assert_called_once()
+        added = mock_session.add_all.call_args.args[0]
+        assert len(added) == 1
+        tag = added[0]
+        assert isinstance(tag, MenstrualCycleTag)
+        assert tag.user_id == 999
+        assert tag.date == date(2026, 5, 25)
+        assert tag.kind == "SYMPTOM"
+        assert tag.name == "BACKACHE"
+
+    @patch("dags.pipelines.garmin.process.upsert_model_instances")
+    def test_menstrual_cycle_day_unknown_phase_falls_back_to_unknown_label(
+        self, mock_upsert, processor, mock_session, temp_dir
+    ):
+        """
+        Unknown phase integers persist as ``UNKNOWN_<n>`` with a logged warning.
+
+        :param mock_upsert: Patched upsert_model_instances.
+        :param processor: GarminProcessor fixture.
+        :param mock_session: Mock session fixture.
+        :param temp_dir: Temporary directory fixture.
+        """
+        data = _menstrual_day_payload(phase=99)
+        file_path = temp_dir / "999_MENSTRUAL_CYCLE_DAY_2026-05-25T12-00-00Z.json"
+        with open(file_path, "w", encoding="utf-8") as f:
+            json.dump(data, f)
+
+        with patch("dags.pipelines.garmin.process.LOGGER.warning") as mock_warn:
+            processor._process_menstrual_cycle_day(file_path, mock_session)
+
+        records = mock_upsert.call_args.kwargs["model_instances"]
+        assert records[0].current_phase == "UNKNOWN_99"
+        assert mock_warn.called
+        # The warning must reference the unknown phase code.
+        warning_args = [c.args[0] for c in mock_warn.call_args_list]
+        assert any("99" in msg for msg in warning_args)
+
+    @patch("dags.pipelines.garmin.process.upsert_model_instances")
+    def test_menstrual_cycle_day_tag_delete_then_insert_with_three_tags(
+        self, mock_upsert, processor, mock_session, temp_dir
+    ):
+        """
+        First-run shape: a file with three tags must delete then add_all([A, B, C]).
+
+        :param mock_upsert: Patched upsert_model_instances.
+        :param processor: GarminProcessor fixture.
+        :param mock_session: Mock session fixture.
+        :param temp_dir: Temporary directory fixture.
+        """
+        data = _menstrual_day_payload(
+            symptoms=["BACKACHE", "CRAMPS", "HEADACHE"],
+            moods=[],
+            discharge=[],
+        )
+        file_path = temp_dir / "999_MENSTRUAL_CYCLE_DAY_2026-05-25T12-00-00Z.json"
+        with open(file_path, "w", encoding="utf-8") as f:
+            json.dump(data, f)
+
+        processor._process_menstrual_cycle_day(file_path, mock_session)
+
+        # Delete-then-insert: at least one session.execute call (the DELETE), and
+        # session.add_all called with three records.
+        assert mock_session.execute.call_count >= 1
+        mock_session.add_all.assert_called_once()
+        added = mock_session.add_all.call_args.args[0]
+        assert len(added) == 3
+        names = sorted(t.name for t in added)
+        assert names == ["BACKACHE", "CRAMPS", "HEADACHE"]
+        assert all(t.kind == "SYMPTOM" for t in added)
+
+    @patch("dags.pipelines.garmin.process.upsert_model_instances")
+    def test_menstrual_cycle_day_tag_delete_then_insert_with_one_tag(
+        self, mock_upsert, processor, mock_session, temp_dir
+    ):
+        """
+        Reprocess-after-removal shape: a file with one tag still issues the DELETE and
+        adds only one record. Complements
+        ``test_menstrual_cycle_day_tag_delete_then_insert_with_three_tags`` to confirm
+        the count of added tags tracks the payload, not accumulated state.
+
+        :param mock_upsert: Patched upsert_model_instances.
+        :param processor: GarminProcessor fixture.
+        :param mock_session: Mock session fixture.
+        :param temp_dir: Temporary directory fixture.
+        """
+        data = _menstrual_day_payload(symptoms=["BACKACHE"], moods=[], discharge=[])
+        file_path = temp_dir / "999_MENSTRUAL_CYCLE_DAY_2026-05-25T12-00-00Z.json"
+        with open(file_path, "w", encoding="utf-8") as f:
+            json.dump(data, f)
+
+        processor._process_menstrual_cycle_day(file_path, mock_session)
+
+        assert mock_session.execute.call_count >= 1
+        mock_session.add_all.assert_called_once()
+        added = mock_session.add_all.call_args.args[0]
+        assert len(added) == 1
+        assert added[0].name == "BACKACHE"
+
+    @patch("dags.pipelines.garmin.process.upsert_model_instances")
+    def test_menstrual_cycle_summary_wipes_predicted_then_upserts(
+        self, mock_upsert, processor, mock_session, temp_dir
+    ):
+        """
+        A payload with both observed and predicted cycles must issue a DELETE targeting
+        ``predicted_cycle = TRUE`` before the upsert.
+
+        :param mock_upsert: Patched upsert_model_instances.
+        :param processor: GarminProcessor fixture.
+        :param mock_session: Mock session fixture.
+        :param temp_dir: Temporary directory fixture.
+        """
+        # Configure the wipe DELETE rowcount so the processor's log line is happy.
+        mock_session.execute.return_value.rowcount = 0
+
+        data = {
+            "cycleSummaries": [
+                {
+                    "startDate": "2026-05-23",
+                    "periodLength": 3,
+                    "predictedCycle": False,
+                },
+                {
+                    "startDate": "2026-06-20",
+                    "periodLength": 5,
+                    "predictedCycle": True,
+                },
+            ]
+        }
+        file_path = temp_dir / "999_MENSTRUAL_CYCLE_SUMMARY_2026-05-25T12-00-00Z.json"
+        with open(file_path, "w", encoding="utf-8") as f:
+            json.dump(data, f)
+
+        processor._process_menstrual_cycle_summary(file_path, mock_session)
+
+        # Verify the wipe DELETE was executed and targets predicted_cycle = TRUE.
+        assert mock_session.execute.call_count == 1
+        delete_stmt = mock_session.execute.call_args.args[0]
+        compiled = delete_stmt.compile(compile_kwargs={"literal_binds": True})
+        sql_text = str(compiled).upper()
+        assert "DELETE FROM" in sql_text
+        assert "MENSTRUAL_CYCLE_SUMMARY" in sql_text
+        assert "PREDICTED_CYCLE" in sql_text
+
+        # Verify the upsert received both records with the right shape.
+        mock_upsert.assert_called_once()
+        kwargs = mock_upsert.call_args.kwargs
+        assert kwargs["conflict_columns"] == ["user_id", "start_date"]
+        assert kwargs["on_conflict_update"] is True
+        records = kwargs["model_instances"]
+        assert len(records) == 2
+        assert all(isinstance(r, MenstrualCycleSummary) for r in records)
+        flags = sorted(r.predicted_cycle for r in records)
+        assert flags == [False, True]
+
+    @patch("dags.pipelines.garmin.process.upsert_model_instances")
+    def test_menstrual_cycle_summary_empty_still_wipes_predicted(
+        self, mock_upsert, processor, mock_session, temp_dir
+    ):
+        """
+        An empty ``cycleSummaries`` payload must still issue the wipe DELETE so stale
+        predictions are cleared, but must NOT call ``upsert_model_instances``.
+
+        :param mock_upsert: Patched upsert_model_instances.
+        :param processor: GarminProcessor fixture.
+        :param mock_session: Mock session fixture.
+        :param temp_dir: Temporary directory fixture.
+        """
+        mock_session.execute.return_value.rowcount = 0
+
+        data = {"cycleSummaries": []}
+        file_path = temp_dir / "999_MENSTRUAL_CYCLE_SUMMARY_2026-05-25T12-00-00Z.json"
+        with open(file_path, "w", encoding="utf-8") as f:
+            json.dump(data, f)
+
+        processor._process_menstrual_cycle_summary(file_path, mock_session)
+
+        # DELETE was issued.
+        assert mock_session.execute.call_count == 1
+        # No upsert call.
+        mock_upsert.assert_not_called()
+
+    @patch("dags.pipelines.garmin.process.upsert_model_instances")
+    def test_menstrual_cycle_summary_skips_entries_without_start_date(
+        self, mock_upsert, processor, mock_session, temp_dir
+    ):
+        """
+        A summary entry missing ``startDate`` is skipped with a warning; valid entries
+        in the same payload still land.
+
+        :param mock_upsert: Patched upsert_model_instances.
+        :param processor: GarminProcessor fixture.
+        :param mock_session: Mock session fixture.
+        :param temp_dir: Temporary directory fixture.
+        """
+        mock_session.execute.return_value.rowcount = 0
+
+        data = {
+            "cycleSummaries": [
+                {
+                    "startDate": "2026-05-23",
+                    "periodLength": 3,
+                    "predictedCycle": False,
+                },
+                # No startDate -- must be skipped.
+                {"periodLength": 5, "predictedCycle": True},
+            ]
+        }
+        file_path = temp_dir / "999_MENSTRUAL_CYCLE_SUMMARY_2026-05-25T12-00-00Z.json"
+        with open(file_path, "w", encoding="utf-8") as f:
+            json.dump(data, f)
+
+        with patch("dags.pipelines.garmin.process.LOGGER.warning") as mock_warn:
+            processor._process_menstrual_cycle_summary(file_path, mock_session)
+
+        mock_upsert.assert_called_once()
+        records = mock_upsert.call_args.kwargs["model_instances"]
+        assert len(records) == 1
+        assert records[0].start_date == date(2026, 5, 23)
+        assert mock_warn.called
+
+
 class TestProcessFitSubSecond:
     """
     Tests for FIT record-frame fractional_timestamp parsing and the duplicate coalescing
@@ -6040,8 +6688,13 @@ class TestProcessFitSubSecond:
     def mock_session(self) -> MagicMock:
         """
         Create mock SQLAlchemy session for testing.
+
+        The default ``session.execute().scalar_one_or_none()`` returns ``None`` so the
+        activity processor's duplicate-detection check treats the activity as new in
+        mock-based tests.
         """
         session = MagicMock()
+        session.execute.return_value.scalar_one_or_none.return_value = None
         return session
 
     @pytest.fixture

@@ -26,6 +26,7 @@ from dags.pipelines.garmin.constants import (
     GARMIN_DATA_REGISTRY,
     PR_TYPE_LABELS,
     SEMICIRCLES_TO_DEGREES,
+    MenstrualCyclePhase,
     SleepStage,
 )
 from dags.pipelines.garmin.sqla_models import (
@@ -43,6 +44,9 @@ from dags.pipelines.garmin.sqla_models import (
     HeartRate,
     HRV,
     IntensityMinutes,
+    MenstrualCycleDay,
+    MenstrualCycleSummary,
+    MenstrualCycleTag,
     PersonalRecord,
     RacePredictions,
     Respiration,
@@ -82,6 +86,13 @@ class GarminProcessor(Processor):
         super().__init__(*args, **kwargs)
         self.user_id = None
         self.must_update_user = False
+        # Activity IDs the per-activity processors should skip because the
+        # ACTIVITIES_LIST processor already determined they're duplicates of
+        # another activity sharing the same (user_id, start_ts). Their parent
+        # row was never inserted, so trying to write child rows (FIT
+        # time-series, splits, laps, GPS path, EXERCISE_SETS) would FK-fail
+        # and quarantine the whole FileSet. See garmin-health-data#67.
+        self._skipped_activity_ids: set = set()
 
     def process_file_set(self, file_set: FileSet, session: Session):
         """
@@ -93,6 +104,14 @@ class GarminProcessor(Processor):
         :param file_set: FileSet containing Garmin data files to process.
         :param session: SQLAlchemy Session object.
         """
+        # Reset per-FileSet coordination state. _skipped_activity_ids is scoped
+        # to a single FileSet (the ACTIVITIES_LIST processor populates it and
+        # the per-activity child processors consume it within the same
+        # process_file_set call). A GarminProcessor instance is reused across
+        # FileSets in a single batch, so without this reset the set would leak
+        # ids across unrelated days and grow unbounded over long runs.
+        self._skipped_activity_ids = set()
+
         # Extract `user_id` from the first file and set instance attribute.
         # All files in a file set have same `user_id` and `timestamp`.
         first_file = file_set.file_paths[0]
@@ -123,6 +142,8 @@ class GarminProcessor(Processor):
                 ("FLOORS", self._process_floors),
                 ("HEART_RATE", self._process_heart_rate),
                 ("INTENSITY_MINUTES", self._process_intensity_minutes),
+                ("MENSTRUAL_CYCLE_DAY", self._process_menstrual_cycle_day),
+                ("MENSTRUAL_CYCLE_SUMMARY", self._process_menstrual_cycle_summary),
                 ("PERSONAL_RECORDS", self._process_personal_records),
                 ("RACE_PREDICTIONS", self._process_race_predictions),
                 ("RESPIRATION", self._process_respiration),
@@ -411,20 +432,36 @@ class GarminProcessor(Processor):
 
     def _process_activity_base(
         self, activity_data: Dict[str, Any], session: Session
-    ) -> int:
+    ) -> Optional[int]:
         """
-        Extract activity fields and process to database using upsert with composite
-        primary key.
+        Extract activity fields and upsert the parent row in ``garmin.activity``.
+
+        The table is keyed by the single-column PK ``activity_id`` with a secondary
+        ``UNIQUE(user_id, start_ts)`` constraint. Upserts conflict on the PK; the UNIQUE
+        constraint is enforced separately, and this function detects a same-``(user_id,
+        start_ts)`` collision with a different ``activity_id`` before the upsert to
+        avoid an IntegrityError that would quarantine the whole FileSet (see garmin-
+        health-data#67).
 
         Uses pop() to remove processed fields from activity_data, enabling automatic
         supplemental metrics extraction without hardcoded exclusion lists.
 
+        Returns ``None`` when the activity is skipped (empty record, no derivable
+        ``end_ts``, or a duplicate-start_ts collision). The caller treats ``None`` as
+        "skip the rest of the per-activity pipeline" so sport-specific aggregates and
+        supplemental metrics are not attached to a non-existent parent row.
+
         :param activity_data: Activity data from JSON (will be modified by pop()).
         :param session: SQLAlchemy Session object.
-        :return: Activity ID from the processed record.
+        :return: Activity ID from the processed record, or ``None`` if skipped.
         """
         # Extract activity ID.
-        activity_id = activity_data.pop("activityId")
+        # Cast to int immediately: Garmin's JSON can return activityId as a
+        # string. Downstream code expects int (the BIGINT column, the
+        # _skipped_activity_ids set populated/queried by per-activity child
+        # processors that parse activity_id from filenames as int). Casting
+        # once here keeps types consistent throughout.
+        activity_id = int(activity_data.pop("activityId"))
 
         # Extract nested structures, all non-nullable, must be present.
         activity_type = activity_data.pop("activityType")
@@ -443,11 +480,63 @@ class GarminProcessor(Processor):
                 end_dt = start_dt + timedelta(seconds=duration_seconds)
                 end_time_gmt_str = end_dt.isoformat()
 
+        # If both endTimeGMT and duration are absent we have no way to derive
+        # end_ts (the column is NOT NULL). Skip with a warning rather than
+        # raising on the fromisoformat(None) below. Register the activity_id
+        # in _skipped_activity_ids so the FIT downloader's per-activity file
+        # processor short-circuits cleanly instead of FK-failing on the
+        # missing parent row and quarantining the FileSet.
+        if end_time_gmt_str is None:
+            LOGGER.warning(
+                f"⚠️ Skipping activity {activity_id}: no endTimeGMT and no "
+                f"duration to compute it from. Activity row cannot be created."
+            )
+            self._skipped_activity_ids.add(activity_id)
+            return None
+
         # Create timezone-aware datetimes and calculate offset.
         start_ts = datetime.fromisoformat(start_time_gmt_str).replace(
             tzinfo=timezone.utc
         )
         end_ts = datetime.fromisoformat(end_time_gmt_str).replace(tzinfo=timezone.utc)
+
+        # Activity-level deduplication. The `activity` table has a
+        # UNIQUE (user_id, start_ts) constraint expressing the real-world
+        # invariant "one user, one activity at any given instant" (a sensible
+        # guard against accidental upserts). Garmin Connect, however, does not
+        # itself enforce this: users can create multiple activities with the
+        # same start_ts (e.g. manually entering the same workout twice, or
+        # uploading from two devices that recorded the same session). When
+        # that happens the API returns both as distinct activity_ids and a
+        # naive upsert keyed on the PK would raise IntegrityError on the
+        # secondary UNIQUE constraint, quarantining the entire (user, day)
+        # FileSet - losing sleep, HR, stress, and everything else for that
+        # day. Detect the conflict and skip the duplicate with a warning so
+        # the rest of the day's data still loads. The first-seen activity for
+        # that start_ts wins; subsequent duplicates are dropped. The user can
+        # resolve the underlying duplication by deleting one entry in Garmin
+        # Connect.
+        existing_dup = session.execute(
+            select(Activity.activity_id).where(
+                Activity.user_id == int(self.user_id),
+                Activity.start_ts == start_ts,
+                Activity.activity_id != activity_id,
+            )
+        ).scalar_one_or_none()
+        if existing_dup is not None:
+            LOGGER.warning(
+                f"⚠️ Skipping duplicate activity {activity_id} for user "
+                f"{self.user_id}: another activity (activity_id={existing_dup}) "
+                f"already exists with start_ts={start_ts}. This usually means "
+                f"the same workout was entered twice (e.g. a manual entry "
+                f"created twice by accident). Delete one in Garmin Connect to "
+                f"clean it up."
+            )
+            # Remember this id so the per-activity-file processors (FIT,
+            # EXERCISE_SETS) downstream in the same FileSet also skip cleanly
+            # rather than FK-failing on the missing parent row.
+            self._skipped_activity_ids.add(activity_id)
+            return None
 
         # Calculate timezone offset in hours (decimal precision for half-hour zones).
         utc_naive = datetime.fromisoformat(start_time_gmt_str)
@@ -864,6 +953,17 @@ class GarminProcessor(Processor):
 
         if not activity_id:
             LOGGER.warning(f"⚠️ No activityId in {file_path.name}.")
+            return
+
+        # Skip if the parent activity was deduped (garmin-health-data#67):
+        # the activity row was never inserted, so writing child rows
+        # referencing it would FK-fail and quarantine the FileSet.
+        if int(activity_id) in self._skipped_activity_ids:
+            LOGGER.warning(
+                f"⚠️ Skipping EXERCISE_SETS for activity {activity_id} in "
+                f"{file_path.name}: parent activity was deduped (duplicate "
+                f"(user_id, start_ts))."
+            )
             return
 
         # Always delete existing rows for reprocessing (cleans stale data even
@@ -2258,6 +2358,231 @@ class GarminProcessor(Processor):
         else:
             LOGGER.warning("⚠️ No floors data found.")
 
+    def _process_menstrual_cycle_day(self, file_path: Path, session: Session) -> None:
+        """
+        Process a MENSTRUAL_CYCLE_DAY file containing one day's cycle log.
+
+        Upserts the day row keyed by ``(user_id, date)``. Then runs delete-then-insert
+        for that day's tags (symptoms, moods, discharge) so user removals propagate on
+        reprocess. The integer ``daySummary.currentPhase`` is translated to a textual
+        label via :class:`MenstrualCyclePhase` and stored denormalized in
+        ``current_phase``; the integer index is not persisted.
+
+        :param file_path: Path to the MENSTRUAL_CYCLE_DAY JSON file.
+        :param session: SQLAlchemy Session object.
+        """
+        payload = self._load_json_file(file_path)
+        day_summary = payload.get("daySummary") or {}
+        day_log = payload.get("dayLog") or {}
+
+        # Recover the data date. Prefer dayLog.calendarDate; fall back to the
+        # filename timestamp (a midday UTC stamp built from the queried date).
+        date_str = day_log.get("calendarDate")
+        if not date_str:
+            ts_str = self._parse_filename(file_path.name)["timestamp"]
+            date_str = ts_str.split("T", 1)[0]
+        day_date = datetime.strptime(date_str, "%Y-%m-%d").date()
+
+        # Translate the numeric phase to a denormalized text label.
+        phase_int = day_summary.get("currentPhase")
+        current_phase_label: Optional[str] = None
+        if phase_int is not None:
+            try:
+                current_phase_label = MenstrualCyclePhase(phase_int).name
+            except ValueError:
+                LOGGER.warning(
+                    f"⚠️ Unknown menstrual cycle phase code {phase_int!r} in "
+                    f"{file_path.name}; storing as 'UNKNOWN_{phase_int}'."
+                )
+                current_phase_label = f"UNKNOWN_{phase_int}"
+
+        # Parse cycle start date (may be missing for fully-unlogged days).
+        cycle_start_str = day_summary.get("startDate")
+        cycle_start_date = (
+            datetime.strptime(cycle_start_str, "%Y-%m-%d").date()
+            if cycle_start_str
+            else None
+        )
+
+        # Parse the user's last-edit timestamp. Garmin returns ISO 8601 with a
+        # single-digit fractional second (e.g. "2026-05-25T18:34:49.9"), which
+        # Python 3.11+ fromisoformat accepts directly.
+        report_ts_str = day_log.get("reportTimestamp")
+        report_ts: Optional[datetime] = None
+        if report_ts_str:
+            # Strip a trailing "Z" so fromisoformat parses it under any Python
+            # version, then tag as UTC.
+            iso_str = report_ts_str.rstrip("Z")
+            parsed = datetime.fromisoformat(iso_str)
+            if parsed.tzinfo is None:
+                parsed = parsed.replace(tzinfo=timezone.utc)
+            report_ts = parsed
+
+        day_record = MenstrualCycleDay(
+            user_id=int(self.user_id),
+            date=day_date,
+            cycle_start_date=cycle_start_date,
+            day_in_cycle=day_summary.get("dayInCycle"),
+            period_length=day_summary.get("periodLength"),
+            current_phase=current_phase_label,
+            length_of_current_phase=day_summary.get("lengthOfCurrentPhase"),
+            days_until_next_phase=day_summary.get("daysUntilNextPhase"),
+            predicted_cycle_length=day_summary.get("predictedCycleLength"),
+            cycle_type=day_summary.get("cycleType"),
+            predicted_cycle=day_summary.get("predictedCycle"),
+            flow=day_log.get("flow"),
+            sex_drive=day_log.get("sexDrive"),
+            sexual_activity=day_log.get("sexualActivity"),
+            notes=day_log.get("notes"),
+            report_ts=report_ts,
+            has_baby_movement=day_log.get("hasBabyMovement"),
+            ovulation_day=day_log.get("ovulationDay"),
+        )
+        upsert_model_instances(
+            session=session,
+            model_instances=[day_record],
+            conflict_columns=["user_id", "date"],
+            on_conflict_update=True,
+        )
+
+        # Delete-then-insert per (user_id, date) for all three tag kinds. This is the
+        # only safe pattern because users can REMOVE tags between extracts; a pure
+        # upsert-by-PK would leave orphan rows for removed tags. One DELETE clears
+        # symptoms, moods, and discharge together; one INSERT batch repopulates them.
+        session.execute(
+            delete(MenstrualCycleTag).where(
+                and_(
+                    MenstrualCycleTag.user_id == int(self.user_id),
+                    MenstrualCycleTag.date == day_date,
+                )
+            )
+        )
+
+        # Garmin currently returns each tag list as a flat list of string enums
+        # (e.g. ['BACKACHE', 'CRAMPS']). If a future Garmin change enriches the
+        # shape (e.g. {'name': 'CRAMPS', 'severity': 'MILD'}), skip non-string
+        # entries with a warning rather than silently stringifying the dict into
+        # the `name` column.
+        tag_records: List[MenstrualCycleTag] = []
+        for kind, names in (
+            ("SYMPTOM", day_log.get("symptoms") or []),
+            ("MOOD", day_log.get("moods") or []),
+            ("DISCHARGE", day_log.get("discharge") or []),
+        ):
+            # Defensive: if Garmin ever returns a non-list (e.g. a single
+            # string), `for name in names` would iterate over characters and
+            # write one tag per char. Skip with a warning instead.
+            if not isinstance(names, list):
+                LOGGER.warning(
+                    f"⚠️ Skipping non-list {kind} payload in "
+                    f"{file_path.name}: {names!r}."
+                )
+                continue
+            for name in names:
+                if not name:
+                    continue
+                if not isinstance(name, str):
+                    LOGGER.warning(
+                        f"⚠️ Skipping non-string {kind} tag in "
+                        f"{file_path.name}: {name!r}."
+                    )
+                    continue
+                tag_records.append(
+                    MenstrualCycleTag(
+                        user_id=int(self.user_id),
+                        date=day_date,
+                        kind=kind,
+                        name=name,
+                    )
+                )
+
+        if tag_records:
+            session.add_all(tag_records)
+
+        LOGGER.info(
+            f"Processed menstrual cycle day for {day_date} "
+            f"({len(tag_records)} tags)."
+        )
+
+    def _process_menstrual_cycle_summary(
+        self, file_path: Path, session: Session
+    ) -> None:
+        """
+        Process a MENSTRUAL_CYCLE_SUMMARY file from the calendar endpoint.
+
+        Wipes all ``predicted_cycle=True`` rows for the current user before inserting
+        the new payload. Real (user-logged) cycles use upsert by ``(user_id,
+        start_date)`` because their start date is anchored to an observed event and does
+        not drift between extracts. Predictions, by contrast, shift dates as Garmin
+        recomputes projections, so wipe-and-replace is the only way to keep the table
+        mirroring the current Garmin state without accumulating stale predicted rows.
+
+        :param file_path: Path to the MENSTRUAL_CYCLE_SUMMARY JSON file.
+        :param session: SQLAlchemy Session object.
+        """
+        payload = self._load_json_file(file_path)
+        cycle_summaries = payload.get("cycleSummaries") or []
+
+        # Wipe stale predictions before insert so the table reflects Garmin's
+        # current projection set rather than the union of every past projection.
+        wipe_result = session.execute(
+            delete(MenstrualCycleSummary).where(
+                and_(
+                    MenstrualCycleSummary.user_id == int(self.user_id),
+                    MenstrualCycleSummary.predicted_cycle.is_(True),
+                )
+            )
+        )
+        wiped_predicted = wipe_result.rowcount or 0
+
+        if not cycle_summaries:
+            LOGGER.info(
+                f"No cycle summaries in {file_path.name}; "
+                f"wiped {wiped_predicted} stale predicted row(s)."
+            )
+            return
+
+        records: List[MenstrualCycleSummary] = []
+        for cycle in cycle_summaries:
+            # Defensive: each cycle entry should be a dict. Skip malformed
+            # entries (non-dicts) rather than raise on cycle.get(...).
+            if not isinstance(cycle, dict):
+                LOGGER.warning(
+                    f"⚠️ Skipping non-dict cycle summary entry in "
+                    f"{file_path.name}: {cycle!r}."
+                )
+                continue
+            start_date_str = cycle.get("startDate")
+            if not start_date_str:
+                LOGGER.warning(
+                    f"⚠️ Skipping cycle summary entry with no startDate in "
+                    f"{file_path.name}: {cycle}."
+                )
+                continue
+            records.append(
+                MenstrualCycleSummary(
+                    user_id=int(self.user_id),
+                    start_date=datetime.strptime(start_date_str, "%Y-%m-%d").date(),
+                    period_length=cycle.get("periodLength"),
+                    # `is True` accepts only the literal bool: a string like
+                    # "false" or any non-bool corrupted payload defaults to
+                    # False instead of being silently truthy-cast.
+                    predicted_cycle=cycle.get("predictedCycle") is True,
+                )
+            )
+
+        if records:
+            upsert_model_instances(
+                session=session,
+                model_instances=records,
+                conflict_columns=["user_id", "start_date"],
+                on_conflict_update=True,
+            )
+            LOGGER.info(
+                f"Processed {len(records)} menstrual cycle summary record(s); "
+                f"wiped {wiped_predicted} stale predicted row(s) first."
+            )
+
     def _process_personal_records(self, file_path: Path, session: Session):
         """
         Process a PERSONAL_RECORDS file containing personal record achievements.
@@ -2474,6 +2799,17 @@ class GarminProcessor(Processor):
             )
 
         activity_id = int(match.groups()[1])
+
+        # Skip if the parent activity was deduped (garmin-health-data#67):
+        # the activity row was never inserted, so writing child rows
+        # referencing it would FK-fail and quarantine the FileSet.
+        if activity_id in self._skipped_activity_ids:
+            LOGGER.warning(
+                f"⚠️ Skipping FIT file for activity {activity_id} in "
+                f"{file_path.name}: parent activity was deduped (duplicate "
+                f"(user_id, start_ts))."
+            )
+            return
 
         # Verify activity exists (FIT file requires a parent activity record).
         existing_activity = (

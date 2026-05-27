@@ -2042,6 +2042,206 @@ COMMENT ON COLUMN garmin.floors.create_ts IS
 'Timestamp when the record was created in the database.';
 
 ----------------------------------------------------------------------------------------
+
+-- Daily menstrual cycle state from Garmin Connect's periodic-health service. One row
+-- per day inside any observed or predicted cycle window. Combines the dayview
+-- endpoint's daySummary (computed cycle state, always present when the day falls in a
+-- cycle window) and dayLog (user-supplied data, NULL for days the user has not logged
+-- but that still fall inside a known or predicted cycle). Days outside every cycle
+-- window return a bare empty payload from the API and are skipped at extract time.
+-- Re-extracting the same day refreshes the row in place via upsert; tag-shaped
+-- sub-fields (symptoms, moods, discharge) live in menstrual_cycle_tag with
+-- delete-then-insert per (user_id, date) semantics so user removals propagate.
+CREATE TABLE IF NOT EXISTS garmin.menstrual_cycle_day (
+    user_id BIGINT NOT NULL REFERENCES garmin.user (user_id)
+    , date DATE NOT NULL
+    , cycle_start_date DATE
+    , day_in_cycle INTEGER
+    , period_length INTEGER
+    , current_phase TEXT
+    , length_of_current_phase INTEGER
+    , days_until_next_phase INTEGER
+    , predicted_cycle_length INTEGER
+    , cycle_type TEXT
+    , predicted_cycle BOOLEAN
+    , flow TEXT
+    , sex_drive TEXT
+    , sexual_activity TEXT
+    , notes TEXT
+    , report_ts TIMESTAMPTZ
+    , has_baby_movement BOOLEAN
+    , ovulation_day BOOLEAN
+
+    -- Audit fields.
+    , create_ts TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    , update_ts TIMESTAMPTZ NOT NULL DEFAULT NOW()
+
+    -- Primary key.
+    , PRIMARY KEY (user_id, date)
+);
+
+CREATE INDEX IF NOT EXISTS menstrual_cycle_day_user_id_date_idx
+ON garmin.menstrual_cycle_day (user_id, date DESC);
+
+-- Table comment.
+COMMENT ON TABLE garmin.menstrual_cycle_day IS
+'Per-day menstrual cycle state from Garmin Connect''s periodic-health dayview '
+'endpoint. One row per day inside any observed or predicted cycle window. Combines '
+'daySummary (computed cycle state) and dayLog (user-supplied data, NULL on '
+'unlogged predicted days). Re-extracting the same day upserts the row; tag-shaped '
+'sub-fields (symptoms, moods, discharge) live in menstrual_cycle_tag.';
+
+-- Column comments.
+COMMENT ON COLUMN garmin.menstrual_cycle_day.user_id IS
+'References garmin.user(user_id). Identifies which user this log belongs to.';
+COMMENT ON COLUMN garmin.menstrual_cycle_day.date IS
+'Calendar date of the log (dayLog.calendarDate, or the queried date when only '
+'daySummary is present).';
+COMMENT ON COLUMN garmin.menstrual_cycle_day.cycle_start_date IS
+'daySummary.startDate. Most recent period start anchoring this day''s day-in-cycle.';
+COMMENT ON COLUMN garmin.menstrual_cycle_day.day_in_cycle IS
+'1-based day index within the current cycle (daySummary.dayInCycle).';
+COMMENT ON COLUMN garmin.menstrual_cycle_day.period_length IS
+'Length of the current period in days (daySummary.periodLength).';
+COMMENT ON COLUMN garmin.menstrual_cycle_day.current_phase IS
+'Denormalized phase label: MENSTRUAL / FOLLICULAR / OVULATORY / LUTEAL. Sourced '
+'from daySummary.currentPhase (1-4 int) via MenstrualCyclePhase.';
+COMMENT ON COLUMN garmin.menstrual_cycle_day.length_of_current_phase IS
+'daySummary.lengthOfCurrentPhase.';
+COMMENT ON COLUMN garmin.menstrual_cycle_day.days_until_next_phase IS
+'daySummary.daysUntilNextPhase.';
+COMMENT ON COLUMN garmin.menstrual_cycle_day.predicted_cycle_length IS
+'daySummary.predictedCycleLength.';
+COMMENT ON COLUMN garmin.menstrual_cycle_day.cycle_type IS
+'daySummary.cycleType (e.g., ''REGULAR'', ''IRREGULAR'').';
+COMMENT ON COLUMN garmin.menstrual_cycle_day.predicted_cycle IS
+'daySummary.predictedCycle. TRUE means the cycle is a projection, FALSE means a '
+'user-logged period.';
+COMMENT ON COLUMN garmin.menstrual_cycle_day.flow IS
+'dayLog.flow: NONE / LIGHT / MEDIUM / HEAVY. Nullable when not logged.';
+COMMENT ON COLUMN garmin.menstrual_cycle_day.sex_drive IS
+'dayLog.sexDrive: NONE / LOW / AVERAGE / HIGH. Nullable.';
+COMMENT ON COLUMN garmin.menstrual_cycle_day.sexual_activity IS
+'dayLog.sexualActivity: NONE / UNPROTECTED / PROTECTED. Nullable.';
+COMMENT ON COLUMN garmin.menstrual_cycle_day.notes IS
+'dayLog.notes. Freeform user text. Nullable.';
+COMMENT ON COLUMN garmin.menstrual_cycle_day.report_ts IS
+'dayLog.reportTimestamp. Last time the user edited this day''s log.';
+COMMENT ON COLUMN garmin.menstrual_cycle_day.has_baby_movement IS
+'dayLog.hasBabyMovement.';
+COMMENT ON COLUMN garmin.menstrual_cycle_day.ovulation_day IS
+'dayLog.ovulationDay. User-marked ovulation flag.';
+COMMENT ON COLUMN garmin.menstrual_cycle_day.create_ts IS
+'Timestamp when the record was created in the database.';
+COMMENT ON COLUMN garmin.menstrual_cycle_day.update_ts IS
+'Timestamp when the record was last modified in the database.';
+
+----------------------------------------------------------------------------------------
+
+-- Polymorphic tag table for the three list-shaped fields on the dayview dayLog:
+-- symptoms, moods, and discharge. Each row is one tag the user logged on one day.
+-- Names are raw Garmin enum identifiers (e.g., 'BACKACHE', 'HAPPY', 'EGG_WHITE').
+-- Processor uses delete-then-insert per (user_id, date) so tags removed by the user
+-- propagate on the next extract.
+CREATE TABLE IF NOT EXISTS garmin.menstrual_cycle_tag (
+    user_id BIGINT NOT NULL
+    , date DATE NOT NULL
+    , kind TEXT NOT NULL
+    , name TEXT NOT NULL
+
+    -- Audit fields.
+    , create_ts TIMESTAMPTZ NOT NULL DEFAULT NOW()
+
+    -- Primary key.
+    , PRIMARY KEY (user_id, date, kind, name)
+
+    -- Composite FK to the parent day row with cascade delete so removing a day
+    -- automatically clears its tag children.
+    , FOREIGN KEY (user_id, date) REFERENCES garmin.menstrual_cycle_day (
+        user_id, date
+    ) ON DELETE CASCADE
+
+    -- Restrict kind to the three list-shaped fields the processor knows about.
+    , CONSTRAINT menstrual_cycle_tag_kind_valid CHECK (
+        kind IN ('SYMPTOM', 'MOOD', 'DISCHARGE')
+    )
+);
+
+CREATE INDEX IF NOT EXISTS menstrual_cycle_tag_kind_name_idx
+ON garmin.menstrual_cycle_tag (kind, name);
+
+-- Table comment.
+COMMENT ON TABLE garmin.menstrual_cycle_tag IS
+'Polymorphic tag table for the three list-shaped fields on the dayview dayLog: '
+'symptoms, moods, and discharge. Each row is one tag the user logged on one day. '
+'Processor uses delete-then-insert per (user_id, date) so user-removed tags '
+'propagate.';
+
+-- Column comments.
+COMMENT ON COLUMN garmin.menstrual_cycle_tag.user_id IS
+'References garmin.menstrual_cycle_day(user_id).';
+COMMENT ON COLUMN garmin.menstrual_cycle_tag.date IS
+'References garmin.menstrual_cycle_day(date).';
+COMMENT ON COLUMN garmin.menstrual_cycle_tag.kind IS
+'One of: SYMPTOM, MOOD, DISCHARGE.';
+COMMENT ON COLUMN garmin.menstrual_cycle_tag.name IS
+'Raw Garmin enum identifier for the tag.';
+COMMENT ON COLUMN garmin.menstrual_cycle_tag.create_ts IS
+'Timestamp when the record was created in the database.';
+
+----------------------------------------------------------------------------------------
+
+-- Per-cycle summaries from the menstrual cycle calendar endpoint. Includes both
+-- user-logged cycles (predicted_cycle=FALSE) and Garmin's projections of upcoming
+-- cycles (predicted_cycle=TRUE). Cycle length is intentionally not stored; derive in
+-- SQL via LEAD(start_date) OVER (PARTITION BY user_id ORDER BY start_date) -
+-- start_date. Predicted rows are wiped and re-inserted on every extract because
+-- Garmin's projection dates shift as new data is logged; observed rows use upsert by
+-- (user_id, start_date).
+CREATE TABLE IF NOT EXISTS garmin.menstrual_cycle_summary (
+    user_id BIGINT NOT NULL REFERENCES garmin.user (user_id)
+    , start_date DATE NOT NULL
+    , period_length INTEGER
+    , predicted_cycle BOOLEAN NOT NULL
+
+    -- Audit fields.
+    , create_ts TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    , update_ts TIMESTAMPTZ NOT NULL DEFAULT NOW()
+
+    -- Primary key.
+    , PRIMARY KEY (user_id, start_date)
+);
+
+CREATE INDEX IF NOT EXISTS menstrual_cycle_summary_user_id_start_date_idx
+ON garmin.menstrual_cycle_summary (user_id, start_date DESC);
+CREATE INDEX IF NOT EXISTS menstrual_cycle_summary_predicted_cycle_idx
+ON garmin.menstrual_cycle_summary (user_id, predicted_cycle);
+
+-- Table comment.
+COMMENT ON TABLE garmin.menstrual_cycle_summary IS
+'Per-cycle summaries from the menstrual cycle calendar endpoint. Includes '
+'user-logged cycles (predicted_cycle=FALSE) and Garmin''s projections '
+'(predicted_cycle=TRUE). Predicted rows are wiped and re-inserted on every extract '
+'because projection dates shift as new data is logged; observed rows upsert by '
+'(user_id, start_date). Cycle length is intentionally not stored: derive in SQL via '
+'LEAD over start_date.';
+
+-- Column comments.
+COMMENT ON COLUMN garmin.menstrual_cycle_summary.user_id IS
+'References garmin.user(user_id).';
+COMMENT ON COLUMN garmin.menstrual_cycle_summary.start_date IS
+'cycleSummaries[].startDate. Day the period began (or is predicted to begin).';
+COMMENT ON COLUMN garmin.menstrual_cycle_summary.period_length IS
+'cycleSummaries[].periodLength. Length of the period in days.';
+COMMENT ON COLUMN garmin.menstrual_cycle_summary.predicted_cycle IS
+'cycleSummaries[].predictedCycle. TRUE for Garmin projections, FALSE for '
+'user-logged cycles.';
+COMMENT ON COLUMN garmin.menstrual_cycle_summary.create_ts IS
+'Timestamp when the record was created in the database.';
+COMMENT ON COLUMN garmin.menstrual_cycle_summary.update_ts IS
+'Timestamp when the record was last modified in the database.';
+
+----------------------------------------------------------------------------------------
 -- Personal Record table
 ----------------------------------------------------------------------------------------
 

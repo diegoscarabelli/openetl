@@ -279,9 +279,11 @@ class TestUpsertModelInstances:
 
     def test_upsert_values_default_update_columns_exclude_pk(self, db_session):
         """
-        Default `update_columns` excludes primary-key columns even when the PK is
-        not in `conflict_columns`. Prevents `SET pk = NULL` corruption when an
-        auto-increment PK is upserted with a separate uniqueness key.
+        Default `update_columns` excludes primary-key columns even when the PK is not in
+        `conflict_columns`.
+
+        Prevents `SET pk = NULL` corruption when an auto-increment PK is upserted with a
+        separate uniqueness key.
         """
         from sqlalchemy import Column, Integer, String, UniqueConstraint
         from sqlalchemy.orm import DeclarativeBase
