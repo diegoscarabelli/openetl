@@ -434,17 +434,22 @@ class GarminProcessor(Processor):
         self, activity_data: Dict[str, Any], session: Session
     ) -> Optional[int]:
         """
-        Extract activity fields and process to database using upsert with composite
-        primary key.
+        Extract activity fields and upsert the parent row in ``garmin.activity``.
+
+        The table is keyed by the single-column PK ``activity_id`` with a secondary
+        ``UNIQUE(user_id, start_ts)`` constraint. Upserts conflict on the PK; the UNIQUE
+        constraint is enforced separately, and this function detects a same-``(user_id,
+        start_ts)`` collision with a different ``activity_id`` before the upsert to
+        avoid an IntegrityError that would quarantine the whole FileSet (see garmin-
+        health-data#67).
 
         Uses pop() to remove processed fields from activity_data, enabling automatic
         supplemental metrics extraction without hardcoded exclusion lists.
 
-        Returns ``None`` when the activity is skipped (empty record, or a duplicate
-        ``(user_id, start_ts)`` collision with an existing activity in the database).
-        The caller treats ``None`` as "skip the rest of the per-activity pipeline" so
-        sport-specific aggregates and supplemental metrics are not attached to a non-
-        existent parent row.
+        Returns ``None`` when the activity is skipped (empty record, no derivable
+        ``end_ts``, or a duplicate-start_ts collision). The caller treats ``None`` as
+        "skip the rest of the per-activity pipeline" so sport-specific aggregates and
+        supplemental metrics are not attached to a non-existent parent row.
 
         :param activity_data: Activity data from JSON (will be modified by pop()).
         :param session: SQLAlchemy Session object.
