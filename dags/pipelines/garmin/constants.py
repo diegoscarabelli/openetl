@@ -154,6 +154,16 @@ class GarminDataRegistry:
                 "time-series data and goal tracking.",
                 "⚡",
             ),
+            GarminDataType(
+                "MENSTRUAL_CYCLE_DAY",
+                "get_menstrual_data_for_date",
+                APIMethodTimeParam.DAILY,
+                "/periodichealth-service/menstrualcycle/dayview/{date}",
+                "Per-day menstrual cycle state: phase, day-in-cycle, predicted cycle "
+                "length, plus user-logged data (symptoms, moods, discharge, flow, "
+                "sex drive, sexual activity, notes, ovulation flag).",
+                "🩸",
+            ),
             # Range Data - Date range parameters: get_method(start_str, end_str)
             GarminDataType(
                 "BODY_COMPOSITION",
@@ -172,6 +182,16 @@ class GarminDataRegistry:
                 "/activitylist-service/activities/search/activities",
                 "Numerous aggregated metrics for user-recorded activities.",
                 "📋",
+            ),
+            GarminDataType(
+                "MENSTRUAL_CYCLE_SUMMARY",
+                "get_menstrual_calendar_data",
+                APIMethodTimeParam.RANGE,
+                "/periodichealth-service/menstrualcycle/calendar",
+                "Per-cycle summaries (observed cycles and Garmin's projections). "
+                "Predicted cycles are wiped and re-inserted on every extract; "
+                "observed cycles upsert by (user_id, start_date).",
+                "📅",
             ),
             GarminDataType(
                 "EXERCISE_SETS",
@@ -358,6 +378,20 @@ class SleepStage(IntEnum):
     LIGHT = 1
     REM = 2
     AWAKE = 3
+
+
+class MenstrualCyclePhase(IntEnum):
+    """
+    Phase classification for menstrual cycle days from Garmin's periodic-health service.
+
+    Values are the integer codes returned in dayview.daySummary.currentPhase. Names are
+    persisted in garmin.menstrual_cycle_day.current_phase as denormalized labels.
+    """
+
+    MENSTRUAL = 1
+    FOLLICULAR = 2
+    OVULATORY = 3
+    LUTEAL = 4
 
 
 PR_TYPE_LABELS = {

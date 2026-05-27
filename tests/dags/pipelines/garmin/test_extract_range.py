@@ -220,3 +220,28 @@ class TestExtractRange:
 
         assert saved == []
         assert extractor.failures == []
+
+    def test_menstrual_cycle_summary_writes_single_file_stamped_end_date(
+        self, extractor: GarminExtractor
+    ) -> None:
+        """
+        MENSTRUAL_CYCLE_SUMMARY is an unsplittable RANGE type: the wipe-and-replace
+        policy needs to see the whole new set in one transaction, so the response is
+        written as a single file stamped with end_date.
+        """
+        extractor.start_date = date(2026, 1, 1)
+        extractor.end_date = date(2026, 3, 1)
+        extractor.garmin_client.get_menstrual_calendar_data.return_value = {
+            "cycleSummaries": [
+                {"startDate": "2026-01-05", "periodLength": 5, "predictedCycle": False},
+                {"startDate": "2026-02-05", "periodLength": 5, "predictedCycle": True},
+            ]
+        }
+
+        summary = GARMIN_DATA_REGISTRY.get_by_name("MENSTRUAL_CYCLE_SUMMARY")
+        files = extractor._extract_data_by_type(
+            summary, date(2026, 1, 1), date(2026, 3, 1)
+        )
+
+        assert len(files) == 1
+        assert "MENSTRUAL_CYCLE_SUMMARY_2026-03-01" in files[0].name

@@ -12,7 +12,7 @@ This test suite covers:
 import copy
 import json
 import tempfile
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Dict, List
 from unittest.mock import MagicMock, patch
@@ -35,6 +35,9 @@ from dags.pipelines.garmin.sqla_models import (
     BreathingDisruption,
     HeartRate,
     HRV,
+    MenstrualCycleDay,
+    MenstrualCycleSummary,
+    MenstrualCycleTag,
     PersonalRecord,
     RacePredictions,
     Respiration,
@@ -6231,6 +6234,374 @@ class TestGarminProcessor:
         # Assert - delete is called to clean stale rows, but no inserts.
         mock_session.execute.assert_called()
         mock_session.add_all.assert_not_called()
+
+
+def _menstrual_day_payload(
+    symptoms=None,
+    moods=None,
+    discharge=None,
+    phase=1,
+    flow="HEAVY",
+    notes="test",
+    ovulation_day=True,
+    report_ts="2026-05-25T18:34:49.9",
+    calendar_date="2026-05-25",
+    cycle_start_date="2026-05-23",
+):
+    """
+    Build a representative MENSTRUAL_CYCLE_DAY JSON payload (probe-shaped).
+
+    :param symptoms: List of symptom names; defaults to ``['BACKACHE', 'CRAMPS']``.
+    :param moods: List of mood names; defaults to ``['HAPPY']``.
+    :param discharge: List of discharge names; defaults to ``['CREAMY']``.
+    :param phase: Integer phase code (1=MENSTRUAL through 4=LUTEAL).
+    :param flow: Flow level string.
+    :param notes: User freeform notes.
+    :param ovulation_day: User-marked ovulation flag.
+    :param report_ts: ISO 8601 reportTimestamp string from Garmin.
+    :param calendar_date: dayLog.calendarDate string.
+    :param cycle_start_date: daySummary.startDate string.
+    :return: Dict matching the Garmin dayview response shape.
+    """
+    return {
+        "daySummary": {
+            "startDate": cycle_start_date,
+            "dayInCycle": 3,
+            "periodLength": 3,
+            "currentPhase": phase,
+            "lengthOfCurrentPhase": 3,
+            "daysUntilNextPhase": 1,
+            "predictedCycleLength": 28,
+            "cycleType": "REGULAR",
+            "predictedCycle": False,
+        },
+        "dayLog": {
+            "userProfilePk": 999,
+            "calendarDate": calendar_date,
+            "symptoms": symptoms if symptoms is not None else ["BACKACHE", "CRAMPS"],
+            "moods": moods if moods is not None else ["HAPPY"],
+            "discharge": discharge if discharge is not None else ["CREAMY"],
+            "flow": flow,
+            "sexDrive": "AVERAGE",
+            "sexualActivity": "PROTECTED",
+            "notes": notes,
+            "reportTimestamp": report_ts,
+            "hasBabyMovement": False,
+            "ovulationDay": ovulation_day,
+        },
+    }
+
+
+class TestMenstrualCycleProcessing:
+    """
+    Tests for MENSTRUAL_CYCLE_DAY and MENSTRUAL_CYCLE_SUMMARY processors.
+
+    Uses MagicMock for the session and patches ``upsert_model_instances`` to verify
+    call shape. The delete-then-insert tag pattern is exercised via ``session.execute``
+    + ``session.add_all`` assertions.
+    """
+
+    @pytest.fixture
+    def temp_dir(self):
+        """
+        Create temporary directory for testing.
+
+        :return: Temporary directory path.
+        """
+        with tempfile.TemporaryDirectory() as td:
+            yield Path(td)
+
+    @pytest.fixture
+    def mock_session(self) -> MagicMock:
+        """
+        Create mock SQLAlchemy session for testing.
+
+        :return: Mock session.
+        """
+        session = MagicMock()
+        return session
+
+    @pytest.fixture
+    def processor(self) -> GarminProcessor:
+        """
+        Create a GarminProcessor with ``user_id`` pre-set so processors can run.
+
+        :return: GarminProcessor instance with ``user_id=999``.
+        """
+        proc = _make_test_processor()
+        proc.user_id = 999
+        return proc
+
+    @patch("dags.pipelines.garmin.process.upsert_model_instances")
+    def test_menstrual_cycle_day_upserts_scalar_row(
+        self, mock_upsert, processor, mock_session, temp_dir
+    ):
+        """
+        A populated dayview file must upsert the scalar row and add all tag children.
+
+        :param mock_upsert: Patched upsert_model_instances.
+        :param processor: GarminProcessor fixture.
+        :param mock_session: Mock session fixture.
+        :param temp_dir: Temporary directory fixture.
+        """
+        data = _menstrual_day_payload(
+            symptoms=["BACKACHE"], moods=[], discharge=[], phase=2
+        )
+        file_path = temp_dir / "999_MENSTRUAL_CYCLE_DAY_2026-05-25T12-00-00Z.json"
+        with open(file_path, "w", encoding="utf-8") as f:
+            json.dump(data, f)
+
+        processor._process_menstrual_cycle_day(file_path, mock_session)
+
+        # Assert one upsert call carrying a single MenstrualCycleDay with the
+        # denormalized phase label.
+        mock_upsert.assert_called_once()
+        kwargs = mock_upsert.call_args.kwargs
+        assert kwargs["session"] == mock_session
+        assert kwargs["conflict_columns"] == ["user_id", "date"]
+        assert kwargs["on_conflict_update"] is True
+        records = kwargs["model_instances"]
+        assert len(records) == 1
+        day_record = records[0]
+        assert isinstance(day_record, MenstrualCycleDay)
+        assert day_record.user_id == 999
+        assert day_record.date == date(2026, 5, 25)
+        assert day_record.current_phase == "FOLLICULAR"
+        assert day_record.day_in_cycle == 3
+        assert day_record.predicted_cycle is False
+        assert day_record.flow == "HEAVY"
+        assert day_record.notes == "test"
+        assert day_record.ovulation_day is True
+        # report_ts must be parsed as a timezone-aware UTC datetime so the
+        # TIMESTAMPTZ column round-trips correctly. "2026-05-25T18:34:49.9"
+        # has no offset suffix; the parser stamps UTC.
+        assert day_record.report_ts == datetime(
+            2026, 5, 25, 18, 34, 49, 900000, tzinfo=timezone.utc
+        )
+
+        # Assert the tag delete was issued before the insert.
+        assert mock_session.execute.call_count >= 1
+
+        # Assert session.add_all received the single SYMPTOM tag.
+        mock_session.add_all.assert_called_once()
+        added = mock_session.add_all.call_args.args[0]
+        assert len(added) == 1
+        tag = added[0]
+        assert isinstance(tag, MenstrualCycleTag)
+        assert tag.user_id == 999
+        assert tag.date == date(2026, 5, 25)
+        assert tag.kind == "SYMPTOM"
+        assert tag.name == "BACKACHE"
+
+    @patch("dags.pipelines.garmin.process.upsert_model_instances")
+    def test_menstrual_cycle_day_unknown_phase_falls_back_to_unknown_label(
+        self, mock_upsert, processor, mock_session, temp_dir
+    ):
+        """
+        Unknown phase integers persist as ``UNKNOWN_<n>`` with a logged warning.
+
+        :param mock_upsert: Patched upsert_model_instances.
+        :param processor: GarminProcessor fixture.
+        :param mock_session: Mock session fixture.
+        :param temp_dir: Temporary directory fixture.
+        """
+        data = _menstrual_day_payload(phase=99)
+        file_path = temp_dir / "999_MENSTRUAL_CYCLE_DAY_2026-05-25T12-00-00Z.json"
+        with open(file_path, "w", encoding="utf-8") as f:
+            json.dump(data, f)
+
+        with patch("dags.pipelines.garmin.process.LOGGER.warning") as mock_warn:
+            processor._process_menstrual_cycle_day(file_path, mock_session)
+
+        records = mock_upsert.call_args.kwargs["model_instances"]
+        assert records[0].current_phase == "UNKNOWN_99"
+        assert mock_warn.called
+        # The warning must reference the unknown phase code.
+        warning_args = [c.args[0] for c in mock_warn.call_args_list]
+        assert any("99" in msg for msg in warning_args)
+
+    @patch("dags.pipelines.garmin.process.upsert_model_instances")
+    def test_menstrual_cycle_day_tag_delete_then_insert_with_three_tags(
+        self, mock_upsert, processor, mock_session, temp_dir
+    ):
+        """
+        First-run shape: a file with three tags must delete then add_all([A, B, C]).
+
+        :param mock_upsert: Patched upsert_model_instances.
+        :param processor: GarminProcessor fixture.
+        :param mock_session: Mock session fixture.
+        :param temp_dir: Temporary directory fixture.
+        """
+        data = _menstrual_day_payload(
+            symptoms=["BACKACHE", "CRAMPS", "HEADACHE"],
+            moods=[],
+            discharge=[],
+        )
+        file_path = temp_dir / "999_MENSTRUAL_CYCLE_DAY_2026-05-25T12-00-00Z.json"
+        with open(file_path, "w", encoding="utf-8") as f:
+            json.dump(data, f)
+
+        processor._process_menstrual_cycle_day(file_path, mock_session)
+
+        # Delete-then-insert: at least one session.execute call (the DELETE), and
+        # session.add_all called with three records.
+        assert mock_session.execute.call_count >= 1
+        mock_session.add_all.assert_called_once()
+        added = mock_session.add_all.call_args.args[0]
+        assert len(added) == 3
+        names = sorted(t.name for t in added)
+        assert names == ["BACKACHE", "CRAMPS", "HEADACHE"]
+        assert all(t.kind == "SYMPTOM" for t in added)
+
+    @patch("dags.pipelines.garmin.process.upsert_model_instances")
+    def test_menstrual_cycle_day_tag_delete_then_insert_with_one_tag(
+        self, mock_upsert, processor, mock_session, temp_dir
+    ):
+        """
+        Reprocess-after-removal shape: a file with one tag still issues the DELETE and
+        adds only one record. Complements
+        ``test_menstrual_cycle_day_tag_delete_then_insert_with_three_tags`` to confirm
+        the count of added tags tracks the payload, not accumulated state.
+
+        :param mock_upsert: Patched upsert_model_instances.
+        :param processor: GarminProcessor fixture.
+        :param mock_session: Mock session fixture.
+        :param temp_dir: Temporary directory fixture.
+        """
+        data = _menstrual_day_payload(symptoms=["BACKACHE"], moods=[], discharge=[])
+        file_path = temp_dir / "999_MENSTRUAL_CYCLE_DAY_2026-05-25T12-00-00Z.json"
+        with open(file_path, "w", encoding="utf-8") as f:
+            json.dump(data, f)
+
+        processor._process_menstrual_cycle_day(file_path, mock_session)
+
+        assert mock_session.execute.call_count >= 1
+        mock_session.add_all.assert_called_once()
+        added = mock_session.add_all.call_args.args[0]
+        assert len(added) == 1
+        assert added[0].name == "BACKACHE"
+
+    @patch("dags.pipelines.garmin.process.upsert_model_instances")
+    def test_menstrual_cycle_summary_wipes_predicted_then_upserts(
+        self, mock_upsert, processor, mock_session, temp_dir
+    ):
+        """
+        A payload with both observed and predicted cycles must issue a DELETE targeting
+        ``predicted_cycle = TRUE`` before the upsert.
+
+        :param mock_upsert: Patched upsert_model_instances.
+        :param processor: GarminProcessor fixture.
+        :param mock_session: Mock session fixture.
+        :param temp_dir: Temporary directory fixture.
+        """
+        # Configure the wipe DELETE rowcount so the processor's log line is happy.
+        mock_session.execute.return_value.rowcount = 0
+
+        data = {
+            "cycleSummaries": [
+                {
+                    "startDate": "2026-05-23",
+                    "periodLength": 3,
+                    "predictedCycle": False,
+                },
+                {
+                    "startDate": "2026-06-20",
+                    "periodLength": 5,
+                    "predictedCycle": True,
+                },
+            ]
+        }
+        file_path = temp_dir / "999_MENSTRUAL_CYCLE_SUMMARY_2026-05-25T12-00-00Z.json"
+        with open(file_path, "w", encoding="utf-8") as f:
+            json.dump(data, f)
+
+        processor._process_menstrual_cycle_summary(file_path, mock_session)
+
+        # Verify the wipe DELETE was executed and targets predicted_cycle = TRUE.
+        assert mock_session.execute.call_count == 1
+        delete_stmt = mock_session.execute.call_args.args[0]
+        compiled = delete_stmt.compile(compile_kwargs={"literal_binds": True})
+        sql_text = str(compiled).upper()
+        assert "DELETE FROM" in sql_text
+        assert "MENSTRUAL_CYCLE_SUMMARY" in sql_text
+        assert "PREDICTED_CYCLE" in sql_text
+
+        # Verify the upsert received both records with the right shape.
+        mock_upsert.assert_called_once()
+        kwargs = mock_upsert.call_args.kwargs
+        assert kwargs["conflict_columns"] == ["user_id", "start_date"]
+        assert kwargs["on_conflict_update"] is True
+        records = kwargs["model_instances"]
+        assert len(records) == 2
+        assert all(isinstance(r, MenstrualCycleSummary) for r in records)
+        flags = sorted(r.predicted_cycle for r in records)
+        assert flags == [False, True]
+
+    @patch("dags.pipelines.garmin.process.upsert_model_instances")
+    def test_menstrual_cycle_summary_empty_still_wipes_predicted(
+        self, mock_upsert, processor, mock_session, temp_dir
+    ):
+        """
+        An empty ``cycleSummaries`` payload must still issue the wipe DELETE so stale
+        predictions are cleared, but must NOT call ``upsert_model_instances``.
+
+        :param mock_upsert: Patched upsert_model_instances.
+        :param processor: GarminProcessor fixture.
+        :param mock_session: Mock session fixture.
+        :param temp_dir: Temporary directory fixture.
+        """
+        mock_session.execute.return_value.rowcount = 0
+
+        data = {"cycleSummaries": []}
+        file_path = temp_dir / "999_MENSTRUAL_CYCLE_SUMMARY_2026-05-25T12-00-00Z.json"
+        with open(file_path, "w", encoding="utf-8") as f:
+            json.dump(data, f)
+
+        processor._process_menstrual_cycle_summary(file_path, mock_session)
+
+        # DELETE was issued.
+        assert mock_session.execute.call_count == 1
+        # No upsert call.
+        mock_upsert.assert_not_called()
+
+    @patch("dags.pipelines.garmin.process.upsert_model_instances")
+    def test_menstrual_cycle_summary_skips_entries_without_start_date(
+        self, mock_upsert, processor, mock_session, temp_dir
+    ):
+        """
+        A summary entry missing ``startDate`` is skipped with a warning; valid entries
+        in the same payload still land.
+
+        :param mock_upsert: Patched upsert_model_instances.
+        :param processor: GarminProcessor fixture.
+        :param mock_session: Mock session fixture.
+        :param temp_dir: Temporary directory fixture.
+        """
+        mock_session.execute.return_value.rowcount = 0
+
+        data = {
+            "cycleSummaries": [
+                {
+                    "startDate": "2026-05-23",
+                    "periodLength": 3,
+                    "predictedCycle": False,
+                },
+                # No startDate -- must be skipped.
+                {"periodLength": 5, "predictedCycle": True},
+            ]
+        }
+        file_path = temp_dir / "999_MENSTRUAL_CYCLE_SUMMARY_2026-05-25T12-00-00Z.json"
+        with open(file_path, "w", encoding="utf-8") as f:
+            json.dump(data, f)
+
+        with patch("dags.pipelines.garmin.process.LOGGER.warning") as mock_warn:
+            processor._process_menstrual_cycle_summary(file_path, mock_session)
+
+        mock_upsert.assert_called_once()
+        records = mock_upsert.call_args.kwargs["model_instances"]
+        assert len(records) == 1
+        assert records[0].start_date == date(2026, 5, 23)
+        assert mock_warn.called
 
 
 class TestProcessFitSubSecond:
