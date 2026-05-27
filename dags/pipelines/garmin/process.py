@@ -451,7 +451,12 @@ class GarminProcessor(Processor):
         :return: Activity ID from the processed record, or ``None`` if skipped.
         """
         # Extract activity ID.
-        activity_id = activity_data.pop("activityId")
+        # Cast to int immediately: Garmin's JSON can return activityId as a
+        # string. Downstream code expects int (the BIGINT column, the
+        # _skipped_activity_ids set populated/queried by per-activity child
+        # processors that parse activity_id from filenames as int). Casting
+        # once here keeps types consistent throughout.
+        activity_id = int(activity_data.pop("activityId"))
 
         # Extract nested structures, all non-nullable, must be present.
         activity_type = activity_data.pop("activityType")
