@@ -115,11 +115,13 @@ class TestExtractRange:
         self, extractor: GarminExtractor
     ) -> None:
         """
-        ``ACTIVITIES_LIST`` per-window responses are split into one file per local date
-        by ``startTimeLocal``.
+        ``ACTIVITIES_LIST`` per-window responses are split into one file per day in the
+        window by ``startTimeLocal``.
 
-        Each per-day file is a JSON list of the activity dicts whose ``startTimeLocal``
-        date matches the bucket date.
+        Every day in the window gets a file. Days with at least one activity get a non-
+        empty JSON list; days with zero activities get an empty list ([]). The per-day
+        completeness is required by ``_load_activities_list_from_disk`` to trust the on-
+        disk cache and skip a second API call when ``extract_fit_activities`` runs.
         """
         activities_list = GARMIN_DATA_REGISTRY.get_by_name("ACTIVITIES_LIST")
         extractor.garmin_client.get_activities_by_date.return_value = [
@@ -136,11 +138,17 @@ class TestExtractRange:
         extractor.garmin_client.get_activities_by_date.assert_called_once_with(
             "2026-01-01", "2026-01-05"
         )
-        # Two files (one per local-date with activities).
-        assert len(saved) == 2
+        # Five files: one per day in the 5-day window.
+        assert len(saved) == 5
         names = sorted(p.name for p in saved)
-        assert "ACTIVITIES_LIST_2026-01-01" in names[0]
-        assert "ACTIVITIES_LIST_2026-01-03" in names[1]
+        for day_iso in (
+            "2026-01-01",
+            "2026-01-02",
+            "2026-01-03",
+            "2026-01-04",
+            "2026-01-05",
+        ):
+            assert any(f"ACTIVITIES_LIST_{day_iso}" in n for n in names)
 
         # The 2026-01-01 file contains a list of exactly the 2 day-1 activities.
         day1_file = next(p for p in saved if "2026-01-01" in p.name)
@@ -155,6 +163,14 @@ class TestExtractRange:
             payload = json.load(f)
         assert isinstance(payload, list)
         assert [a["activityId"] for a in payload] == [3]
+
+        # The 2026-01-02 file (no activities) is a present-but-empty list, not
+        # absent. Required so _load_activities_list_from_disk sees full window
+        # coverage and the FIT downloader can use the on-disk cache.
+        day2_file = next(p for p in saved if "2026-01-02" in p.name)
+        with open(day2_file, "r", encoding="utf-8") as f:
+            payload = json.load(f)
+        assert payload == []
 
     def test_per_activity_type_returns_empty_from_dispatch(
         self, extractor: GarminExtractor
@@ -227,8 +243,14 @@ class TestExtractRange:
             activities_list, date(2026, 1, 1), date(2026, 1, 5)
         )
 
-        assert len(saved) == 1
-        assert "ACTIVITIES_LIST_2026-01-02" in saved[0].name
+        # 5 files (one per day in window) — bad entries skipped, good entry in
+        # the 01-02 bucket, the other 4 days are present-but-empty.
+        assert len(saved) == 5
+        day2_file = next(p for p in saved if "2026-01-02" in p.name)
+        with open(day2_file, "r", encoding="utf-8") as f:
+            payload = json.load(f)
+        assert isinstance(payload, list)
+        assert [a["activityId"] for a in payload] == [1]
 
     def test_range_failure_records_window_label(
         self, extractor: GarminExtractor

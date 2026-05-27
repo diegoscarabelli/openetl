@@ -500,7 +500,16 @@ class GarminExtractor:
                 bucket["dateWeightList"].append(entry)
             buckets: Dict[date, Union[dict, list]] = dict_buckets
         elif data_type.name == "ACTIVITIES_LIST":
-            list_buckets: Dict[date, list] = {}
+            # Pre-populate every day in the window with an empty list so days
+            # without activities still produce a (zero-byte-list) file.
+            # _load_activities_list_from_disk requires one file per day to
+            # trust the on-disk cache and skip a second API call in
+            # extract_fit_activities. Without this, any zero-activity day in
+            # the window would force the FIT downloader to re-hit the API.
+            list_buckets: Dict[date, list] = {
+                start_date + timedelta(days=i): []
+                for i in range((end_date - start_date).days + 1)
+            }
             for activity in data or []:
                 # Defensive: skip non-dict entries (e.g. unexpected wrapper
                 # shapes) rather than raise on activity.get(...). Mirrors
@@ -515,7 +524,7 @@ class GarminExtractor:
                     continue
                 if not (start_date <= cal_date <= end_date):
                     continue
-                list_buckets.setdefault(cal_date, []).append(activity)
+                list_buckets[cal_date].append(activity)
             buckets = list_buckets
         else:
             raise ValueError(
