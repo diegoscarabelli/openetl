@@ -1542,6 +1542,37 @@ class TestGarminProcessor:
         mock_session.execute.assert_not_called()
         mock_session.add_all.assert_not_called()
 
+    def test_process_file_set_resets_skipped_activity_ids(
+        self, processor, mock_session, temp_dir, sample_sleep_data
+    ):
+        """
+        _skipped_activity_ids must be cleared at the start of each FileSet.
+
+        A GarminProcessor instance is reused across FileSets in one batch. Without the
+        reset, activity_ids skipped in one FileSet would leak into the next, causing
+        unrelated activities (e.g. an activity reused on a later day) to be silently
+        dropped and the set to grow unbounded.
+
+        :param processor: GarminProcessor fixture.
+        :param mock_session: Mock session fixture.
+        :param temp_dir: Temporary directory fixture.
+        :param sample_sleep_data: Sample sleep data fixture (any valid file content).
+        """
+        # Arrange: pre-populate the skip set as if a previous FileSet had filled it.
+        processor._skipped_activity_ids.add(99999)
+        sleep_file = temp_dir / "123456789_SLEEP_2022-01-01T00-00-00Z.json"
+        with open(sleep_file, "w", encoding="utf-8") as f:
+            json.dump(sample_sleep_data, f)
+        file_set = FileSet(files={GARMIN_FILE_TYPES.SLEEP: [sleep_file]})
+        mock_session.execute.return_value.scalars.return_value.first.return_value = None
+
+        # Act.
+        with patch.object(processor, "_process_sleep"):
+            processor.process_file_set(file_set, mock_session)
+
+        # Assert: skip set was cleared (the 99999 from the prior FileSet is gone).
+        assert processor._skipped_activity_ids == set()
+
     def test_process_file_set(
         self, processor, mock_session, temp_dir, sample_sleep_data
     ):

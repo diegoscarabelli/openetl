@@ -104,6 +104,14 @@ class GarminProcessor(Processor):
         :param file_set: FileSet containing Garmin data files to process.
         :param session: SQLAlchemy Session object.
         """
+        # Reset per-FileSet coordination state. _skipped_activity_ids is scoped
+        # to a single FileSet (the ACTIVITIES_LIST processor populates it and
+        # the per-activity child processors consume it within the same
+        # process_file_set call). A GarminProcessor instance is reused across
+        # FileSets in a single batch, so without this reset the set would leak
+        # ids across unrelated days and grow unbounded over long runs.
+        self._skipped_activity_ids = set()
+
         # Extract `user_id` from the first file and set instance attribute.
         # All files in a file set have same `user_id` and `timestamp`.
         first_file = file_set.file_paths[0]

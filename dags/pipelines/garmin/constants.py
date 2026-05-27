@@ -33,7 +33,7 @@ class GarminDataType:
     """
 
     name: str  # "SLEEP".
-    api_method: str  # "get_sleep_data()".
+    api_method: str  # GarminClient attribute name, e.g. "get_sleep_data".
     api_method_time_param: APIMethodTimeParam  # DAILY/RANGE/NO_DATE/PER_ACTIVITY.
     api_endpoint: str  # API endpoint string.
     description: str  # Description of the data type.
