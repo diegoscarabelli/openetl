@@ -2541,7 +2541,10 @@ class GarminProcessor(Processor):
                     user_id=int(self.user_id),
                     start_date=datetime.strptime(start_date_str, "%Y-%m-%d").date(),
                     period_length=cycle.get("periodLength"),
-                    predicted_cycle=bool(cycle.get("predictedCycle", False)),
+                    # `is True` accepts only the literal bool: a string like
+                    # "false" or any non-bool corrupted payload defaults to
+                    # False instead of being silently truthy-cast.
+                    predicted_cycle=cycle.get("predictedCycle") is True,
                 )
             )
 
