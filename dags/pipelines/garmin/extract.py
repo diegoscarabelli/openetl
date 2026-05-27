@@ -476,8 +476,11 @@ class GarminExtractor:
             dict_buckets: Dict[date, dict] = {}
             # Defensive: BODY_COMPOSITION's API contract is a dict wrapper, but if
             # an unexpected shape (list, string) ever reaches the splitter, fall
-            # back to "no entries" instead of raising on .get().
-            entries = data.get("dateWeightList") or [] if isinstance(data, dict) else []
+            # back to "no entries" instead of raising on .get(). Explicit parens
+            # to make the short-circuit intent unambiguous to readers.
+            entries = (
+                (data.get("dateWeightList") or []) if isinstance(data, dict) else []
+            )
             for entry in entries:
                 # Defensive: skip non-dict entries rather than raise on
                 # entry.get(...) below. Mirrors _load_activities_list_from_disk's
