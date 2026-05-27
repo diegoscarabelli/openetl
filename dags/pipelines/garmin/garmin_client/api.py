@@ -368,10 +368,16 @@ def get_menstrual_calendar_data(
         # chunk as if it produced no data and continue.
         if isinstance(result, dict):
             got_response = True
-            for cycle in result.get("cycleSummaries") or []:
-                cycle_start = cycle.get("startDate")
-                if cycle_start:
-                    cycles_by_start[cycle_start] = cycle
+            cycle_summaries = result.get("cycleSummaries") or []
+            # Defensive: cycleSummaries should be a list of dicts; skip
+            # malformed entries rather than raise on cycle.get(...).
+            if isinstance(cycle_summaries, list):
+                for cycle in cycle_summaries:
+                    if not isinstance(cycle, dict):
+                        continue
+                    cycle_start = cycle.get("startDate")
+                    if cycle_start:
+                        cycles_by_start[cycle_start] = cycle
             logged_symptom.update(result.get("loggedSymptomDays") or [])
             logged_ovulation.update(result.get("loggedOvulationDays") or [])
             logged_note.update(result.get("loggedNoteDays") or [])

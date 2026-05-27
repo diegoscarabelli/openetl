@@ -2521,6 +2521,14 @@ class GarminProcessor(Processor):
 
         records: List[MenstrualCycleSummary] = []
         for cycle in cycle_summaries:
+            # Defensive: each cycle entry should be a dict. Skip malformed
+            # entries (non-dicts) rather than raise on cycle.get(...).
+            if not isinstance(cycle, dict):
+                LOGGER.warning(
+                    f"⚠️ Skipping non-dict cycle summary entry in "
+                    f"{file_path.name}: {cycle!r}."
+                )
+                continue
             start_date_str = cycle.get("startDate")
             if not start_date_str:
                 LOGGER.warning(
