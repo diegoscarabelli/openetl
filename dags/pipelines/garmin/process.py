@@ -472,12 +472,16 @@ class GarminProcessor(Processor):
 
         # If both endTimeGMT and duration are absent we have no way to derive
         # end_ts (the column is NOT NULL). Skip with a warning rather than
-        # raising on the fromisoformat(None) below.
+        # raising on the fromisoformat(None) below. Register the activity_id
+        # in _skipped_activity_ids so the FIT downloader's per-activity file
+        # processor short-circuits cleanly instead of FK-failing on the
+        # missing parent row and quarantining the FileSet.
         if end_time_gmt_str is None:
             LOGGER.warning(
                 f"⚠️ Skipping activity {activity_id}: no endTimeGMT and no "
                 f"duration to compute it from. Activity row cannot be created."
             )
+            self._skipped_activity_ids.add(activity_id)
             return None
 
         # Create timezone-aware datetimes and calculate offset.

@@ -1106,9 +1106,12 @@ class TestGarminProcessor:
         processor.user_id = 1
         result = processor._process_activity_base(activity_data, mock_session)
 
-        # Assert: skipped with no upsert call.
+        # Assert: skipped with no upsert call. Activity_id must also be
+        # registered in _skipped_activity_ids so the FIT file processor
+        # short-circuits instead of FK-failing on the missing parent.
         assert result is None
         mock_upsert.assert_not_called()
+        assert 555 in processor._skipped_activity_ids
 
     @patch("dags.pipelines.garmin.process.upsert_model_instances")
     def test_process_activity_base_handles_missing_device_fields(
