@@ -179,6 +179,57 @@ class TestExtractRange:
         extractor.garmin_client.download_activity.assert_not_called()
         extractor.garmin_client.get_activity_exercise_sets.assert_not_called()
 
+    def test_splitter_skips_non_dict_entries_in_body_composition(
+        self, extractor: GarminExtractor
+    ) -> None:
+        """
+        The splitter must not call ``.get(...)`` on a non-dict ``dateWeightList`` entry.
+
+        A malformed payload that interleaves dicts with strings or other primitives must
+        skip the bad entries and process the good ones, mirroring the defensive
+        tolerance of ``_load_activities_list_from_disk``.
+        """
+        body_comp = GARMIN_DATA_REGISTRY.get_by_name("BODY_COMPOSITION")
+        extractor.garmin_client.get_body_composition.return_value = {
+            "dateWeightList": [
+                "not-a-dict",  # Bad entry, should be skipped.
+                {"calendarDate": "2026-01-02", "weight": 70000.0},  # Good entry.
+                12345,  # Bad entry, should be skipped.
+            ]
+        }
+
+        saved = extractor._extract_data_by_type(
+            body_comp, date(2026, 1, 1), date(2026, 1, 5)
+        )
+
+        # Only the one good entry produces a file (2026-01-02).
+        assert len(saved) == 1
+        assert "BODY_COMPOSITION_2026-01-02" in saved[0].name
+
+    def test_splitter_skips_non_dict_entries_in_activities_list(
+        self, extractor: GarminExtractor
+    ) -> None:
+        """
+        The splitter must not call ``.get(...)`` on a non-dict ``ACTIVITIES_LIST``
+        entry.
+
+        If the API ever returns a wrapper or interleaves non-dicts, the bad entries are
+        skipped and the good ones still land in their per-day files.
+        """
+        activities_list = GARMIN_DATA_REGISTRY.get_by_name("ACTIVITIES_LIST")
+        extractor.garmin_client.get_activities_by_date.return_value = [
+            "not-a-dict",
+            {"activityId": 1, "startTimeLocal": "2026-01-02T08:00:00"},
+            None,
+        ]
+
+        saved = extractor._extract_data_by_type(
+            activities_list, date(2026, 1, 1), date(2026, 1, 5)
+        )
+
+        assert len(saved) == 1
+        assert "ACTIVITIES_LIST_2026-01-02" in saved[0].name
+
     def test_range_failure_records_window_label(
         self, extractor: GarminExtractor
     ) -> None:

@@ -462,6 +462,16 @@ class GarminProcessor(Processor):
                 end_dt = start_dt + timedelta(seconds=duration_seconds)
                 end_time_gmt_str = end_dt.isoformat()
 
+        # If both endTimeGMT and duration are absent we have no way to derive
+        # end_ts (the column is NOT NULL). Skip with a warning rather than
+        # raising on the fromisoformat(None) below.
+        if end_time_gmt_str is None:
+            LOGGER.warning(
+                f"⚠️ Skipping activity {activity_id}: no endTimeGMT and no "
+                f"duration to compute it from. Activity row cannot be created."
+            )
+            return None
+
         # Create timezone-aware datetimes and calculate offset.
         start_ts = datetime.fromisoformat(start_time_gmt_str).replace(
             tzinfo=timezone.utc

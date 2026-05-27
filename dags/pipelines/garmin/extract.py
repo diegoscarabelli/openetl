@@ -476,6 +476,11 @@ class GarminExtractor:
             dict_buckets: Dict[date, dict] = {}
             entries = (data or {}).get("dateWeightList") or []
             for entry in entries:
+                # Defensive: skip non-dict entries rather than raise on
+                # entry.get(...) below. Mirrors _load_activities_list_from_disk's
+                # tolerance for malformed payloads.
+                if not isinstance(entry, dict):
+                    continue
                 cal_date_str = entry.get("calendarDate")
                 if not cal_date_str:
                     continue
@@ -491,6 +496,11 @@ class GarminExtractor:
         elif data_type.name == "ACTIVITIES_LIST":
             list_buckets: Dict[date, list] = {}
             for activity in data or []:
+                # Defensive: skip non-dict entries (e.g. unexpected wrapper
+                # shapes) rather than raise on activity.get(...). Mirrors
+                # _load_activities_list_from_disk's tolerance.
+                if not isinstance(activity, dict):
+                    continue
                 start_local = activity.get("startTimeLocal", "")
                 cal_date_str = start_local[:10]
                 try:

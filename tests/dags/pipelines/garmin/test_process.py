@@ -1079,6 +1079,38 @@ class TestGarminProcessor:
         assert activity_instance.activity_id == 123456789
 
     @patch("dags.pipelines.garmin.process.upsert_model_instances")
+    def test_process_activity_base_skips_when_end_ts_cannot_be_derived(
+        self, mock_upsert, processor, mock_session
+    ):
+        """
+        When both ``endTimeGMT`` and ``duration`` are missing, the activity has no way
+        to derive ``end_ts`` (a NOT NULL column). The processor must log a warning and
+        return ``None`` rather than raise on ``datetime.fromisoformat(None)``.
+
+        :param mock_upsert: Mock upsert function.
+        :param processor: GarminProcessor fixture.
+        :param mock_session: Mock session fixture.
+        """
+        # Arrange: minimal activity payload with no endTimeGMT and no duration.
+        activity_data = {
+            "activityId": 555,
+            "activityName": "Broken",
+            "activityType": {"typeId": 1, "typeKey": "running"},
+            "eventType": {"typeId": 1, "typeKey": "other"},
+            "startTimeGMT": "2016-01-01T07:00:00",
+            "startTimeLocal": "2016-01-01T00:00:00",
+            # Note: BOTH endTimeGMT and duration are absent.
+        }
+
+        # Act.
+        processor.user_id = 1
+        result = processor._process_activity_base(activity_data, mock_session)
+
+        # Assert: skipped with no upsert call.
+        assert result is None
+        mock_upsert.assert_not_called()
+
+    @patch("dags.pipelines.garmin.process.upsert_model_instances")
     def test_process_activity_base_handles_missing_device_fields(
         self, mock_upsert, processor, mock_session
     ):
