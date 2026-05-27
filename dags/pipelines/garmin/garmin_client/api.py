@@ -264,7 +264,11 @@ def get_menstrual_data_for_date(
     cdate = _validate_date_format(cdate, "cdate")
     url = f"{MENSTRUAL_DAYVIEW_URL}/{cdate}"
     result = client._connectapi(url)
-    if result and (result.get("daySummary") or result.get("dayLog")):
+    # Defensive: if the endpoint ever returns a non-dict payload (list, string,
+    # error page), don't crash on result.get(...). Treat as no data.
+    if not isinstance(result, dict):
+        return None
+    if result.get("daySummary") or result.get("dayLog"):
         return result
     return None
 
@@ -358,7 +362,11 @@ def get_menstrual_calendar_data(
             f"{chunk_start.isoformat()}/{chunk_end.isoformat()}"
         )
         result = client._connectapi(url)
-        if result is not None:
+        # Defensive: only merge if the chunk response is a dict. A non-dict
+        # payload (transient error page, unexpected upstream change) on one
+        # chunk should not abort the whole multi-chunk range — treat that
+        # chunk as if it produced no data and continue.
+        if isinstance(result, dict):
             got_response = True
             for cycle in result.get("cycleSummaries") or []:
                 cycle_start = cycle.get("startDate")

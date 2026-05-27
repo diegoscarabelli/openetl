@@ -380,6 +380,94 @@ class TestGetBodyComposition:
 
 
 # ----------------------------------------------------------------------------------------
+# MENSTRUAL CYCLE
+# ----------------------------------------------------------------------------------------
+
+
+class TestGetMenstrualDataForDate:
+    """
+    Tests for ``get_menstrual_data_for_date`` (dayview endpoint).
+    """
+
+    def test_returns_payload_when_day_summary_or_log_present(
+        self, mock_client: MagicMock
+    ) -> None:
+        """
+        A dict response with a populated ``daySummary`` or ``dayLog`` must be returned
+        verbatim so the processor can extract fields.
+        """
+        mock_client._connectapi.return_value = {
+            "daySummary": {"currentPhase": 2},
+            "dayLog": None,
+        }
+        result = api.get_menstrual_data_for_date(mock_client, "2026-05-25")
+        assert result == {"daySummary": {"currentPhase": 2}, "dayLog": None}
+
+    def test_returns_none_for_bare_empty_dict(self, mock_client: MagicMock) -> None:
+        """
+        A dict response with neither ``daySummary`` nor ``dayLog`` (the "no cycle data
+        for this day" shape) must collapse to ``None``.
+        """
+        mock_client._connectapi.return_value = {}
+        assert api.get_menstrual_data_for_date(mock_client, "2026-05-25") is None
+
+    def test_returns_none_for_non_dict_payload(self, mock_client: MagicMock) -> None:
+        """
+        Defensive: a non-dict response (list, string, error page) must return ``None``
+        instead of raising ``AttributeError`` on ``result.get(...)``.
+        """
+        for bad_payload in (None, [], "error", 42):
+            mock_client._connectapi.return_value = bad_payload
+            assert api.get_menstrual_data_for_date(mock_client, "2026-05-25") is None
+
+
+class TestGetMenstrualCalendarData:
+    """
+    Tests for ``get_menstrual_calendar_data`` (calendar endpoint with pagination).
+    """
+
+    def test_returns_none_when_all_chunks_non_dict(
+        self, mock_client: MagicMock
+    ) -> None:
+        """
+        If every chunk's response is non-dict (e.g. an error page on every page of a
+        multi-chunk range), the function returns ``None`` instead of raising.
+        """
+        mock_client._connectapi.return_value = "error"
+        result = api.get_menstrual_calendar_data(
+            mock_client, "2026-01-01", "2026-06-01"
+        )
+        assert result is None
+
+    def test_skips_non_dict_chunks_and_merges_dict_chunks(
+        self, mock_client: MagicMock
+    ) -> None:
+        """
+        A mixed response sequence (one non-dict chunk, one dict chunk) must skip the bad
+        chunk and still return the good chunk's merged content.
+
+        The bad chunk must not abort pagination.
+        """
+        mock_client._connectapi.side_effect = [
+            "error_page",  # First chunk non-dict.
+            {  # Second chunk normal.
+                "cycleSummaries": [{"startDate": "2026-04-05", "periodLength": 5}],
+                "loggedSymptomDays": ["2026-04-05"],
+                "loggedOvulationDays": [],
+                "loggedNoteDays": [],
+            },
+        ]
+        result = api.get_menstrual_calendar_data(
+            mock_client, "2026-01-01", "2026-06-01"
+        )
+        assert result is not None
+        assert result["cycleSummaries"] == [
+            {"startDate": "2026-04-05", "periodLength": 5}
+        ]
+        assert result["loggedSymptomDays"] == ["2026-04-05"]
+
+
+# ----------------------------------------------------------------------------------------
 # RANGE ACTIVITIES
 # ----------------------------------------------------------------------------------------
 
