@@ -431,20 +431,31 @@ class GarminExtractor:
             )
             return []
 
+        # Splittable RANGE types route to the splitter even on an empty payload
+        # (e.g. ACTIVITIES_LIST returning []), because the splitter writes a
+        # per-day empty-list file for ACTIVITIES_LIST so the on-disk coverage
+        # check used by extract_fit_activities trusts the cache. Only bail on
+        # None (transport-level "no response"), not on empty-but-valid data.
+        if data_type.name in ("BODY_COMPOSITION", "ACTIVITIES_LIST"):
+            if data is None:
+                LOGGER.warning(
+                    f"⚠️ {data_type.emoji} {data_type.name}: No data for "
+                    f"{start_str}..{end_str}."
+                )
+                return []
+            return self._split_range_response_to_per_day_files(
+                data, data_type, start_date, end_date
+            )
+
+        # Unsplittable RANGE types (a single-payload response that should not be
+        # split per day) skip on any falsy payload and otherwise get one file
+        # stamped end_date.
         if not data:
             LOGGER.warning(
                 f"⚠️ {data_type.emoji} {data_type.name}: No data for "
                 f"{start_str}..{end_str}."
             )
             return []
-
-        if data_type.name in ("BODY_COMPOSITION", "ACTIVITIES_LIST"):
-            return self._split_range_response_to_per_day_files(
-                data, data_type, start_date, end_date
-            )
-
-        # Unsplittable RANGE types (a single-payload response that should not be
-        # split per day) get one file stamped end_date.
         return self._save_garmin_data(data, data_type, end_date)
 
     def _split_range_response_to_per_day_files(
@@ -455,13 +466,19 @@ class GarminExtractor:
         end_date: date,
     ) -> List[Path]:
         """
-        Split a per-window RANGE response into one file per calendar date.
+        Split a per-window RANGE response into per-day files.
 
         ``BODY_COMPOSITION``'s response is a dict with a ``dateWeightList`` key (each
-        entry has ``calendarDate``). ``ACTIVITIES_LIST``'s response is a list of
-        activity dicts (each has ``startTimeLocal`` whose date prefix is the local
-        calendar date). Days with no entries produce no file; the downstream FileSet
-        abstraction tolerates a ``(user, day)`` with no data.
+        entry has ``calendarDate``); the splitter is sparse — days with no weigh-in
+        produce no file (the FileSet abstraction tolerates a ``(user, day)`` with no
+        data).
+
+        ``ACTIVITIES_LIST``'s response is a list of activity dicts (each has
+        ``startTimeLocal`` whose date prefix is the local calendar date); the splitter
+        is dense — every day in ``[start_date, end_date]`` produces a file, with an
+        empty list ``[]`` for days that have no activities. This density is required by
+        :meth:`_load_activities_list_from_disk`'s on-disk coverage check: without a file
+        per day, the FIT downloader would fall back to a redundant live API call.
 
         :param data: Per-window response payload (dict for BODY_COMPOSITION, list for
             ACTIVITIES_LIST).
@@ -636,8 +653,10 @@ class GarminExtractor:
 
         The registry-driven extract loop calls ``get_activities_by_date`` once for the
         full requested window inside ``_extract_range`` (RANGE-typed), then the per-day
-        splitter writes one ``<user_id>_ACTIVITIES_LIST_<timestamp>.json`` file per day
-        with activities. Only files whose embedded date falls within ``[self.start_date,
+        splitter writes one ``<user_id>_ACTIVITIES_LIST_<timestamp>.json`` file for
+        every day in the window — non-empty for days with activities, an empty list
+        ``[]`` for days without — so the on-disk coverage check below sees one file per
+        requested day. Only files whose embedded date falls within ``[self.start_date,
         self.end_date]`` are merged: leftover files from a previous failed run with a
         different window are ignored so we don't download FIT files outside the
         requested interval. Entries are merged by ``activityId`` (last value wins for
