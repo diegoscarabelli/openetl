@@ -2464,6 +2464,15 @@ class GarminProcessor(Processor):
             ("MOOD", day_log.get("moods") or []),
             ("DISCHARGE", day_log.get("discharge") or []),
         ):
+            # Defensive: if Garmin ever returns a non-list (e.g. a single
+            # string), `for name in names` would iterate over characters and
+            # write one tag per char. Skip with a warning instead.
+            if not isinstance(names, list):
+                LOGGER.warning(
+                    f"⚠️ Skipping non-list {kind} payload in "
+                    f"{file_path.name}: {names!r}."
+                )
+                continue
             for name in names:
                 if not name:
                     continue

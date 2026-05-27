@@ -378,9 +378,18 @@ def get_menstrual_calendar_data(
                     cycle_start = cycle.get("startDate")
                     if cycle_start:
                         cycles_by_start[cycle_start] = cycle
-            logged_symptom.update(result.get("loggedSymptomDays") or [])
-            logged_ovulation.update(result.get("loggedOvulationDays") or [])
-            logged_note.update(result.get("loggedNoteDays") or [])
+            # Defensive: only merge if the value is a list. set.update over a
+            # string would add one character per iteration, corrupting the
+            # merged day list. Garmin's contract is a list of date strings;
+            # anything else is treated as no data for that field.
+            for key, accum in (
+                ("loggedSymptomDays", logged_symptom),
+                ("loggedOvulationDays", logged_ovulation),
+                ("loggedNoteDays", logged_note),
+            ):
+                value = result.get(key)
+                if isinstance(value, list):
+                    accum.update(value)
         chunk_start = chunk_end + timedelta(days=1)
 
     if not got_response:
