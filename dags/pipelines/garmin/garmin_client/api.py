@@ -48,7 +48,7 @@ from .constants import (
     TRAINING_STATUS_URL,
     USER_SETTINGS_URL,
     USER_SUMMARY_CHART_URL,
-    WEIGHT_DATERANGE_URL,
+    WEIGHT_RANGE_URL,
 )
 
 if TYPE_CHECKING:
@@ -279,30 +279,37 @@ def get_body_composition(
     """
     Fetch scale weigh-ins (weight and body composition) for a date range.
 
-    Each entry in ``dateWeightList`` corresponds to a single weigh-in. A user may weigh
-    more than once per day, in which case the API returns multiple entries.
+    Uses the ``weight/range/{start}/{end}?includeAll=true`` endpoint, which returns
+    every weigh-in grouped under ``dailyWeightSummaries[].allWeightMetrics``. The older
+    ``daterangesnapshot`` endpoint (behind Garmin Connect's weight trend chart) returned
+    only one representative weigh-in per day, silently dropping the rest for users who
+    weigh more than once a day.
 
-    On days with no weigh-in the Garmin endpoint returns a populated wrapper dict
-    (``startDate``, ``endDate``, an empty ``dateWeightList``, and a ``totalAverage`` of
-    nulls) rather than an empty response. This function normalizes that shape to
-    ``None`` so the extractor's ``if data:`` truthiness check skips the file write,
-    matching the behavior of other RANGE-typed endpoints (e.g. ``ACTIVITIES_LIST``).
+    On windows with no weigh-in the endpoint returns a wrapper dict with an empty
+    ``dailyWeightSummaries`` rather than an empty response. This function normalizes
+    that shape to ``None`` so the extractor's ``if data:`` truthiness check skips the
+    file write, matching the behavior of other RANGE-typed endpoints (e.g.
+    ``ACTIVITIES_LIST``).
 
     :param client: GarminClient instance.
     :param startdate: Start date in ``YYYY-MM-DD`` format.
     :param enddate: Optional end date in ``YYYY-MM-DD`` format. Defaults to
         ``startdate``.
-    :return: Snapshot dictionary with ``dateWeightList`` (one entry per weigh-in) and
-        ``totalAverage`` aggregates, or ``None`` if no weigh-ins were recorded.
+    :return: Range dictionary with ``dailyWeightSummaries`` (one entry per local day,
+        each carrying ``allWeightMetrics`` with every weigh-in), or ``None`` if no
+        weigh-ins were recorded in the window.
     """
     startdate = _validate_date_format(startdate, "startdate")
     if enddate is None:
         enddate = startdate
     else:
         enddate = _validate_date_format(enddate, "enddate")
-    params = {"startDate": startdate, "endDate": enddate}
-    result = client._connectapi(WEIGHT_DATERANGE_URL, params=params)
-    if result and result.get("dateWeightList"):
+    url = f"{WEIGHT_RANGE_URL}/{startdate}/{enddate}"
+    # Send the literal lowercase string so the wire format is ``includeAll=true``.
+    # ``requests`` would serialize a Python ``True`` as ``includeAll=True``, relying on
+    # Garmin's case-insensitive parsing.
+    result = client._connectapi(url, params={"includeAll": "true"})
+    if result and result.get("dailyWeightSummaries"):
         return result
     return None
 

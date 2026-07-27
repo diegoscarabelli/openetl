@@ -277,34 +277,38 @@ class TestGetIntensityMinutesData:
 
 class TestGetBodyComposition:
     """
-    Tests for ``get_body_composition`` empty-response normalization.
+    Tests for ``get_body_composition`` endpoint, params, and empty-response
+    normalization.
 
-    The Garmin weight endpoint returns a populated wrapper dict on no-data days
-    (``{startDate, endDate, dateWeightList: [], totalAverage: {...nulls...}}``). Without
-    normalization the extractor would write one useless JSON file per day for users
-    without scale data, since a non-empty dict is truthy. ``get_body_composition`` must
-    collapse that shape to ``None`` so the extractor short-circuits.
+    Uses the ``weight/range/{start}/{end}?includeAll=true`` endpoint, which returns
+    every weigh-in grouped under ``dailyWeightSummaries[].allWeightMetrics`` (the older
+    ``daterangesnapshot`` endpoint returned only one representative weigh-in per day,
+    silently dropping the rest). On no-data windows the endpoint returns a wrapper dict
+    with an empty ``dailyWeightSummaries``; ``get_body_composition`` must collapse that
+    to ``None`` so the extractor short-circuits the file write.
     """
 
     def test_returns_payload_when_weighins_present(
         self, mock_client: MagicMock
     ) -> None:
         """
-        A populated ``dateWeightList`` must be returned verbatim so the extractor saves
-        the file and the processor can map fields downstream.
+        A populated ``dailyWeightSummaries`` must be returned verbatim so the extractor
+        saves the file and the splitter can group weigh-ins per day downstream.
         """
         payload = {
-            "startDate": "2026-04-15",
-            "endDate": "2026-04-15",
-            "dateWeightList": [
+            "dailyWeightSummaries": [
                 {
-                    "timestampGMT": 1713182400000,
-                    "weight": 75300.0,
-                    "bmi": 24.5,
-                    "sourceType": "INDEX_SCALE",
+                    "summaryDate": "2026-04-15",
+                    "allWeightMetrics": [
+                        {
+                            "timestampGMT": 1713182400000,
+                            "weight": 75300.0,
+                            "bmi": 24.5,
+                            "sourceType": "INDEX_SCALE",
+                        }
+                    ],
                 }
             ],
-            "totalAverage": {"weight": 75300.0},
         }
         mock_client._connectapi.return_value = payload
 
@@ -312,24 +316,22 @@ class TestGetBodyComposition:
 
         assert result is payload
         mock_client._connectapi.assert_called_once_with(
-            api.WEIGHT_DATERANGE_URL,
-            params={"startDate": "2026-04-15", "endDate": "2026-04-15"},
+            "/weight-service/weight/range/2026-04-15/2026-04-15",
+            params={"includeAll": "true"},
         )
 
-    def test_returns_none_when_date_weight_list_empty(
+    def test_returns_none_when_daily_summaries_empty(
         self, mock_client: MagicMock
     ) -> None:
         """
-        On no-data days the API returns the wrapper dict with an empty
-        ``dateWeightList``.
+        On no-data windows the API returns the wrapper dict with an empty
+        ``dailyWeightSummaries``.
 
         ``get_body_composition`` must collapse that to ``None`` so the extractor's
         truthiness check skips the file write.
         """
         mock_client._connectapi.return_value = {
-            "startDate": "2026-04-15",
-            "endDate": "2026-04-15",
-            "dateWeightList": [],
+            "dailyWeightSummaries": [],
             "totalAverage": {"weight": None, "bmi": None},
         }
 
@@ -337,12 +339,12 @@ class TestGetBodyComposition:
 
         assert result is None
 
-    def test_returns_none_when_date_weight_list_missing(
+    def test_returns_none_when_daily_summaries_missing(
         self, mock_client: MagicMock
     ) -> None:
         """
-        Defensive: if the endpoint ever omits ``dateWeightList`` entirely, treat that as
-        no data rather than letting a wrapper-only dict through.
+        Defensive: if the endpoint ever omits ``dailyWeightSummaries`` entirely, treat
+        that as no data rather than letting a wrapper-only dict through.
         """
         mock_client._connectapi.return_value = {
             "startDate": "2026-04-15",
@@ -366,16 +368,30 @@ class TestGetBodyComposition:
 
     def test_default_enddate_matches_startdate(self, mock_client: MagicMock) -> None:
         """
-        When ``enddate`` is omitted, ``startdate`` is used for both bounds (single-day
-        query), matching the day-by-day extraction loop in the extractor.
+        When ``enddate`` is omitted, ``startdate`` is used for both path bounds (single-
+        day query), matching the day-stamped file the splitter writes.
         """
-        mock_client._connectapi.return_value = {"dateWeightList": []}
+        mock_client._connectapi.return_value = {"dailyWeightSummaries": []}
 
         api.get_body_composition(mock_client, "2026-04-15")
 
         mock_client._connectapi.assert_called_once_with(
-            api.WEIGHT_DATERANGE_URL,
-            params={"startDate": "2026-04-15", "endDate": "2026-04-15"},
+            "/weight-service/weight/range/2026-04-15/2026-04-15",
+            params={"includeAll": "true"},
+        )
+
+    def test_distinct_start_and_end_dates_in_path(self, mock_client: MagicMock) -> None:
+        """
+        A multi-day window puts both bounds in the URL path: the endpoint takes the
+        range natively (the extractor issues one call per window, not per day).
+        """
+        mock_client._connectapi.return_value = {"dailyWeightSummaries": []}
+
+        api.get_body_composition(mock_client, "2026-04-15", "2026-04-20")
+
+        mock_client._connectapi.assert_called_once_with(
+            "/weight-service/weight/range/2026-04-15/2026-04-20",
+            params={"includeAll": "true"},
         )
 
 
