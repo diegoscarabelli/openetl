@@ -468,10 +468,13 @@ class GarminExtractor:
         """
         Split a per-window RANGE response into per-day files.
 
-        ``BODY_COMPOSITION``'s response is a dict with a ``dateWeightList`` key (each
-        entry has ``calendarDate``); the splitter is sparse — days with no weigh-in
-        produce no file (the FileSet abstraction tolerates a ``(user, day)`` with no
-        data).
+        ``BODY_COMPOSITION``'s response is a dict with a ``dailyWeightSummaries`` key
+        (each summary carries a local ``summaryDate`` and an ``allWeightMetrics`` list
+        of that day's weigh-ins); the splitter is sparse — days with no weigh-in produce
+        no file (the FileSet abstraction tolerates a ``(user, day)`` with no data).
+        Grouping by ``summaryDate`` (not each weigh-in's UTC ``timestampGMT``) keeps
+        multiple weigh-ins on the same local day in one file even when their UTC
+        timestamps straddle midnight.
 
         ``ACTIVITIES_LIST``'s response is a list of activity dicts (each has
         ``startTimeLocal`` whose date prefix is the local calendar date); the splitter
@@ -493,28 +496,40 @@ class GarminExtractor:
             dict_buckets: Dict[date, dict] = {}
             # Defensive: BODY_COMPOSITION's API contract is a dict wrapper, but if
             # an unexpected shape (list, string) ever reaches the splitter, fall
-            # back to "no entries" instead of raising on .get(). Explicit parens
-            # to make the short-circuit intent unambiguous to readers.
-            entries = (
-                (data.get("dateWeightList") or []) if isinstance(data, dict) else []
+            # back to "no summaries" instead of raising on .get(). Explicit parens
+            # make the short-circuit intent unambiguous to readers.
+            summaries = (
+                (data.get("dailyWeightSummaries") or [])
+                if isinstance(data, dict)
+                else []
             )
-            for entry in entries:
-                # Defensive: skip non-dict entries rather than raise on
-                # entry.get(...) below. Mirrors _load_activities_list_from_disk's
-                # tolerance for malformed payloads.
-                if not isinstance(entry, dict):
+            for summary in summaries:
+                # Defensive: skip non-dict summaries rather than raise on
+                # summary.get(...) below.
+                if not isinstance(summary, dict):
                     continue
-                cal_date_str = entry.get("calendarDate")
-                if not cal_date_str:
+                summary_date_str = summary.get("summaryDate")
+                if not summary_date_str:
                     continue
                 try:
-                    cal_date = date.fromisoformat(cal_date_str)
+                    cal_date = date.fromisoformat(str(summary_date_str)[:10])
                 except ValueError:
                     continue
                 if not (start_date <= cal_date <= end_date):
                     continue
+                # Group by Garmin's local ``summaryDate`` (not each weigh-in's UTC
+                # ``timestampGMT``) so multiple weigh-ins on the same local day land
+                # in one file even when their UTC timestamps straddle midnight. Skip
+                # non-dict weigh-in entries rather than raise on the processor side.
+                metrics = [
+                    m
+                    for m in (summary.get("allWeightMetrics") or [])
+                    if isinstance(m, dict)
+                ]
+                if not metrics:
+                    continue
                 bucket = dict_buckets.setdefault(cal_date, {"dateWeightList": []})
-                bucket["dateWeightList"].append(entry)
+                bucket["dateWeightList"].extend(metrics)
             buckets: Dict[date, Union[dict, list]] = dict_buckets
         elif data_type.name == "ACTIVITIES_LIST":
             # Pre-populate every day in the window with an empty list so days
