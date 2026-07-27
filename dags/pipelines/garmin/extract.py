@@ -987,6 +987,18 @@ class GarminExtractor:
                 if exercise_sets_file:
                     downloaded_files.append(exercise_sets_file)
 
+            # Fetch child legs for multi-sport (duathlon/triathlon) parents. The flat
+            # ``parent`` flag marks any activity that has child legs (structural signal,
+            # not a hardcoded type name); the authoritative child list comes from the
+            # detail endpoint's metadataDTO.childIds.
+            if activity.get("parent") is True:
+                time.sleep(0.1)  # Rate limiting between FIT and detail API.
+                children_file = self._extract_multisport_children(
+                    activity_id, timestamp
+                )
+                if children_file:
+                    downloaded_files.append(children_file)
+
             # Rate limiting between activities.
             time.sleep(0.1)
 
@@ -1032,6 +1044,77 @@ class GarminExtractor:
 
         file_size = filepath.stat().st_size / 1024  # KB.
         LOGGER.info(f"💪 Saved: {filename} ({file_size:.1f} KB).")
+        return filepath
+
+    def _extract_multisport_children(
+        self, parent_activity_id: int, timestamp: str
+    ) -> Optional[Path]:
+        """
+        Fetch the leg (child) activities of a multi-sport parent into one file.
+
+        A multi_sport parent's time-series/laps already load from its combined FIT file,
+        but the per-leg sport aggregates live only on the child activities, which are
+        absent from the activities list. This reads the parent's detail to get
+        ``metadataDTO.childIds``, fetches each leg's detail, and writes them together as
+        ``{user_id}_MULTISPORT_CHILDREN_{parent_id}_{timestamp}.json`` so the processor
+        can persist each leg as its own activity row linked to the parent.
+
+        :param parent_activity_id: Garmin activity ID of the multi_sport parent.
+        :param timestamp: ISO 8601 timestamp for consistent filename batching.
+        :return: Path to the saved JSON file, or None if the parent has no usable legs.
+        """
+        try:
+            parent_detail = _with_retries(
+                self.garmin_client.get_activity_details, parent_activity_id
+            )
+        except Exception as e:
+            LOGGER.warning(
+                f"⚠️ Failed to fetch detail for multi-sport parent "
+                f"{parent_activity_id}: {e}."
+            )
+            return None
+
+        child_ids = ((parent_detail or {}).get("metadataDTO") or {}).get("childIds")
+        # Only a non-empty list of IDs is usable; a truthy non-list (dict/str) would be
+        # iterated element-by-element and fetch garbage IDs.
+        if not isinstance(child_ids, list) or not child_ids:
+            LOGGER.info(
+                f"🔀 No child legs for multi-sport activity {parent_activity_id}."
+            )
+            return None
+
+        children = []
+        for child_id in child_ids:
+            try:
+                child_detail = _with_retries(
+                    self.garmin_client.get_activity_details, child_id
+                )
+            except Exception as e:
+                LOGGER.warning(
+                    f"⚠️ Failed to fetch multi-sport leg {child_id} of parent "
+                    f"{parent_activity_id}: {e}."
+                )
+                continue
+            if child_detail:
+                children.append(child_detail)
+            time.sleep(0.1)  # Rate limiting between legs.
+
+        if not children:
+            return None
+
+        filename = (
+            f"{self.user_id}_MULTISPORT_CHILDREN_{parent_activity_id}_{timestamp}.json"
+        )
+        filepath = self.ingest_dir / filename
+        with open(filepath, "w", encoding="utf-8") as f:
+            json.dump(
+                {"parentActivityId": parent_activity_id, "children": children},
+                f,
+                indent=2,
+            )
+
+        file_size = filepath.stat().st_size / 1024  # KB.
+        LOGGER.info(f"🔀 Saved: {filename} ({file_size:.1f} KB).")
         return filepath
 
 

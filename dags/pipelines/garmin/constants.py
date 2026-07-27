@@ -213,6 +213,16 @@ class GarminDataRegistry:
                 "exercises, reps, weight, duration, and set type.",
                 "💪",
             ),
+            GarminDataType(
+                "MULTISPORT_CHILDREN",
+                "get_activity_details",
+                APIMethodTimeParam.PER_ACTIVITY,
+                "/activity-service/activity/{activity_id}",
+                "Per-leg child activities of a multi-sport (duathlon/triathlon) "
+                "parent, fetched via the parent's metadataDTO.childIds. Each leg "
+                "carries its own sport-specific summary metrics.",
+                "🔀",
+            ),
             # No Date Data - No date parameters: get_method()
             # In case of backfilling, comment out PERSONAL_RECORD data type, since PRs
             # reference activity IDs that may not exist yet.

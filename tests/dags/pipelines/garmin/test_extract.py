@@ -1195,6 +1195,133 @@ class TestExerciseSetsExtraction:
         # Assert.
         assert result is None
 
+    def test_extract_multisport_children_success(
+        self, extractor, mock_garmin_client, temp_dir
+    ) -> None:
+        """
+        A multi-sport parent's legs are fetched via metadataDTO.childIds and saved as
+        one MULTISPORT_CHILDREN file wrapping every leg's detail.
+
+        :param extractor: GarminExtractor fixture.
+        :param mock_garmin_client: Mock Garmin client fixture.
+        :param temp_dir: Temporary directory fixture.
+        """
+        # Arrange.
+        extractor.garmin_client = mock_garmin_client
+        extractor.user_id = "123456789"
+        mock_garmin_client.get_activity_details.side_effect = [
+            {"metadataDTO": {"childIds": [1002, 1003]}},  # Parent detail.
+            {"activityId": 1002, "summaryDTO": {"distance": 750.0}},  # Swim leg.
+            {"activityId": 1003, "summaryDTO": {"distance": 5000.0}},  # Run leg.
+        ]
+
+        # Act.
+        result = extractor._extract_multisport_children(1001, "2025-01-01T12:00:00Z")
+
+        # Assert.
+        assert result is not None
+        assert result.exists()
+        assert "MULTISPORT_CHILDREN_1001" in result.name
+        with open(result, "r") as f:
+            saved = json.load(f)
+        assert int(saved["parentActivityId"]) == 1001
+        assert [c["activityId"] for c in saved["children"]] == [1002, 1003]
+
+    def test_extract_multisport_children_no_childids(
+        self, extractor, mock_garmin_client
+    ) -> None:
+        """
+        A parent whose detail has no ``metadataDTO.childIds`` list produces no file.
+
+        :param extractor: GarminExtractor fixture.
+        :param mock_garmin_client: Mock Garmin client fixture.
+        """
+        # Arrange.
+        extractor.garmin_client = mock_garmin_client
+        extractor.user_id = "123456789"
+        mock_garmin_client.get_activity_details.return_value = {"metadataDTO": {}}
+
+        # Act.
+        result = extractor._extract_multisport_children(1001, "2025-01-01T12:00:00Z")
+
+        # Assert.
+        assert result is None
+
+    def test_extract_multisport_children_api_error(
+        self, extractor, mock_garmin_client
+    ) -> None:
+        """
+        A failure fetching the parent detail is swallowed and yields no file.
+
+        :param extractor: GarminExtractor fixture.
+        :param mock_garmin_client: Mock Garmin client fixture.
+        """
+        # Arrange.
+        extractor.garmin_client = mock_garmin_client
+        extractor.user_id = "123456789"
+        mock_garmin_client.get_activity_details.side_effect = Exception("API error")
+
+        # Act.
+        result = extractor._extract_multisport_children(1001, "2025-01-01T12:00:00Z")
+
+        # Assert.
+        assert result is None
+
+    @patch("dags.pipelines.garmin.extract.time.sleep")
+    @patch("dags.pipelines.garmin.extract.LOGGER")
+    def test_fit_extraction_triggers_multisport_children(
+        self, mock_logger, mock_sleep, extractor, mock_garmin_client, temp_dir
+    ) -> None:
+        """
+        extract_fit_activities fetches child legs for an activity flagged
+        ``parent=True``.
+
+        :param mock_logger: Mock logger.
+        :param mock_sleep: Mock sleep function.
+        :param extractor: GarminExtractor fixture.
+        :param mock_garmin_client: Mock Garmin client fixture.
+        :param temp_dir: Temporary directory fixture.
+        """
+        # Arrange.
+        extractor.garmin_client = mock_garmin_client
+        extractor.user_id = "123456789"
+
+        activities = [
+            {
+                "activityId": "5001",
+                "startTimeLocal": "2025-01-01T10:00:00.000",
+                "parent": True,
+                "activityType": {"typeId": 89, "typeKey": "multi_sport"},
+            },
+        ]
+        mock_garmin_client.get_activities_by_date.return_value = activities
+
+        # Create mock ZIP file for the parent's combined FIT download.
+        zip_buffer = io.BytesIO()
+        with zipfile.ZipFile(zip_buffer, "w") as zip_file:
+            zip_file.writestr("activity.fit", b"FIT_DATA")
+        zip_buffer.seek(0)
+        mock_garmin_client.download_activity.return_value = zip_buffer.getvalue()
+
+        # Parent detail (childIds) then one detail per leg.
+        mock_garmin_client.get_activity_details.side_effect = [
+            {"metadataDTO": {"childIds": [5002, 5003]}},
+            {"activityId": 5002, "summaryDTO": {}},
+            {"activityId": 5003, "summaryDTO": {}},
+        ]
+
+        # Act.
+        result = extractor.extract_fit_activities()
+
+        # Assert - both the FIT file and the MULTISPORT_CHILDREN file are saved.
+        assert len(result) == 2
+        json_files = list(temp_dir.glob("*MULTISPORT_CHILDREN*.json"))
+        assert len(json_files) == 1
+        with open(json_files[0], "r") as f:
+            saved = json.load(f)
+        assert int(saved["parentActivityId"]) == 5001
+        assert len(saved["children"]) == 2
+
     @patch("dags.pipelines.garmin.extract.time.sleep")
     @patch("dags.pipelines.garmin.extract.LOGGER")
     def test_fit_extraction_triggers_exercise_sets(

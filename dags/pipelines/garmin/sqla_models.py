@@ -99,6 +99,9 @@ class Activity(UpsertBase):
     # Activity identification.
     activity_id = Column(BigInteger, primary_key=True)
     user_id = Column(BigInteger, fkey("garmin", "user", "user_id"), nullable=False)
+    # For a leg of a multi-sport (duathlon/triathlon) activity, the activity_id of the
+    # parent multi_sport activity; NULL for standalone activities and the parent itself.
+    parent_activity_id = Column(BigInteger, fkey("garmin", "activity", "activity_id"))
     activity_name = Column(String)
     activity_type_id = Column(Integer, nullable=False)
     activity_type_key = Column(String, nullable=False)

@@ -530,6 +530,28 @@ def get_activity_exercise_sets(
     return client._connectapi(url)
 
 
+def get_activity_details(client: "GarminClient", activity_id: Any) -> Dict[str, Any]:
+    """
+    Fetch the full detail record for a single activity.
+
+    Uses ``/activity-service/activity/{activity_id}``. The detail response carries
+    ``activityTypeDTO`` / ``eventTypeDTO``, a ``summaryDTO`` of aggregate metrics, and a
+    ``metadataDTO`` whose ``childIds`` lists the leg activities of a multi-sport parent
+    (absent for ordinary activities). Used to expand multi-sport parents into their
+    legs.
+
+    :param client: GarminClient instance.
+    :param activity_id: Garmin activity ID (coerced to a positive int).
+    :return: Activity detail dictionary.
+    :raises ValueError: If ``activity_id`` is not a positive integer.
+    """
+    aid = int(activity_id)
+    if aid <= 0:
+        raise ValueError(f"activity_id must be a positive integer, got {activity_id}")
+    url = f"{ACTIVITY_URL}/{aid}"
+    return client._connectapi(url)
+
+
 # ----------------------------------------------------------------------------------------
 # NO-DATE METADATA METHODS
 # ----------------------------------------------------------------------------------------

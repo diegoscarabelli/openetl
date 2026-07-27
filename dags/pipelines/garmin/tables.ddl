@@ -200,14 +200,26 @@ CREATE TABLE IF NOT EXISTS garmin.activity (
     , pr BOOLEAN NOT NULL
     , auto_calc_calories BOOLEAN NOT NULL
 
+    -- Multi-sport leg linkage.
+    , parent_activity_id BIGINT REFERENCES garmin.activity (
+        activity_id
+    ) ON DELETE CASCADE
+
     -- Audit fields.
     , create_ts TIMESTAMPTZ NOT NULL DEFAULT NOW()
     , update_ts TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
 -- Create indexes on activity table foreign key and text columns.
+-- Uniqueness of (user_id, start_ts) is enforced only for non-leg activities. A
+-- multi-sport leg (parent_activity_id IS NOT NULL) may legitimately share a start
+-- instant with an independently-recorded standalone activity, so leg rows are excluded;
+-- standalone activities and multi_sport parents stay uniquely constrained (#66/#67).
 CREATE UNIQUE INDEX IF NOT EXISTS activity_user_id_start_ts_unique_idx
-ON garmin.activity (user_id, start_ts);
+ON garmin.activity (user_id, start_ts)
+WHERE parent_activity_id IS NULL;
+CREATE INDEX IF NOT EXISTS activity_parent_activity_id_idx
+ON garmin.activity (parent_activity_id);
 CREATE INDEX IF NOT EXISTS activity_user_id_idx
 ON garmin.activity (user_id);
 CREATE INDEX IF NOT EXISTS activity_activity_name_idx
@@ -281,6 +293,10 @@ COMMENT ON COLUMN garmin.activity.activity_id IS
 'Unique identifier for the activity in Garmin Connect.';
 COMMENT ON COLUMN garmin.activity.user_id IS
 'References garmin.user(user_id). Identifies which user performed this activity.';
+COMMENT ON COLUMN garmin.activity.parent_activity_id IS
+'For a leg of a multi-sport (duathlon/triathlon) activity, the activity_id of the '
+'parent multi_sport activity. NULL for standalone activities and the multi_sport '
+'parent itself.';
 COMMENT ON COLUMN garmin.activity.activity_name IS
 'User-defined name for the activity.';
 COMMENT ON COLUMN garmin.activity.activity_type_id IS
