@@ -41,6 +41,7 @@ from dags.pipelines.garmin.sqla_models import (
     PersonalRecord,
     RacePredictions,
     Respiration,
+    RunningTolerance,
     Sleep,
     SleepLevel,
     SleepMovement,
@@ -4547,6 +4548,82 @@ class TestGarminProcessor:
     # ==================================================================================
     # Race Predictions Processing Tests.
     # ==================================================================================
+
+    @patch("dags.pipelines.garmin.process.upsert_model_instances")
+    def test_process_running_tolerance_file(
+        self, mock_upsert, processor, mock_session, temp_dir
+    ):
+        """
+        _process_running_tolerance maps the daily running-tolerance fields and upserts
+        by (user_id, date) with update-on-conflict.
+        """
+        # Arrange.
+        data = [
+            {
+                "calendarDate": "2026-04-15",
+                "totalImpactLoad": 1200,
+                "totalDistance": 8000.0,
+                "tolerance": 1500,
+                "startOfWeek": "2026-04-13",
+                "endOfWeek": "2026-04-19",
+                "weekIndex": 0,
+            }
+        ]
+        rt_file = temp_dir / "123456789_RUNNING_TOLERANCE_2026-04-15T12:00:00Z.json"
+        with open(rt_file, "w", encoding="utf-8") as f:
+            json.dump(data, f)
+        processor.user_id = 1
+
+        # Act.
+        processor._process_running_tolerance(rt_file, mock_session)
+
+        # Assert.
+        mock_upsert.assert_called_once()
+        call_args = mock_upsert.call_args
+        assert call_args[1]["conflict_columns"] == ["user_id", "date"]
+        assert call_args[1]["on_conflict_update"] is True
+
+        instances = call_args[1]["model_instances"]
+        assert len(instances) == 1
+        rt = instances[0]
+        assert isinstance(rt, RunningTolerance)
+        assert rt.user_id == 1
+        assert rt.date == date(2026, 4, 15)
+        assert rt.total_impact_load == 1200
+        assert rt.total_distance == 8000.0
+        assert rt.tolerance == 1500
+        assert rt.start_of_week == date(2026, 4, 13)
+        assert rt.end_of_week == date(2026, 4, 19)
+        assert rt.week_index == 0
+
+    @patch("dags.pipelines.garmin.process.upsert_model_instances")
+    def test_process_running_tolerance_skips_rows_without_calendar_date(
+        self, mock_upsert, processor, mock_session, temp_dir
+    ):
+        """
+        Rows missing ``calendarDate`` (or non-dict rows) are skipped; only the well-
+        formed row is upserted.
+        """
+        # Arrange.
+        data = [
+            "not-a-dict",
+            {"totalImpactLoad": 999},  # No calendarDate: skipped.
+            {"calendarDate": "2026-04-16", "totalImpactLoad": 1100},  # Good.
+        ]
+        rt_file = temp_dir / "123456789_RUNNING_TOLERANCE_2026-04-16T12:00:00Z.json"
+        with open(rt_file, "w", encoding="utf-8") as f:
+            json.dump(data, f)
+        processor.user_id = 1
+
+        # Act.
+        processor._process_running_tolerance(rt_file, mock_session)
+
+        # Assert: only the one good row reaches the upsert.
+        mock_upsert.assert_called_once()
+        instances = mock_upsert.call_args[1]["model_instances"]
+        assert len(instances) == 1
+        assert instances[0].date == date(2026, 4, 16)
+        assert instances[0].total_impact_load == 1100
 
     @pytest.fixture
     def sample_race_predictions_data(self) -> Dict:

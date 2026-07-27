@@ -388,6 +388,88 @@ class TestExtractRange:
         assert saved == []
         assert extractor.failures == []
 
+    def test_running_tolerance_single_call_for_full_window(
+        self, extractor: GarminExtractor
+    ) -> None:
+        """
+        RUNNING_TOLERANCE is RANGE-typed: one API call covers the whole window.
+        """
+        rt = GARMIN_DATA_REGISTRY.get_by_name("RUNNING_TOLERANCE")
+        extractor.garmin_client.get_running_tolerance.return_value = [
+            {"calendarDate": "2026-01-01", "totalImpactLoad": 1000},
+            {"calendarDate": "2026-01-03", "totalImpactLoad": 1200},
+        ]
+
+        extractor._extract_data_by_type(rt, date(2026, 1, 1), date(2026, 1, 5))
+
+        extractor.garmin_client.get_running_tolerance.assert_called_once_with(
+            "2026-01-01", "2026-01-05"
+        )
+
+    def test_running_tolerance_response_is_split_per_day(
+        self, extractor: GarminExtractor
+    ) -> None:
+        """
+        RUNNING_TOLERANCE per-window responses split into one file per calendar day that
+        has a row (sparse: days with no row produce no file).
+
+        Each per-day file is a list of that day's running-tolerance rows.
+        """
+        rt = GARMIN_DATA_REGISTRY.get_by_name("RUNNING_TOLERANCE")
+        extractor.garmin_client.get_running_tolerance.return_value = [
+            {"calendarDate": "2026-01-01", "totalImpactLoad": 1000},
+            {"calendarDate": "2026-01-03", "totalImpactLoad": 1200},
+        ]
+
+        saved = extractor._extract_data_by_type(rt, date(2026, 1, 1), date(2026, 1, 5))
+
+        # Two files: 2026-01-01 and 2026-01-03; nothing for the empty days.
+        assert len(saved) == 2
+        names = sorted(p.name for p in saved)
+        assert "RUNNING_TOLERANCE_2026-01-01" in names[0]
+        assert "RUNNING_TOLERANCE_2026-01-03" in names[1]
+
+        day1_file = next(p for p in saved if "2026-01-01" in p.name)
+        with open(day1_file, "r", encoding="utf-8") as f:
+            payload = json.load(f)
+        assert isinstance(payload, list)
+        assert len(payload) == 1
+        assert payload[0]["totalImpactLoad"] == 1000
+
+    def test_running_tolerance_empty_response_writes_no_file(
+        self, extractor: GarminExtractor
+    ) -> None:
+        """
+        A falsy (``None``) running-tolerance response (account without a compatible
+        watch) yields no file and no recorded failure.
+        """
+        rt = GARMIN_DATA_REGISTRY.get_by_name("RUNNING_TOLERANCE")
+        extractor.garmin_client.get_running_tolerance.return_value = None
+
+        saved = extractor._extract_data_by_type(rt, date(2026, 1, 1), date(2026, 1, 5))
+
+        assert saved == []
+        assert extractor.failures == []
+
+    def test_running_tolerance_skips_rows_without_calendar_date(
+        self, extractor: GarminExtractor
+    ) -> None:
+        """
+        Rows missing ``calendarDate`` (or non-dict rows) are skipped rather than
+        raising; only the well-formed row produces a file.
+        """
+        rt = GARMIN_DATA_REGISTRY.get_by_name("RUNNING_TOLERANCE")
+        extractor.garmin_client.get_running_tolerance.return_value = [
+            "not-a-dict",
+            {"totalImpactLoad": 999},  # No calendarDate: skipped.
+            {"calendarDate": "2026-01-02", "totalImpactLoad": 1100},  # Good.
+        ]
+
+        saved = extractor._extract_data_by_type(rt, date(2026, 1, 1), date(2026, 1, 5))
+
+        assert len(saved) == 1
+        assert "RUNNING_TOLERANCE_2026-01-02" in saved[0].name
+
     def test_menstrual_cycle_summary_writes_single_file_stamped_end_date(
         self, extractor: GarminExtractor
     ) -> None:

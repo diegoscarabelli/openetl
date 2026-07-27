@@ -51,6 +51,7 @@ from dags.pipelines.garmin.sqla_models import (
     RacePredictions,
     Respiration,
     RunningAggMetrics,
+    RunningTolerance,
     Sleep,
     SleepLevel,
     SleepMovement,
@@ -146,6 +147,7 @@ class GarminProcessor(Processor):
                 ("MENSTRUAL_CYCLE_SUMMARY", self._process_menstrual_cycle_summary),
                 ("PERSONAL_RECORDS", self._process_personal_records),
                 ("RACE_PREDICTIONS", self._process_race_predictions),
+                ("RUNNING_TOLERANCE", self._process_running_tolerance),
                 ("RESPIRATION", self._process_respiration),
                 ("SLEEP", self._process_sleep),
                 ("STEPS", self._process_steps),
@@ -2712,6 +2714,63 @@ class GarminProcessor(Processor):
                 )
             else:
                 LOGGER.warning("⚠️ No personal records data found.")
+
+    def _process_running_tolerance(self, file_path: Path, session: Session):
+        """
+        Process a RUNNING_TOLERANCE per-day file into garmin.running_tolerance.
+
+        The file holds a list of daily running-tolerance objects (usually one). Each is
+        upserted by (user_id, date). Malformed rows (non-dict, or missing/unparseable
+        ``calendarDate``) are skipped with a warning rather than aborting the file, so
+        one bad row never loses the good rows in the same window.
+
+        :param file_path: Path to the RUNNING_TOLERANCE JSON file.
+        :param session: Active SQLAlchemy session.
+        """
+        payload = self._load_json_file(file_path)
+        rows = payload if isinstance(payload, list) else []
+
+        records = []
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            calendar_date = row.get("calendarDate")
+            if not calendar_date:
+                LOGGER.warning(
+                    f"⚠️ Skipping running-tolerance row without calendarDate in "
+                    f"{file_path.name}."
+                )
+                continue
+            start_of_week = row.get("startOfWeek")
+            end_of_week = row.get("endOfWeek")
+            records.append(
+                RunningTolerance(
+                    user_id=int(self.user_id),
+                    date=date.fromisoformat(str(calendar_date)[:10]),
+                    total_impact_load=row.get("totalImpactLoad"),
+                    total_distance=row.get("totalDistance"),
+                    tolerance=row.get("tolerance"),
+                    start_of_week=(
+                        date.fromisoformat(str(start_of_week)[:10])
+                        if start_of_week
+                        else None
+                    ),
+                    end_of_week=(
+                        date.fromisoformat(str(end_of_week)[:10])
+                        if end_of_week
+                        else None
+                    ),
+                    week_index=row.get("weekIndex"),
+                )
+            )
+
+        if records:
+            upsert_model_instances(
+                session=session,
+                model_instances=records,
+                conflict_columns=["user_id", "date"],
+                on_conflict_update=True,
+            )
 
     def _process_race_predictions(self, file_path: Path, session: Session):
         """

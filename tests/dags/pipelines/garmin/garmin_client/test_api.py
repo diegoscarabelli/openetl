@@ -396,6 +396,80 @@ class TestGetBodyComposition:
 
 
 # ----------------------------------------------------------------------------------------
+# RUNNING TOLERANCE
+# ----------------------------------------------------------------------------------------
+
+
+class TestGetRunningTolerance:
+    """
+    Tests for ``get_running_tolerance``.
+
+    Running tolerance is Garmin's biomechanical running-load model. The stats endpoint
+    with ``aggregation=daily`` returns one object per calendar day; accounts without a
+    compatible watch get an empty response, which is normalized to ``None`` so the
+    extractor skips the file write.
+    """
+
+    def test_calls_stats_url_with_range_and_aggregation_params(
+        self, mock_client: MagicMock
+    ) -> None:
+        """
+        The stats endpoint receives ``startDate``, ``endDate``, and
+        ``aggregation=daily`` as query params, and the daily list is returned verbatim.
+        """
+        payload = [
+            {"calendarDate": "2026-04-15", "totalImpactLoad": 1200, "tolerance": 1500}
+        ]
+        mock_client._connectapi.return_value = payload
+
+        result = api.get_running_tolerance(mock_client, "2026-04-15", "2026-04-20")
+
+        assert result is payload
+        mock_client._connectapi.assert_called_once_with(
+            "/metrics-service/metrics/runningtolerance/stats",
+            params={
+                "startDate": "2026-04-15",
+                "endDate": "2026-04-20",
+                "aggregation": "daily",
+            },
+        )
+
+    def test_default_enddate_matches_startdate(self, mock_client: MagicMock) -> None:
+        """
+        When ``enddate`` is omitted, ``startdate`` is used for both bounds.
+        """
+        mock_client._connectapi.return_value = [{"calendarDate": "2026-04-15"}]
+
+        api.get_running_tolerance(mock_client, "2026-04-15")
+
+        params = mock_client._connectapi.call_args[1]["params"]
+        assert params["startDate"] == "2026-04-15"
+        assert params["endDate"] == "2026-04-15"
+        assert params["aggregation"] == "daily"
+
+    def test_returns_none_when_empty(self, mock_client: MagicMock) -> None:
+        """
+        An empty list (account without a compatible watch) is normalized to ``None`` so
+        the extractor's truthiness check skips the file write.
+        """
+        mock_client._connectapi.return_value = []
+
+        result = api.get_running_tolerance(mock_client, "2026-04-15")
+
+        assert result is None
+
+    def test_returns_none_when_response_is_none(self, mock_client: MagicMock) -> None:
+        """
+        A ``None`` response passes through as ``None`` rather than raising.
+        """
+        mock_client._connectapi.return_value = None
+
+        result = api.get_running_tolerance(mock_client, "2026-04-15")
+
+        assert result is None
+
+
+# ----------------------------------------------------------------------------------------
 # MENSTRUAL CYCLE
 # ----------------------------------------------------------------------------------------
 

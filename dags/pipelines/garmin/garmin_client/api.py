@@ -43,6 +43,7 @@ from .constants import (
     MENSTRUAL_DAYVIEW_URL,
     PERSONAL_RECORD_URL,
     RACE_PREDICTOR_URL,
+    RUNNING_TOLERANCE_URL,
     TCX_DOWNLOAD_URL,
     TRAINING_READINESS_URL,
     TRAINING_STATUS_URL,
@@ -310,6 +311,46 @@ def get_body_composition(
     # Garmin's case-insensitive parsing.
     result = client._connectapi(url, params={"includeAll": "true"})
     if result and result.get("dailyWeightSummaries"):
+        return result
+    return None
+
+
+def get_running_tolerance(
+    client: "GarminClient",
+    startdate: str,
+    enddate: Optional[str] = None,
+    aggregation: str = "daily",
+) -> Optional[List[Dict[str, Any]]]:
+    """
+    Fetch daily running tolerance (biomechanical running-load model) for a date range.
+
+    Running tolerance is Garmin's estimate of the impact load a runner can sustain. The
+    stats endpoint with ``aggregation=daily`` returns one object per calendar day, each
+    carrying ``calendarDate``, ``totalImpactLoad``, ``totalDistance``, ``tolerance``,
+    and week-grouping fields (``startOfWeek``, ``endOfWeek``, ``weekIndex``). Accounts
+    without a compatible watch return an empty list, which is normalized to ``None`` so
+    the extractor's ``if data:`` truthiness check skips the file write.
+
+    :param client: GarminClient instance.
+    :param startdate: Start date in ``YYYY-MM-DD`` format.
+    :param enddate: Optional end date in ``YYYY-MM-DD`` format. Defaults to
+        ``startdate``.
+    :param aggregation: Aggregation granularity; the pipeline always uses ``daily``.
+    :return: List of per-day running-tolerance dictionaries, or ``None`` if the account
+        has no running-tolerance data in the window.
+    """
+    startdate = _validate_date_format(startdate, "startdate")
+    if enddate is None:
+        enddate = startdate
+    else:
+        enddate = _validate_date_format(enddate, "enddate")
+    params = {
+        "startDate": startdate,
+        "endDate": enddate,
+        "aggregation": aggregation,
+    }
+    result = client._connectapi(RUNNING_TOLERANCE_URL, params=params)
+    if result:
         return result
     return None
 

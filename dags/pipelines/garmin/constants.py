@@ -194,6 +194,17 @@ class GarminDataRegistry:
                 "📅",
             ),
             GarminDataType(
+                "RUNNING_TOLERANCE",
+                "get_running_tolerance",
+                APIMethodTimeParam.RANGE,
+                "/metrics-service/metrics/runningtolerance/stats"
+                "?startDate={start}&endDate={end}&aggregation=daily",
+                "Daily running tolerance (biomechanical running-load model): impact "
+                "load, running distance, tolerated running-load ceiling, and week "
+                "grouping. Empty for accounts without a compatible watch.",
+                "🎽",
+            ),
+            GarminDataType(
                 "EXERCISE_SETS",
                 "get_activity_exercise_sets",
                 APIMethodTimeParam.PER_ACTIVITY,

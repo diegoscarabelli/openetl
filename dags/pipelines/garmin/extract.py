@@ -436,7 +436,13 @@ class GarminExtractor:
         # per-day empty-list file for ACTIVITIES_LIST so the on-disk coverage
         # check used by extract_fit_activities trusts the cache. Only bail on
         # None (transport-level "no response"), not on empty-but-valid data.
-        if data_type.name in ("BODY_COMPOSITION", "ACTIVITIES_LIST"):
+        # (BODY_COMPOSITION and RUNNING_TOLERANCE split sparsely: their wrappers
+        # normalize no-data to None, so they bail above and never reach here empty.)
+        if data_type.name in (
+            "BODY_COMPOSITION",
+            "ACTIVITIES_LIST",
+            "RUNNING_TOLERANCE",
+        ):
             if data is None:
                 LOGGER.warning(
                     f"⚠️ {data_type.emoji} {data_type.name}: No data for "
@@ -483,14 +489,19 @@ class GarminExtractor:
         :meth:`_load_activities_list_from_disk`'s on-disk coverage check: without a file
         per day, the FIT downloader would fall back to a redundant live API call.
 
+        ``RUNNING_TOLERANCE``'s response is a list of per-day dicts (each has
+        ``calendarDate``); the splitter is sparse — only days with a row produce a file,
+        each holding that day's list of running-tolerance rows.
+
         :param data: Per-window response payload (dict for BODY_COMPOSITION, list for
-            ACTIVITIES_LIST).
-        :param data_type: BODY_COMPOSITION or ACTIVITIES_LIST data type.
+            ACTIVITIES_LIST and RUNNING_TOLERANCE).
+        :param data_type: BODY_COMPOSITION, ACTIVITIES_LIST, or RUNNING_TOLERANCE data
+            type.
         :param start_date: Inclusive start date of the requested window.
         :param end_date: Inclusive end date of the requested window.
         :return: List of saved per-day file paths.
-        :raises ValueError: If ``data_type.name`` is not BODY_COMPOSITION or
-            ACTIVITIES_LIST.
+        :raises ValueError: If ``data_type.name`` is not BODY_COMPOSITION,
+            ACTIVITIES_LIST, or RUNNING_TOLERANCE.
         """
         if data_type.name == "BODY_COMPOSITION":
             dict_buckets: Dict[date, dict] = {}
@@ -558,6 +569,26 @@ class GarminExtractor:
                     continue
                 list_buckets[cal_date].append(activity)
             buckets = list_buckets
+        elif data_type.name == "RUNNING_TOLERANCE":
+            # Sparse per-day split: the aggregation=daily response is a list with one
+            # row per calendar day (``calendarDate``). Days with no row produce no file
+            # (unlike ACTIVITIES_LIST, which is dense). Skip non-dict rows and rows
+            # without a parseable ``calendarDate`` rather than raising.
+            rt_buckets: Dict[date, list] = {}
+            for row in data or []:
+                if not isinstance(row, dict):
+                    continue
+                cal_date_str = row.get("calendarDate")
+                if not cal_date_str:
+                    continue
+                try:
+                    cal_date = date.fromisoformat(str(cal_date_str)[:10])
+                except ValueError:
+                    continue
+                if not (start_date <= cal_date <= end_date):
+                    continue
+                rt_buckets.setdefault(cal_date, []).append(row)
+            buckets = rt_buckets
         else:
             raise ValueError(
                 f"_split_range_response_to_per_day_files called with unsupported "
