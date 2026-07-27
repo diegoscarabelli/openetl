@@ -47,6 +47,38 @@ _TRANSIENT_API_EXCEPTIONS: tuple = (
 # worst case, comfortably absorbing typical DNS hiccups and brief outages.
 _RETRY_BACKOFFS: tuple = (2.0, 8.0, 30.0)
 
+# Data types whose already-extracted past days can change retroactively when the user
+# edits history in Garmin Connect (e.g. moving a menstrual period start recomputes
+# ``dayInCycle`` for every following day). Maps the data type name to a look-back window
+# in days; a routine run re-fetches that trailing window so the edits are picked up and
+# overwritten, not just the narrow incremental slice. 90 days comfortably covers a full
+# cycle's worth of cascade.
+_RETROACTIVE_LOOKBACK_DAYS: Dict[str, int] = {
+    "MENSTRUAL_CYCLE_DAY": 90,
+}
+
+
+def _retroactive_lookback_start(
+    data_type: GarminDataType, start_date: date, end_date: date
+) -> date:
+    """
+    Extend ``start_date`` backward for data types that need a retroactive-edit refresh.
+
+    Returns the earlier of the requested ``start_date`` and ``end_date - lookback`` for
+    data types registered in ``_RETROACTIVE_LOOKBACK_DAYS``. The start only ever moves
+    earlier, so an explicit wider backfill window is left untouched. Data types not in
+    the registry are returned unchanged.
+
+    :param data_type: The data type being extracted.
+    :param start_date: The requested (e.g. incremental) start date.
+    :param end_date: The extraction end date.
+    :return: The effective start date to extract from.
+    """
+    lookback = _RETROACTIVE_LOOKBACK_DAYS.get(data_type.name)
+    if lookback is None:
+        return start_date
+    return min(start_date, end_date - timedelta(days=lookback))
+
 
 def _with_retries(fn: Callable, *args, **kwargs):
     """
@@ -628,7 +660,13 @@ class GarminExtractor:
             return []
 
         if data_type.api_method_time_param == APIMethodTimeParam.DAILY:
-            return self._extract_day_by_day(data_type, start_date, end_date)
+            # Data types whose past days can change retroactively (e.g.
+            # MENSTRUAL_CYCLE_DAY) extend the start back a fixed window so those edits
+            # are re-fetched and overwritten, not just the narrow incremental slice.
+            effective_start = _retroactive_lookback_start(
+                data_type, start_date, end_date
+            )
+            return self._extract_day_by_day(data_type, effective_start, end_date)
 
         if data_type.api_method_time_param == APIMethodTimeParam.RANGE:
             return self._extract_range(data_type, start_date, end_date)

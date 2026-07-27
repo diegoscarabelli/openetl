@@ -14,7 +14,7 @@ import json
 import tempfile
 import zipfile
 
-from datetime import date
+from datetime import date, timedelta
 from pathlib import Path
 from unittest.mock import ANY, MagicMock, call, patch
 
@@ -23,13 +23,109 @@ import pytest
 from airflow.sdk.exceptions import AirflowFailException, AirflowSkipException
 
 from dags.lib.etl_config import ETLConfig
-from dags.pipelines.garmin.constants import APIMethodTimeParam, GarminDataType
+from dags.pipelines.garmin.constants import (
+    APIMethodTimeParam,
+    GARMIN_DATA_REGISTRY,
+    GarminDataType,
+)
 from dags.pipelines.garmin.extract import (
     GarminExtractor,
+    _RETROACTIVE_LOOKBACK_DAYS,
+    _retroactive_lookback_start,
     extract,
     cli_extract,
     discover_accounts,
 )
+
+
+class TestRetroactiveLookback:
+    """
+    Tests for the retroactive-edit lookback (ports garmin-health-data#75).
+
+    Some DAILY types have already-extracted past days that change when the user edits
+    history in Garmin Connect (e.g. moving a menstrual period start recomputes
+    ``dayInCycle`` for every following day). Those days fall outside the narrow
+    incremental window, so the extractor extends the start back a fixed lookback to re-
+    fetch and overwrite them.
+    """
+
+    def test_extends_recent_start_back_to_lookback_window(self) -> None:
+        """
+        For a registered type (MENSTRUAL_CYCLE_DAY, 90 days), a recent start is pulled
+        back to ``end_date - 90`` so retroactively-recomputed past days are re-fetched.
+        """
+        menstrual_day = GARMIN_DATA_REGISTRY.get_by_name("MENSTRUAL_CYCLE_DAY")
+        end = date(2026, 4, 30)
+        effective = _retroactive_lookback_start(menstrual_day, date(2026, 4, 28), end)
+        assert effective == end - timedelta(days=90)
+
+    def test_does_not_shrink_an_already_older_start(self) -> None:
+        """
+        A start already earlier than ``end - lookback`` (e.g. an explicit full-history
+        backfill) is left untouched: the lookback only ever moves the start earlier.
+        """
+        menstrual_day = GARMIN_DATA_REGISTRY.get_by_name("MENSTRUAL_CYCLE_DAY")
+        end = date(2026, 4, 30)
+        old_start = date(2025, 1, 1)  # Far older than end - 90 days.
+        effective = _retroactive_lookback_start(menstrual_day, old_start, end)
+        assert effective == old_start
+
+    def test_noop_for_unregistered_type(self) -> None:
+        """
+        A DAILY type with no retroactive-lookback registration (e.g. SLEEP) is returned
+        unchanged.
+        """
+        sleep = GARMIN_DATA_REGISTRY.get_by_name("SLEEP")
+        start = date(2026, 4, 28)
+        assert _retroactive_lookback_start(sleep, start, date(2026, 4, 30)) == start
+
+    def test_menstrual_cycle_day_registered_with_90_days(self) -> None:
+        """
+        MENSTRUAL_CYCLE_DAY is registered with a 90-day retroactive lookback (one full
+        cycle's worth of cascade).
+        """
+        assert _RETROACTIVE_LOOKBACK_DAYS.get("MENSTRUAL_CYCLE_DAY") == 90
+
+    def test_daily_dispatch_applies_lookback(self, tmp_path: Path) -> None:
+        """
+        ``_extract_data_by_type`` for a registered DAILY type calls
+        ``_extract_day_by_day`` with the lookback-extended start, not the raw
+        incremental start.
+        """
+        extractor = GarminExtractor(
+            start_date=date(2026, 4, 28),
+            end_date=date(2026, 4, 30),
+            ingest_dir=tmp_path,
+        )
+        extractor._extract_day_by_day = MagicMock(return_value=[])
+        menstrual_day = GARMIN_DATA_REGISTRY.get_by_name("MENSTRUAL_CYCLE_DAY")
+        end = date(2026, 4, 30)
+
+        extractor._extract_data_by_type(menstrual_day, date(2026, 4, 28), end)
+
+        extractor._extract_day_by_day.assert_called_once_with(
+            menstrual_day, end - timedelta(days=90), end
+        )
+
+    def test_daily_dispatch_no_lookback_for_unregistered_type(
+        self, tmp_path: Path
+    ) -> None:
+        """
+        A DAILY type without a registration is dispatched with its original start.
+        """
+        extractor = GarminExtractor(
+            start_date=date(2026, 4, 28),
+            end_date=date(2026, 4, 30),
+            ingest_dir=tmp_path,
+        )
+        extractor._extract_day_by_day = MagicMock(return_value=[])
+        sleep = GARMIN_DATA_REGISTRY.get_by_name("SLEEP")
+
+        extractor._extract_data_by_type(sleep, date(2026, 4, 28), date(2026, 4, 30))
+
+        extractor._extract_day_by_day.assert_called_once_with(
+            sleep, date(2026, 4, 28), date(2026, 4, 30)
+        )
 
 
 class TestGarminExtractor:
