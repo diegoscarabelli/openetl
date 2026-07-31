@@ -467,6 +467,12 @@ class GarminProcessor(Processor):
         :param session: Active SQLAlchemy session.
         """
         payload = self._load_json_file(file_path)
+        if not isinstance(payload, dict):
+            LOGGER.warning(
+                f"⚠️ MULTISPORT_CHILDREN file {file_path.name} is not a JSON object; "
+                f"skipping."
+            )
+            return
         parent_id = payload.get("parentActivityId")
         children = payload.get("children") or []
         if parent_id is None or not children:
@@ -545,17 +551,26 @@ class GarminProcessor(Processor):
             return False
 
         activity_id = int(activity_id)
-        start_ts = datetime.fromisoformat(start_gmt).replace(tzinfo=timezone.utc)
         duration = summary.get("duration")
         end_gmt = summary.get("endTimeGMT")
-        if end_gmt:
-            end_ts = datetime.fromisoformat(end_gmt).replace(tzinfo=timezone.utc)
-        elif duration is not None:
-            end_ts = start_ts + timedelta(seconds=duration)
-        else:
-            end_ts = start_ts
-        utc_naive = datetime.fromisoformat(start_gmt)
-        local_naive = datetime.fromisoformat(start_local)
+        # Guard timestamp parsing: a malformed leg is skipped rather than aborting the
+        # whole MULTISPORT_CHILDREN file (one bad leg never loses its siblings).
+        try:
+            start_ts = datetime.fromisoformat(start_gmt).replace(tzinfo=timezone.utc)
+            utc_naive = datetime.fromisoformat(start_gmt)
+            local_naive = datetime.fromisoformat(start_local)
+            if end_gmt:
+                end_ts = datetime.fromisoformat(end_gmt).replace(tzinfo=timezone.utc)
+            elif duration is not None:
+                end_ts = start_ts + timedelta(seconds=duration)
+            else:
+                end_ts = start_ts
+        except ValueError:
+            LOGGER.warning(
+                f"⚠️ Skipping multi-sport leg {activity_id} with unparseable "
+                f"timestamps."
+            )
+            return False
         timezone_offset_hours = (local_naive - utc_naive).total_seconds() / 3600
 
         leg = Activity(
@@ -2997,6 +3012,21 @@ class GarminProcessor(Processor):
             else:
                 LOGGER.warning("⚠️ No personal records data found.")
 
+    @staticmethod
+    def _safe_iso_date(value: Any) -> Optional[date]:
+        """
+        Parse the ``YYYY-MM-DD`` prefix of ``value`` into a date, tolerating bad input.
+
+        :param value: A date-like value (typically a Garmin ``YYYY-MM-DD`` string).
+        :return: The parsed date, or ``None`` if ``value`` is falsy or unparseable.
+        """
+        if not value:
+            return None
+        try:
+            return date.fromisoformat(str(value)[:10])
+        except ValueError:
+            return None
+
     def _process_running_tolerance(self, file_path: Path, session: Session):
         """
         Process a RUNNING_TOLERANCE per-day file into garmin.running_tolerance.
@@ -3004,7 +3034,8 @@ class GarminProcessor(Processor):
         The file holds a list of daily running-tolerance objects (usually one). Each is
         upserted by (user_id, date). Malformed rows (non-dict, or missing/unparseable
         ``calendarDate``) are skipped with a warning rather than aborting the file, so
-        one bad row never loses the good rows in the same window.
+        one bad row never loses the good rows in the same window; a malformed
+        ``startOfWeek`` / ``endOfWeek`` is stored as NULL rather than dropping the row.
 
         :param file_path: Path to the RUNNING_TOLERANCE JSON file.
         :param session: Active SQLAlchemy session.
@@ -3016,32 +3047,22 @@ class GarminProcessor(Processor):
         for row in rows:
             if not isinstance(row, dict):
                 continue
-            calendar_date = row.get("calendarDate")
-            if not calendar_date:
+            row_date = self._safe_iso_date(row.get("calendarDate"))
+            if row_date is None:
                 LOGGER.warning(
-                    f"⚠️ Skipping running-tolerance row without calendarDate in "
-                    f"{file_path.name}."
+                    f"⚠️ Skipping running-tolerance row with missing/unparseable "
+                    f"calendarDate in {file_path.name}."
                 )
                 continue
-            start_of_week = row.get("startOfWeek")
-            end_of_week = row.get("endOfWeek")
             records.append(
                 RunningTolerance(
                     user_id=int(self.user_id),
-                    date=date.fromisoformat(str(calendar_date)[:10]),
+                    date=row_date,
                     total_impact_load=row.get("totalImpactLoad"),
                     total_distance=row.get("totalDistance"),
                     tolerance=row.get("tolerance"),
-                    start_of_week=(
-                        date.fromisoformat(str(start_of_week)[:10])
-                        if start_of_week
-                        else None
-                    ),
-                    end_of_week=(
-                        date.fromisoformat(str(end_of_week)[:10])
-                        if end_of_week
-                        else None
-                    ),
+                    start_of_week=self._safe_iso_date(row.get("startOfWeek")),
+                    end_of_week=self._safe_iso_date(row.get("endOfWeek")),
                     week_index=row.get("weekIndex"),
                 )
             )

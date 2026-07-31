@@ -4865,6 +4865,112 @@ class TestGarminProcessor:
         # Assert - the guard is scoped to non-leg rows.
         assert "parent_activity_id IS NULL" in captured["sql"]
 
+    @patch("dags.pipelines.garmin.process.upsert_model_instances")
+    def test_process_running_tolerance_skips_unparseable_calendar_date(
+        self, mock_upsert, processor, mock_session, temp_dir
+    ):
+        """
+        A row with an unparseable ``calendarDate`` is skipped (not raised), so the good
+        rows in the same file still upsert.
+        """
+        # Arrange.
+        processor.user_id = 1
+        data = [
+            {"calendarDate": "not-a-date", "totalImpactLoad": 1},  # Bad: skipped.
+            {"calendarDate": "2026-04-16", "totalImpactLoad": 1100},  # Good.
+        ]
+        rt_file = temp_dir / "1_RUNNING_TOLERANCE_2026-04-16T12:00:00Z.json"
+        with open(rt_file, "w", encoding="utf-8") as fh:
+            json.dump(data, fh)
+
+        # Act.
+        processor._process_running_tolerance(rt_file, mock_session)
+
+        # Assert - only the good row reached the upsert.
+        mock_upsert.assert_called_once()
+        instances = mock_upsert.call_args[1]["model_instances"]
+        assert len(instances) == 1
+        assert instances[0].date == date(2026, 4, 16)
+
+    @patch("dags.pipelines.garmin.process.upsert_model_instances")
+    def test_process_running_tolerance_tolerates_malformed_week_dates(
+        self, mock_upsert, processor, mock_session, temp_dir
+    ):
+        """
+        A malformed ``startOfWeek`` / ``endOfWeek`` is stored as NULL rather than
+        dropping the whole row (only ``calendarDate`` is required).
+        """
+        # Arrange.
+        processor.user_id = 1
+        data = [
+            {
+                "calendarDate": "2026-04-16",
+                "totalImpactLoad": 1100,
+                "startOfWeek": "garbage",
+                "endOfWeek": None,
+            }
+        ]
+        rt_file = temp_dir / "1_RUNNING_TOLERANCE_2026-04-16T12:00:00Z.json"
+        with open(rt_file, "w", encoding="utf-8") as fh:
+            json.dump(data, fh)
+
+        # Act.
+        processor._process_running_tolerance(rt_file, mock_session)
+
+        # Assert - row stored with NULL week bounds.
+        rt = mock_upsert.call_args[1]["model_instances"][0]
+        assert rt.date == date(2026, 4, 16)
+        assert rt.start_of_week is None
+        assert rt.end_of_week is None
+
+    @patch("dags.pipelines.garmin.process.upsert_model_instances")
+    def test_process_multisport_children_non_dict_payload(
+        self, mock_upsert, processor, mock_session, temp_dir
+    ):
+        """
+        A malformed MULTISPORT_CHILDREN payload (a JSON list, not an object) is skipped
+        gracefully rather than raising AttributeError on ``.get()``.
+        """
+        # Arrange.
+        processor.user_id = 1
+        f = temp_dir / "1_MULTISPORT_CHILDREN_2001_2026-04-15T12:00:00Z.json"
+        with open(f, "w", encoding="utf-8") as fh:
+            json.dump(["not", "a", "dict"], fh)
+
+        # Act (must not raise).
+        processor._process_multisport_children(f, mock_session)
+
+        # Assert.
+        mock_upsert.assert_not_called()
+
+    @patch("dags.pipelines.garmin.process.upsert_model_instances")
+    def test_process_multisport_child_skips_unparseable_timestamp(
+        self, mock_upsert, processor, mock_session
+    ):
+        """
+        A leg whose ``summaryDTO`` timestamps are unparseable is skipped (returns False,
+        no upsert) rather than aborting the whole MULTISPORT_CHILDREN file.
+        """
+        # Arrange.
+        processor.user_id = 1
+        child = {
+            "activityId": 2099,
+            "activityTypeDTO": {"typeId": 1, "typeKey": "running"},
+            "eventTypeDTO": {"typeId": 9, "typeKey": "multi_sport"},
+            "summaryDTO": {
+                "startTimeGMT": "not-a-timestamp",
+                "startTimeLocal": "also-bad",
+                "duration": 60.0,
+            },
+        }
+
+        # Act.
+        result = processor._process_multisport_child(child, 2001, mock_session)
+
+        # Assert.
+        assert result is False
+        mock_upsert.assert_not_called()
+
     @pytest.fixture
     def sample_race_predictions_data(self) -> Dict:
         """
