@@ -56,9 +56,15 @@ class TestExtractRange:
         """
         body_comp = GARMIN_DATA_REGISTRY.get_by_name("BODY_COMPOSITION")
         extractor.garmin_client.get_body_composition.return_value = {
-            "dateWeightList": [
-                {"calendarDate": "2026-01-01", "weight": 75000.0},
-                {"calendarDate": "2026-01-03", "weight": 74800.0},
+            "dailyWeightSummaries": [
+                {
+                    "summaryDate": "2026-01-01",
+                    "allWeightMetrics": [{"weight": 75000.0}],
+                },
+                {
+                    "summaryDate": "2026-01-03",
+                    "allWeightMetrics": [{"weight": 74800.0}],
+                },
             ]
         }
 
@@ -72,20 +78,28 @@ class TestExtractRange:
         self, extractor: GarminExtractor
     ) -> None:
         """
-        ``BODY_COMPOSITION`` per-window responses are split into one file per calendar
-        date that had at least one entry.
+        ``BODY_COMPOSITION`` per-window responses are split into one file per local day
+        that had at least one weigh-in.
 
-        Days with no entries produce no file. Each per-day file is a dict with a
-        ``dateWeightList`` key containing only the entries whose ``calendarDate``
-        matches the bucket date, preserving the per-day file shape the downstream
-        processor expects.
+        Days with no weigh-in produce no file. Each per-day file is a dict with a
+        ``dateWeightList`` key holding every weigh-in from that day's
+        ``allWeightMetrics``, preserving the per-day file shape the downstream processor
+        expects.
         """
         body_comp = GARMIN_DATA_REGISTRY.get_by_name("BODY_COMPOSITION")
         extractor.garmin_client.get_body_composition.return_value = {
-            "dateWeightList": [
-                {"calendarDate": "2026-01-01", "weight": 75000.0},
-                {"calendarDate": "2026-01-01", "weight": 74800.0},
-                {"calendarDate": "2026-01-03", "weight": 74500.0},
+            "dailyWeightSummaries": [
+                {
+                    "summaryDate": "2026-01-01",
+                    "allWeightMetrics": [
+                        {"timestampGMT": 1, "weight": 75000.0},
+                        {"timestampGMT": 2, "weight": 74800.0},
+                    ],
+                },
+                {
+                    "summaryDate": "2026-01-03",
+                    "allWeightMetrics": [{"timestampGMT": 3, "weight": 74500.0}],
+                },
             ]
         }
 
@@ -94,22 +108,95 @@ class TestExtractRange:
         )
 
         # Exactly two files: one for 2026-01-01, one for 2026-01-03.
-        # Nothing for 01-02 / 01-04 / 01-05 (no entries).
+        # Nothing for 01-02 / 01-04 / 01-05 (no weigh-ins).
         assert len(saved) == 2
         names = sorted(p.name for p in saved)
         assert "BODY_COMPOSITION_2026-01-01" in names[0]
         assert "BODY_COMPOSITION_2026-01-03" in names[1]
 
         # The 2026-01-01 file should contain a dict with dateWeightList of
-        # exactly its 2 entries.
+        # exactly its 2 weigh-ins.
         day1_file = next(p for p in saved if "2026-01-01" in p.name)
         with open(day1_file, "r", encoding="utf-8") as f:
             payload = json.load(f)
         assert isinstance(payload, dict)
         assert "dateWeightList" in payload
         assert len(payload["dateWeightList"]) == 2
-        for entry in payload["dateWeightList"]:
-            assert entry["calendarDate"] == "2026-01-01"
+        assert {e["weight"] for e in payload["dateWeightList"]} == {75000.0, 74800.0}
+
+    def test_body_composition_multiple_weighins_same_day_all_preserved(
+        self, extractor: GarminExtractor
+    ) -> None:
+        """
+        Every weigh-in on a multi-weigh-in day is preserved (the #74 fix).
+
+        The ``daterangesnapshot`` endpoint returned only one representative weigh-in per
+        day; ``weight/range?includeAll=true`` returns them all under
+        ``allWeightMetrics``, and the splitter must land every one in that day's file.
+        """
+        body_comp = GARMIN_DATA_REGISTRY.get_by_name("BODY_COMPOSITION")
+        extractor.garmin_client.get_body_composition.return_value = {
+            "dailyWeightSummaries": [
+                {
+                    "summaryDate": "2026-01-02",
+                    "allWeightMetrics": [
+                        {"timestampGMT": 1, "weight": 70000.0},
+                        {"timestampGMT": 2, "weight": 70100.0},
+                        {"timestampGMT": 3, "weight": 69900.0},
+                    ],
+                }
+            ]
+        }
+
+        saved = extractor._extract_data_by_type(
+            body_comp, date(2026, 1, 1), date(2026, 1, 5)
+        )
+
+        assert len(saved) == 1
+        with open(saved[0], "r", encoding="utf-8") as f:
+            payload = json.load(f)
+        assert len(payload["dateWeightList"]) == 3
+        assert {e["weight"] for e in payload["dateWeightList"]} == {
+            70000.0,
+            70100.0,
+            69900.0,
+        }
+
+    def test_body_composition_grouped_by_summary_date_not_utc_timestamp(
+        self, extractor: GarminExtractor
+    ) -> None:
+        """
+        Weigh-ins are grouped by Garmin's local ``summaryDate``, not each weigh-in's UTC
+        ``timestampGMT``.
+
+        Two weigh-ins on the same local day whose UTC timestamps straddle midnight must
+        land in one per-day file. Grouping by ``timestampGMT`` would split them across
+        two days; grouping by ``summaryDate`` keeps them together.
+        """
+        body_comp = GARMIN_DATA_REGISTRY.get_by_name("BODY_COMPOSITION")
+        # The two timestampGMT values fall on different UTC calendar days, but Garmin
+        # buckets both under the same local ``summaryDate``.
+        extractor.garmin_client.get_body_composition.return_value = {
+            "dailyWeightSummaries": [
+                {
+                    "summaryDate": "2026-01-02",
+                    "allWeightMetrics": [
+                        {"timestampGMT": 1767394800000, "weight": 70000.0},
+                        {"timestampGMT": 1767416400000, "weight": 70100.0},
+                    ],
+                }
+            ]
+        }
+
+        saved = extractor._extract_data_by_type(
+            body_comp, date(2026, 1, 1), date(2026, 1, 5)
+        )
+
+        assert len(saved) == 1
+        assert "BODY_COMPOSITION_2026-01-02" in saved[0].name
+        with open(saved[0], "r", encoding="utf-8") as f:
+            payload = json.load(f)
+        assert len(payload["dateWeightList"]) == 2
 
     def test_activities_list_response_is_split_per_day(
         self, extractor: GarminExtractor
@@ -199,18 +286,22 @@ class TestExtractRange:
         self, extractor: GarminExtractor
     ) -> None:
         """
-        The splitter must not call ``.get(...)`` on a non-dict ``dateWeightList`` entry.
-
-        A malformed payload that interleaves dicts with strings or other primitives must
-        skip the bad entries and process the good ones, mirroring the defensive
-        tolerance of ``_load_activities_list_from_disk``.
+        The splitter must tolerate malformed shapes: a non-dict daily summary, and non-
+        dict entries inside ``allWeightMetrics``, are skipped rather than raising on
+        ``.get(...)``.
         """
         body_comp = GARMIN_DATA_REGISTRY.get_by_name("BODY_COMPOSITION")
         extractor.garmin_client.get_body_composition.return_value = {
-            "dateWeightList": [
-                "not-a-dict",  # Bad entry, should be skipped.
-                {"calendarDate": "2026-01-02", "weight": 70000.0},  # Good entry.
-                12345,  # Bad entry, should be skipped.
+            "dailyWeightSummaries": [
+                "not-a-dict",  # Bad summary, should be skipped.
+                {
+                    "summaryDate": "2026-01-02",
+                    "allWeightMetrics": [
+                        "not-a-dict",  # Bad entry, should be skipped.
+                        {"timestampGMT": 1, "weight": 70000.0},  # Good entry.
+                        12345,  # Bad entry, should be skipped.
+                    ],
+                },
             ]
         }
 
@@ -221,6 +312,9 @@ class TestExtractRange:
         # Only the one good entry produces a file (2026-01-02).
         assert len(saved) == 1
         assert "BODY_COMPOSITION_2026-01-02" in saved[0].name
+        with open(saved[0], "r", encoding="utf-8") as f:
+            payload = json.load(f)
+        assert len(payload["dateWeightList"]) == 1
 
     def test_splitter_skips_non_dict_entries_in_activities_list(
         self, extractor: GarminExtractor
@@ -293,6 +387,88 @@ class TestExtractRange:
 
         assert saved == []
         assert extractor.failures == []
+
+    def test_running_tolerance_single_call_for_full_window(
+        self, extractor: GarminExtractor
+    ) -> None:
+        """
+        RUNNING_TOLERANCE is RANGE-typed: one API call covers the whole window.
+        """
+        rt = GARMIN_DATA_REGISTRY.get_by_name("RUNNING_TOLERANCE")
+        extractor.garmin_client.get_running_tolerance.return_value = [
+            {"calendarDate": "2026-01-01", "totalImpactLoad": 1000},
+            {"calendarDate": "2026-01-03", "totalImpactLoad": 1200},
+        ]
+
+        extractor._extract_data_by_type(rt, date(2026, 1, 1), date(2026, 1, 5))
+
+        extractor.garmin_client.get_running_tolerance.assert_called_once_with(
+            "2026-01-01", "2026-01-05"
+        )
+
+    def test_running_tolerance_response_is_split_per_day(
+        self, extractor: GarminExtractor
+    ) -> None:
+        """
+        RUNNING_TOLERANCE per-window responses split into one file per calendar day that
+        has a row (sparse: days with no row produce no file).
+
+        Each per-day file is a list of that day's running-tolerance rows.
+        """
+        rt = GARMIN_DATA_REGISTRY.get_by_name("RUNNING_TOLERANCE")
+        extractor.garmin_client.get_running_tolerance.return_value = [
+            {"calendarDate": "2026-01-01", "totalImpactLoad": 1000},
+            {"calendarDate": "2026-01-03", "totalImpactLoad": 1200},
+        ]
+
+        saved = extractor._extract_data_by_type(rt, date(2026, 1, 1), date(2026, 1, 5))
+
+        # Two files: 2026-01-01 and 2026-01-03; nothing for the empty days.
+        assert len(saved) == 2
+        names = sorted(p.name for p in saved)
+        assert "RUNNING_TOLERANCE_2026-01-01" in names[0]
+        assert "RUNNING_TOLERANCE_2026-01-03" in names[1]
+
+        day1_file = next(p for p in saved if "2026-01-01" in p.name)
+        with open(day1_file, "r", encoding="utf-8") as f:
+            payload = json.load(f)
+        assert isinstance(payload, list)
+        assert len(payload) == 1
+        assert payload[0]["totalImpactLoad"] == 1000
+
+    def test_running_tolerance_empty_response_writes_no_file(
+        self, extractor: GarminExtractor
+    ) -> None:
+        """
+        A falsy (``None``) running-tolerance response (account without a compatible
+        watch) yields no file and no recorded failure.
+        """
+        rt = GARMIN_DATA_REGISTRY.get_by_name("RUNNING_TOLERANCE")
+        extractor.garmin_client.get_running_tolerance.return_value = None
+
+        saved = extractor._extract_data_by_type(rt, date(2026, 1, 1), date(2026, 1, 5))
+
+        assert saved == []
+        assert extractor.failures == []
+
+    def test_running_tolerance_skips_rows_without_calendar_date(
+        self, extractor: GarminExtractor
+    ) -> None:
+        """
+        Rows missing ``calendarDate`` (or non-dict rows) are skipped rather than
+        raising; only the well-formed row produces a file.
+        """
+        rt = GARMIN_DATA_REGISTRY.get_by_name("RUNNING_TOLERANCE")
+        extractor.garmin_client.get_running_tolerance.return_value = [
+            "not-a-dict",
+            {"totalImpactLoad": 999},  # No calendarDate: skipped.
+            {"calendarDate": "2026-01-02", "totalImpactLoad": 1100},  # Good.
+        ]
+
+        saved = extractor._extract_data_by_type(rt, date(2026, 1, 1), date(2026, 1, 5))
+
+        assert len(saved) == 1
+        assert "RUNNING_TOLERANCE_2026-01-02" in saved[0].name
 
     def test_menstrual_cycle_summary_writes_single_file_stamped_end_date(
         self, extractor: GarminExtractor

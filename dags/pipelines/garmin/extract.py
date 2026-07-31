@@ -47,6 +47,38 @@ _TRANSIENT_API_EXCEPTIONS: tuple = (
 # worst case, comfortably absorbing typical DNS hiccups and brief outages.
 _RETRY_BACKOFFS: tuple = (2.0, 8.0, 30.0)
 
+# Data types whose already-extracted past days can change retroactively when the user
+# edits history in Garmin Connect (e.g. moving a menstrual period start recomputes
+# ``dayInCycle`` for every following day). Maps the data type name to a look-back window
+# in days; a routine run re-fetches that trailing window so the edits are picked up and
+# overwritten, not just the narrow incremental slice. 90 days comfortably covers a full
+# cycle's worth of cascade.
+_RETROACTIVE_LOOKBACK_DAYS: Dict[str, int] = {
+    "MENSTRUAL_CYCLE_DAY": 90,
+}
+
+
+def _retroactive_lookback_start(
+    data_type: GarminDataType, start_date: date, end_date: date
+) -> date:
+    """
+    Extend ``start_date`` backward for data types that need a retroactive-edit refresh.
+
+    Returns the earlier of the requested ``start_date`` and ``end_date - lookback`` for
+    data types registered in ``_RETROACTIVE_LOOKBACK_DAYS``. The start only ever moves
+    earlier, so an explicit wider backfill window is left untouched. Data types not in
+    the registry are returned unchanged.
+
+    :param data_type: The data type being extracted.
+    :param start_date: The requested (e.g. incremental) start date.
+    :param end_date: The extraction end date.
+    :return: The effective start date to extract from.
+    """
+    lookback = _RETROACTIVE_LOOKBACK_DAYS.get(data_type.name)
+    if lookback is None:
+        return start_date
+    return min(start_date, end_date - timedelta(days=lookback))
+
 
 def _with_retries(fn: Callable, *args, **kwargs):
     """
@@ -436,7 +468,13 @@ class GarminExtractor:
         # per-day empty-list file for ACTIVITIES_LIST so the on-disk coverage
         # check used by extract_fit_activities trusts the cache. Only bail on
         # None (transport-level "no response"), not on empty-but-valid data.
-        if data_type.name in ("BODY_COMPOSITION", "ACTIVITIES_LIST"):
+        # (BODY_COMPOSITION and RUNNING_TOLERANCE split sparsely: their wrappers
+        # normalize no-data to None, so they bail above and never reach here empty.)
+        if data_type.name in (
+            "BODY_COMPOSITION",
+            "ACTIVITIES_LIST",
+            "RUNNING_TOLERANCE",
+        ):
             if data is None:
                 LOGGER.warning(
                     f"⚠️ {data_type.emoji} {data_type.name}: No data for "
@@ -468,10 +506,13 @@ class GarminExtractor:
         """
         Split a per-window RANGE response into per-day files.
 
-        ``BODY_COMPOSITION``'s response is a dict with a ``dateWeightList`` key (each
-        entry has ``calendarDate``); the splitter is sparse — days with no weigh-in
-        produce no file (the FileSet abstraction tolerates a ``(user, day)`` with no
-        data).
+        ``BODY_COMPOSITION``'s response is a dict with a ``dailyWeightSummaries`` key
+        (each summary carries a local ``summaryDate`` and an ``allWeightMetrics`` list
+        of that day's weigh-ins); the splitter is sparse — days with no weigh-in produce
+        no file (the FileSet abstraction tolerates a ``(user, day)`` with no data).
+        Grouping by ``summaryDate`` (not each weigh-in's UTC ``timestampGMT``) keeps
+        multiple weigh-ins on the same local day in one file even when their UTC
+        timestamps straddle midnight.
 
         ``ACTIVITIES_LIST``'s response is a list of activity dicts (each has
         ``startTimeLocal`` whose date prefix is the local calendar date); the splitter
@@ -480,41 +521,58 @@ class GarminExtractor:
         :meth:`_load_activities_list_from_disk`'s on-disk coverage check: without a file
         per day, the FIT downloader would fall back to a redundant live API call.
 
+        ``RUNNING_TOLERANCE``'s response is a list of per-day dicts (each has
+        ``calendarDate``); the splitter is sparse — only days with a row produce a file,
+        each holding that day's list of running-tolerance rows.
+
         :param data: Per-window response payload (dict for BODY_COMPOSITION, list for
-            ACTIVITIES_LIST).
-        :param data_type: BODY_COMPOSITION or ACTIVITIES_LIST data type.
+            ACTIVITIES_LIST and RUNNING_TOLERANCE).
+        :param data_type: BODY_COMPOSITION, ACTIVITIES_LIST, or RUNNING_TOLERANCE data
+            type.
         :param start_date: Inclusive start date of the requested window.
         :param end_date: Inclusive end date of the requested window.
         :return: List of saved per-day file paths.
-        :raises ValueError: If ``data_type.name`` is not BODY_COMPOSITION or
-            ACTIVITIES_LIST.
+        :raises ValueError: If ``data_type.name`` is not BODY_COMPOSITION,
+            ACTIVITIES_LIST, or RUNNING_TOLERANCE.
         """
         if data_type.name == "BODY_COMPOSITION":
             dict_buckets: Dict[date, dict] = {}
             # Defensive: BODY_COMPOSITION's API contract is a dict wrapper, but if
             # an unexpected shape (list, string) ever reaches the splitter, fall
-            # back to "no entries" instead of raising on .get(). Explicit parens
-            # to make the short-circuit intent unambiguous to readers.
-            entries = (
-                (data.get("dateWeightList") or []) if isinstance(data, dict) else []
+            # back to "no summaries" instead of raising on .get(). Explicit parens
+            # make the short-circuit intent unambiguous to readers.
+            summaries = (
+                (data.get("dailyWeightSummaries") or [])
+                if isinstance(data, dict)
+                else []
             )
-            for entry in entries:
-                # Defensive: skip non-dict entries rather than raise on
-                # entry.get(...) below. Mirrors _load_activities_list_from_disk's
-                # tolerance for malformed payloads.
-                if not isinstance(entry, dict):
+            for summary in summaries:
+                # Defensive: skip non-dict summaries rather than raise on
+                # summary.get(...) below.
+                if not isinstance(summary, dict):
                     continue
-                cal_date_str = entry.get("calendarDate")
-                if not cal_date_str:
+                summary_date_str = summary.get("summaryDate")
+                if not summary_date_str:
                     continue
                 try:
-                    cal_date = date.fromisoformat(cal_date_str)
+                    cal_date = date.fromisoformat(str(summary_date_str)[:10])
                 except ValueError:
                     continue
                 if not (start_date <= cal_date <= end_date):
                     continue
+                # Group by Garmin's local ``summaryDate`` (not each weigh-in's UTC
+                # ``timestampGMT``) so multiple weigh-ins on the same local day land
+                # in one file even when their UTC timestamps straddle midnight. Skip
+                # non-dict weigh-in entries rather than raise on the processor side.
+                metrics = [
+                    m
+                    for m in (summary.get("allWeightMetrics") or [])
+                    if isinstance(m, dict)
+                ]
+                if not metrics:
+                    continue
                 bucket = dict_buckets.setdefault(cal_date, {"dateWeightList": []})
-                bucket["dateWeightList"].append(entry)
+                bucket["dateWeightList"].extend(metrics)
             buckets: Dict[date, Union[dict, list]] = dict_buckets
         elif data_type.name == "ACTIVITIES_LIST":
             # Pre-populate every day in the window with an empty list so days
@@ -543,6 +601,26 @@ class GarminExtractor:
                     continue
                 list_buckets[cal_date].append(activity)
             buckets = list_buckets
+        elif data_type.name == "RUNNING_TOLERANCE":
+            # Sparse per-day split: the aggregation=daily response is a list with one
+            # row per calendar day (``calendarDate``). Days with no row produce no file
+            # (unlike ACTIVITIES_LIST, which is dense). Skip non-dict rows and rows
+            # without a parseable ``calendarDate`` rather than raising.
+            rt_buckets: Dict[date, list] = {}
+            for row in data or []:
+                if not isinstance(row, dict):
+                    continue
+                cal_date_str = row.get("calendarDate")
+                if not cal_date_str:
+                    continue
+                try:
+                    cal_date = date.fromisoformat(str(cal_date_str)[:10])
+                except ValueError:
+                    continue
+                if not (start_date <= cal_date <= end_date):
+                    continue
+                rt_buckets.setdefault(cal_date, []).append(row)
+            buckets = rt_buckets
         else:
             raise ValueError(
                 f"_split_range_response_to_per_day_files called with unsupported "
@@ -582,7 +660,13 @@ class GarminExtractor:
             return []
 
         if data_type.api_method_time_param == APIMethodTimeParam.DAILY:
-            return self._extract_day_by_day(data_type, start_date, end_date)
+            # Data types whose past days can change retroactively (e.g.
+            # MENSTRUAL_CYCLE_DAY) extend the start back a fixed window so those edits
+            # are re-fetched and overwritten, not just the narrow incremental slice.
+            effective_start = _retroactive_lookback_start(
+                data_type, start_date, end_date
+            )
+            return self._extract_day_by_day(data_type, effective_start, end_date)
 
         if data_type.api_method_time_param == APIMethodTimeParam.RANGE:
             return self._extract_range(data_type, start_date, end_date)
@@ -903,6 +987,18 @@ class GarminExtractor:
                 if exercise_sets_file:
                     downloaded_files.append(exercise_sets_file)
 
+            # Fetch child legs for multi-sport (duathlon/triathlon) parents. The flat
+            # ``parent`` flag marks any activity that has child legs (structural signal,
+            # not a hardcoded type name); the authoritative child list comes from the
+            # detail endpoint's metadataDTO.childIds.
+            if activity.get("parent") is True:
+                time.sleep(0.1)  # Rate limiting between FIT and detail API.
+                children_file = self._extract_multisport_children(
+                    activity_id, timestamp
+                )
+                if children_file:
+                    downloaded_files.append(children_file)
+
             # Rate limiting between activities.
             time.sleep(0.1)
 
@@ -948,6 +1044,77 @@ class GarminExtractor:
 
         file_size = filepath.stat().st_size / 1024  # KB.
         LOGGER.info(f"💪 Saved: {filename} ({file_size:.1f} KB).")
+        return filepath
+
+    def _extract_multisport_children(
+        self, parent_activity_id: int, timestamp: str
+    ) -> Optional[Path]:
+        """
+        Fetch the leg (child) activities of a multi-sport parent into one file.
+
+        A multi_sport parent's time-series/laps already load from its combined FIT file,
+        but the per-leg sport aggregates live only on the child activities, which are
+        absent from the activities list. This reads the parent's detail to get
+        ``metadataDTO.childIds``, fetches each leg's detail, and writes them together as
+        ``{user_id}_MULTISPORT_CHILDREN_{parent_id}_{timestamp}.json`` so the processor
+        can persist each leg as its own activity row linked to the parent.
+
+        :param parent_activity_id: Garmin activity ID of the multi_sport parent.
+        :param timestamp: ISO 8601 timestamp for consistent filename batching.
+        :return: Path to the saved JSON file, or None if the parent has no usable legs.
+        """
+        try:
+            parent_detail = _with_retries(
+                self.garmin_client.get_activity_details, parent_activity_id
+            )
+        except Exception as e:
+            LOGGER.warning(
+                f"⚠️ Failed to fetch detail for multi-sport parent "
+                f"{parent_activity_id}: {e}."
+            )
+            return None
+
+        child_ids = ((parent_detail or {}).get("metadataDTO") or {}).get("childIds")
+        # Only a non-empty list of IDs is usable; a truthy non-list (dict/str) would be
+        # iterated element-by-element and fetch garbage IDs.
+        if not isinstance(child_ids, list) or not child_ids:
+            LOGGER.info(
+                f"🔀 No child legs for multi-sport activity {parent_activity_id}."
+            )
+            return None
+
+        children = []
+        for child_id in child_ids:
+            try:
+                child_detail = _with_retries(
+                    self.garmin_client.get_activity_details, child_id
+                )
+            except Exception as e:
+                LOGGER.warning(
+                    f"⚠️ Failed to fetch multi-sport leg {child_id} of parent "
+                    f"{parent_activity_id}: {e}."
+                )
+                continue
+            if child_detail:
+                children.append(child_detail)
+            time.sleep(0.1)  # Rate limiting between legs.
+
+        if not children:
+            return None
+
+        filename = (
+            f"{self.user_id}_MULTISPORT_CHILDREN_{parent_activity_id}_{timestamp}.json"
+        )
+        filepath = self.ingest_dir / filename
+        with open(filepath, "w", encoding="utf-8") as f:
+            json.dump(
+                {"parentActivityId": parent_activity_id, "children": children},
+                f,
+                indent=2,
+            )
+
+        file_size = filepath.stat().st_size / 1024  # KB.
+        LOGGER.info(f"🔀 Saved: {filename} ({file_size:.1f} KB).")
         return filepath
 
 

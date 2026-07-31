@@ -51,6 +51,7 @@ from dags.pipelines.garmin.sqla_models import (
     RacePredictions,
     Respiration,
     RunningAggMetrics,
+    RunningTolerance,
     Sleep,
     SleepLevel,
     SleepMovement,
@@ -68,6 +69,62 @@ from dags.pipelines.garmin.sqla_models import (
     UserProfile,
     VO2Max,
 )
+
+# Maps a per-sport aggregate column to the Garmin activity-detail ``summaryDTO`` field
+# it is sourced from, for multi-sport legs. The detail ``summaryDTO`` uses different key
+# names than the flat activities list (e.g. ``averageRunCadence`` vs the list's
+# ``averageRunningCadenceInStepsPerMinute``), so legs cannot reuse the standalone
+# sport-metric processors. Fields absent from the detail summaryDTO (power-curve
+# buckets, per-zone times, VO2 max) are intentionally omitted. Sourced from the
+# empirically-verified maps in garmin-health-data#72.
+_MULTISPORT_RUNNING_AGG_MAP = {
+    "avg_running_cadence": "averageRunCadence",
+    "max_running_cadence": "maxRunCadence",
+    "avg_vertical_oscillation": "verticalOscillation",
+    "avg_ground_contact_time": "groundContactTime",
+    "avg_stride_length": "strideLength",
+    "avg_vertical_ratio": "verticalRatio",
+    "avg_ground_contact_balance": "groundContactBalanceLeft",
+    "avg_power": "averagePower",
+    "max_power": "maxPower",
+    "normalized_power": "normalizedPower",
+    "steps": "steps",
+    "min_respiration_rate": "minRespirationRate",
+    "max_respiration_rate": "maxRespirationRate",
+    "avg_respiration_rate": "avgRespirationRate",
+    "elevation_gain": "elevationGain",
+    "elevation_loss": "elevationLoss",
+    "min_elevation": "minElevation",
+    "max_elevation": "maxElevation",
+    "min_temperature": "minTemperature",
+    "max_temperature": "maxTemperature",
+}
+_MULTISPORT_CYCLING_AGG_MAP = {
+    "avg_power": "averagePower",
+    "max_power": "maxPower",
+    "normalized_power": "normalizedPower",
+    "max_20min_power": "maxPowerTwentyMinutes",
+    "avg_left_balance": "leftBalance",
+    "avg_biking_cadence": "averageBikeCadence",
+    "max_biking_cadence": "maxBikeCadence",
+    "training_stress_score": "trainingStressScore",
+    "intensity_factor": "intensityFactor",
+    "min_respiration_rate": "minRespirationRate",
+    "max_respiration_rate": "maxRespirationRate",
+    "avg_respiration_rate": "avgRespirationRate",
+    "elevation_gain": "elevationGain",
+    "elevation_loss": "elevationLoss",
+    "min_elevation": "minElevation",
+    "max_elevation": "maxElevation",
+    "min_temperature": "minTemperature",
+    "max_temperature": "maxTemperature",
+}
+_MULTISPORT_SWIMMING_AGG_MAP = {
+    "avg_swim_cadence": "averageSwimCadence",
+    "avg_swolf": "averageSWOLF",
+    "avg_stroke_distance": "averageStrokeDistance",
+    "strokes": "totalNumberOfStrokes",
+}
 
 
 class GarminProcessor(Processor):
@@ -137,6 +194,7 @@ class GarminProcessor(Processor):
             [
                 ("USER_PROFILE", self._process_user_profile),
                 ("ACTIVITIES_LIST", self._process_activities),
+                ("MULTISPORT_CHILDREN", self._process_multisport_children),
                 ("EXERCISE_SETS", self._process_exercise_sets),
                 ("BODY_COMPOSITION", self._process_body_composition),
                 ("FLOORS", self._process_floors),
@@ -146,6 +204,7 @@ class GarminProcessor(Processor):
                 ("MENSTRUAL_CYCLE_SUMMARY", self._process_menstrual_cycle_summary),
                 ("PERSONAL_RECORDS", self._process_personal_records),
                 ("RACE_PREDICTIONS", self._process_race_predictions),
+                ("RUNNING_TOLERANCE", self._process_running_tolerance),
                 ("RESPIRATION", self._process_respiration),
                 ("SLEEP", self._process_sleep),
                 ("STEPS", self._process_steps),
@@ -394,6 +453,241 @@ class GarminProcessor(Processor):
         for activity in activities_list:
             self._process_single_activity(activity, session)
 
+    def _process_multisport_children(self, file_path: Path, session: Session) -> None:
+        """
+        Process a MULTISPORT_CHILDREN file into per-leg activity rows.
+
+        The file wraps a multi_sport parent's legs (``{"parentActivityId",
+        "children"}``). The parent activity row must already exist (created from
+        ACTIVITIES_LIST, which the dispatch runs first); if it was skipped, its legs are
+        skipped too so no leg FK-references a missing parent. Each leg is written by
+        :meth:`_process_multisport_child`.
+
+        :param file_path: Path to the MULTISPORT_CHILDREN JSON file.
+        :param session: Active SQLAlchemy session.
+        """
+        payload = self._load_json_file(file_path)
+        if not isinstance(payload, dict):
+            LOGGER.warning(
+                f"⚠️ MULTISPORT_CHILDREN file {file_path.name} is not a JSON object; "
+                f"skipping."
+            )
+            return
+        parent_id = payload.get("parentActivityId")
+        children = payload.get("children") or []
+        if parent_id is None or not children:
+            LOGGER.warning(
+                f"⚠️ MULTISPORT_CHILDREN file {file_path.name} has no parent or "
+                f"children; skipping."
+            )
+            return
+
+        parent_id = int(parent_id)
+        parent_exists = session.execute(
+            select(Activity.activity_id).where(Activity.activity_id == parent_id)
+        ).scalar_one_or_none()
+        if parent_exists is None:
+            LOGGER.warning(
+                f"⚠️ Parent activity {parent_id} not found; skipping its multi-sport "
+                f"legs."
+            )
+            return
+
+        written = 0
+        for child in children:
+            if not isinstance(child, dict):
+                continue
+            if self._process_multisport_child(child, parent_id, session):
+                written += 1
+        LOGGER.info(
+            f"🔀 Processed {written} multi-sport leg(s) for parent {parent_id}."
+        )
+
+    def _process_multisport_child(
+        self, child: Dict[str, Any], parent_id: int, session: Session
+    ) -> bool:
+        """
+        Persist one multi-sport leg as its own activity row plus its sport aggregates.
+
+        All fields come from the leg's own ``summaryDTO`` / ``activityTypeDTO`` /
+        ``eventTypeDTO``. NOT-NULL flags the detail payload does not carry (media/PR
+        flags, ``parent``, etc.) default conservatively: a leg is not itself a parent,
+        carries no media of its own, and its combined FIT lives on the parent. Those
+        defaulted flags are excluded from the on-conflict update so a re-run never
+        overwrites them.
+
+        :param child: One entry from the MULTISPORT_CHILDREN ``children`` list.
+        :param parent_id: activity_id of the multi_sport parent.
+        :param session: Active SQLAlchemy session.
+        :return: True if a leg row was written, False if the leg was skipped as
+            incomplete.
+        """
+        summary = child.get("summaryDTO") or {}
+        type_dto = child.get("activityTypeDTO") or {}
+        event_dto = child.get("eventTypeDTO") or {}
+        activity_id = child.get("activityId")
+
+        type_key = type_dto.get("typeKey")
+        type_id = type_dto.get("typeId")
+        event_id = event_dto.get("typeId")
+        event_key = event_dto.get("typeKey")
+        start_gmt = summary.get("startTimeGMT")
+        start_local = summary.get("startTimeLocal")
+        if not all(
+            (
+                activity_id is not None,
+                type_key,
+                type_id is not None,
+                event_id is not None,
+                event_key,
+                start_gmt,
+                start_local,
+            )
+        ):
+            LOGGER.warning(
+                f"⚠️ Skipping multi-sport leg with incomplete detail "
+                f"(activity_id={activity_id})."
+            )
+            return False
+
+        activity_id = int(activity_id)
+        duration = summary.get("duration")
+        end_gmt = summary.get("endTimeGMT")
+        # Guard timestamp parsing: a malformed leg is skipped rather than aborting the
+        # whole MULTISPORT_CHILDREN file (one bad leg never loses its siblings).
+        try:
+            start_ts = datetime.fromisoformat(start_gmt).replace(tzinfo=timezone.utc)
+            utc_naive = datetime.fromisoformat(start_gmt)
+            local_naive = datetime.fromisoformat(start_local)
+            if end_gmt:
+                end_ts = datetime.fromisoformat(end_gmt).replace(tzinfo=timezone.utc)
+            elif duration is not None:
+                end_ts = start_ts + timedelta(seconds=duration)
+            else:
+                end_ts = start_ts
+        except ValueError:
+            LOGGER.warning(
+                f"⚠️ Skipping multi-sport leg {activity_id} with unparseable "
+                f"timestamps."
+            )
+            return False
+        timezone_offset_hours = (local_naive - utc_naive).total_seconds() / 3600
+
+        leg = Activity(
+            activity_id=activity_id,
+            user_id=int(self.user_id),
+            parent_activity_id=parent_id,
+            activity_type_id=type_id,
+            activity_type_key=type_key,
+            event_type_id=event_id,
+            event_type_key=event_key,
+            start_ts=start_ts,
+            end_ts=end_ts,
+            timezone_offset_hours=timezone_offset_hours,
+            activity_name=child.get("activityName"),
+            duration=duration,
+            elapsed_duration=summary.get("elapsedDuration"),
+            moving_duration=summary.get("movingDuration"),
+            distance=summary.get("distance"),
+            average_speed=summary.get("averageSpeed"),
+            max_speed=summary.get("maxSpeed"),
+            calories=summary.get("calories"),
+            average_hr=summary.get("averageHR"),
+            max_hr=summary.get("maxHR"),
+            # NOT-NULL flags the leg detail payload lacks, defaulted conservatively.
+            parent=False,
+            purposeful=False,
+            favorite=False,
+            pr=False,
+            has_polyline=False,
+            has_images=False,
+            has_video=False,
+            has_heat_map=False,
+            manual_activity=False,
+            auto_calc_calories=False,
+            ts_data_available=False,
+        )
+        # Exclude the defaulted NOT-NULL flags and create_ts from the on-conflict update
+        # so re-processing a leg refreshes its metrics without clobbering those defaults.
+        update_columns = [
+            "parent_activity_id",
+            "user_id",
+            "activity_type_id",
+            "activity_type_key",
+            "event_type_id",
+            "event_type_key",
+            "start_ts",
+            "end_ts",
+            "timezone_offset_hours",
+            "activity_name",
+            "duration",
+            "elapsed_duration",
+            "moving_duration",
+            "distance",
+            "average_speed",
+            "max_speed",
+            "calories",
+            "average_hr",
+            "max_hr",
+        ]
+        upsert_model_instances(
+            session=session,
+            model_instances=[leg],
+            conflict_columns=["activity_id"],
+            on_conflict_update=True,
+            update_columns=update_columns,
+        )
+        self._write_multisport_leg_agg(activity_id, type_key, summary, session)
+        return True
+
+    def _write_multisport_leg_agg(
+        self,
+        activity_id: int,
+        type_key: str,
+        summary: Dict[str, Any],
+        session: Session,
+    ) -> None:
+        """
+        Write a multi-sport leg's sport-specific aggregate row from its ``summaryDTO``.
+
+        Dispatches on the leg's sport to the matching aggregate table and summaryDTO
+        field map. Only fields present in the summary are set, and the on-conflict
+        update is scoped to those same columns so a later run with a sparser payload
+        never clears a stored value. Transition legs (and any non-
+        running/cycling/swimming type) have no sport-specific table and are a no-op.
+
+        :param activity_id: activity_id of the leg.
+        :param type_key: The leg's ``activityTypeDTO.typeKey``.
+        :param summary: The leg's ``summaryDTO``.
+        :param session: Active SQLAlchemy session.
+        """
+        tk = (type_key or "").lower()
+        if tk == "running":
+            model, mapping = RunningAggMetrics, _MULTISPORT_RUNNING_AGG_MAP
+        elif "cycling" in tk or "biking" in tk:
+            model, mapping = CyclingAggMetrics, _MULTISPORT_CYCLING_AGG_MAP
+        elif "swimming" in tk:
+            model, mapping = SwimmingAggMetrics, _MULTISPORT_SWIMMING_AGG_MAP
+        else:
+            # Transitions and any other leg type have no sport-specific table.
+            return
+
+        values = {
+            col: summary.get(field)
+            for col, field in mapping.items()
+            if summary.get(field) is not None
+        }
+        if not values:
+            return
+        record = model(activity_id=activity_id, **values)
+        upsert_model_instances(
+            session=session,
+            model_instances=[record],
+            conflict_columns=["activity_id"],
+            on_conflict_update=True,
+            update_columns=list(values.keys()),
+        )
+
     def _process_single_activity(self, activity_data: Dict[str, Any], session: Session):
         """
         Process a single activity and upsert into appropriate database tables.
@@ -521,6 +815,11 @@ class GarminProcessor(Processor):
                 Activity.user_id == int(self.user_id),
                 Activity.start_ts == start_ts,
                 Activity.activity_id != activity_id,
+                # Exclude multi-sport legs: a leg may legitimately share a start
+                # instant with an independently-recorded standalone activity of the
+                # same event, so it must not count as a duplicate of standalones or
+                # parents. Only non-leg rows participate in the #66/#67 guard.
+                Activity.parent_activity_id.is_(None),
             )
         ).scalar_one_or_none()
         if existing_dup is not None:
@@ -2712,6 +3011,69 @@ class GarminProcessor(Processor):
                 )
             else:
                 LOGGER.warning("⚠️ No personal records data found.")
+
+    @staticmethod
+    def _safe_iso_date(value: Any) -> Optional[date]:
+        """
+        Parse the ``YYYY-MM-DD`` prefix of ``value`` into a date, tolerating bad input.
+
+        :param value: A date-like value (typically a Garmin ``YYYY-MM-DD`` string).
+        :return: The parsed date, or ``None`` if ``value`` is falsy or unparseable.
+        """
+        if not value:
+            return None
+        try:
+            return date.fromisoformat(str(value)[:10])
+        except ValueError:
+            return None
+
+    def _process_running_tolerance(self, file_path: Path, session: Session):
+        """
+        Process a RUNNING_TOLERANCE per-day file into garmin.running_tolerance.
+
+        The file holds a list of daily running-tolerance objects (usually one). Each is
+        upserted by (user_id, date). Malformed rows (non-dict, or missing/unparseable
+        ``calendarDate``) are skipped with a warning rather than aborting the file, so
+        one bad row never loses the good rows in the same window; a malformed
+        ``startOfWeek`` / ``endOfWeek`` is stored as NULL rather than dropping the row.
+
+        :param file_path: Path to the RUNNING_TOLERANCE JSON file.
+        :param session: Active SQLAlchemy session.
+        """
+        payload = self._load_json_file(file_path)
+        rows = payload if isinstance(payload, list) else []
+
+        records = []
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            row_date = self._safe_iso_date(row.get("calendarDate"))
+            if row_date is None:
+                LOGGER.warning(
+                    f"⚠️ Skipping running-tolerance row with missing/unparseable "
+                    f"calendarDate in {file_path.name}."
+                )
+                continue
+            records.append(
+                RunningTolerance(
+                    user_id=int(self.user_id),
+                    date=row_date,
+                    total_impact_load=row.get("totalImpactLoad"),
+                    total_distance=row.get("totalDistance"),
+                    tolerance=row.get("tolerance"),
+                    start_of_week=self._safe_iso_date(row.get("startOfWeek")),
+                    end_of_week=self._safe_iso_date(row.get("endOfWeek")),
+                    week_index=row.get("weekIndex"),
+                )
+            )
+
+        if records:
+            upsert_model_instances(
+                session=session,
+                model_instances=records,
+                conflict_columns=["user_id", "date"],
+                on_conflict_update=True,
+            )
 
     def _process_race_predictions(self, file_path: Path, session: Session):
         """

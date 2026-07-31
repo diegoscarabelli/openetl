@@ -169,10 +169,10 @@ class GarminDataRegistry:
                 "BODY_COMPOSITION",
                 "get_body_composition",
                 APIMethodTimeParam.RANGE,
-                "/weight-service/weight/daterangesnapshot",
+                "/weight-service/weight/range/{start}/{end}?includeAll=true",
                 "Scale weigh-ins: weight, BMI, body fat %, body water %, bone mass, "
-                "muscle mass, physique rating, visceral fat, metabolic age. Multiple "
-                "entries per day if the user weighs more than once.",
+                "muscle mass, physique rating, visceral fat, metabolic age. Every "
+                "weigh-in is captured when the user weighs more than once a day.",
                 "⚖️",
             ),
             GarminDataType(
@@ -194,6 +194,17 @@ class GarminDataRegistry:
                 "📅",
             ),
             GarminDataType(
+                "RUNNING_TOLERANCE",
+                "get_running_tolerance",
+                APIMethodTimeParam.RANGE,
+                "/metrics-service/metrics/runningtolerance/stats"
+                "?startDate={start}&endDate={end}&aggregation=daily",
+                "Daily running tolerance (biomechanical running-load model): impact "
+                "load, running distance, tolerated running-load ceiling, and week "
+                "grouping. Empty for accounts without a compatible watch.",
+                "🎽",
+            ),
+            GarminDataType(
                 "EXERCISE_SETS",
                 "get_activity_exercise_sets",
                 APIMethodTimeParam.PER_ACTIVITY,
@@ -201,6 +212,16 @@ class GarminDataRegistry:
                 "Per-set granular strength training data with ML-classified "
                 "exercises, reps, weight, duration, and set type.",
                 "💪",
+            ),
+            GarminDataType(
+                "MULTISPORT_CHILDREN",
+                "get_activity_details",
+                APIMethodTimeParam.PER_ACTIVITY,
+                "/activity-service/activity/{activity_id}",
+                "Per-leg child activities of a multi-sport (duathlon/triathlon) "
+                "parent, fetched via the parent's metadataDTO.childIds. Each leg "
+                "carries its own sport-specific summary metrics.",
+                "🔀",
             ),
             # No Date Data - No date parameters: get_method()
             # In case of backfilling, comment out PERSONAL_RECORD data type, since PRs

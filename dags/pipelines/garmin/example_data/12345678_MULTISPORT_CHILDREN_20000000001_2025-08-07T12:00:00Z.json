@@ -1,0 +1,85 @@
+{
+  "parentActivityId": 20000000001,
+  "children": [
+    {
+      "activityId": 20000000002,
+      "activityName": "Triathlon - Swim",
+      "activityTypeDTO": {"typeId": 26, "typeKey": "open_water_swimming"},
+      "eventTypeDTO": {"typeId": 9, "typeKey": "multi_sport"},
+      "summaryDTO": {
+        "startTimeGMT": "2025-08-07T13:00:00.0",
+        "startTimeLocal": "2025-08-07T06:00:00.0",
+        "endTimeGMT": "2025-08-07T13:22:00.0",
+        "duration": 1320.0,
+        "distance": 1500.0,
+        "averageSwimCadence": 32.0,
+        "averageSWOLF": 38.0,
+        "averageStrokeDistance": 1.6,
+        "totalNumberOfStrokes": 940.0
+      }
+    },
+    {
+      "activityId": 20000000003,
+      "activityName": "Triathlon - Transition 1",
+      "activityTypeDTO": {"typeId": 84, "typeKey": "transition_v2"},
+      "eventTypeDTO": {"typeId": 9, "typeKey": "multi_sport"},
+      "summaryDTO": {
+        "startTimeGMT": "2025-08-07T13:22:00.0",
+        "startTimeLocal": "2025-08-07T06:22:00.0",
+        "endTimeGMT": "2025-08-07T13:24:00.0",
+        "duration": 120.0
+      }
+    },
+    {
+      "activityId": 20000000004,
+      "activityName": "Triathlon - Bike",
+      "activityTypeDTO": {"typeId": 2, "typeKey": "cycling"},
+      "eventTypeDTO": {"typeId": 9, "typeKey": "multi_sport"},
+      "summaryDTO": {
+        "startTimeGMT": "2025-08-07T13:24:00.0",
+        "startTimeLocal": "2025-08-07T06:24:00.0",
+        "endTimeGMT": "2025-08-07T14:24:00.0",
+        "duration": 3600.0,
+        "distance": 40000.0,
+        "averagePower": 220.0,
+        "maxPower": 480.0,
+        "normalizedPower": 235.0,
+        "averageBikeCadence": 88.0,
+        "maxBikeCadence": 110.0,
+        "trainingStressScore": 95.0,
+        "intensityFactor": 0.82
+      }
+    },
+    {
+      "activityId": 20000000005,
+      "activityName": "Triathlon - Transition 2",
+      "activityTypeDTO": {"typeId": 84, "typeKey": "transition_v2"},
+      "eventTypeDTO": {"typeId": 9, "typeKey": "multi_sport"},
+      "summaryDTO": {
+        "startTimeGMT": "2025-08-07T14:24:00.0",
+        "startTimeLocal": "2025-08-07T07:24:00.0",
+        "endTimeGMT": "2025-08-07T14:25:00.0",
+        "duration": 60.0
+      }
+    },
+    {
+      "activityId": 20000000006,
+      "activityName": "Triathlon - Run",
+      "activityTypeDTO": {"typeId": 1, "typeKey": "running"},
+      "eventTypeDTO": {"typeId": 9, "typeKey": "multi_sport"},
+      "summaryDTO": {
+        "startTimeGMT": "2025-08-07T14:25:00.0",
+        "startTimeLocal": "2025-08-07T07:25:00.0",
+        "endTimeGMT": "2025-08-07T15:05:00.0",
+        "duration": 2400.0,
+        "distance": 10000.0,
+        "averageRunCadence": 172.0,
+        "maxRunCadence": 190.0,
+        "averagePower": 310.0,
+        "groundContactTime": 240.0,
+        "verticalOscillation": 8.5,
+        "strideLength": 1.15
+      }
+    }
+  ]
+}

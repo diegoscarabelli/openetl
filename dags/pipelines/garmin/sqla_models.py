@@ -99,6 +99,9 @@ class Activity(UpsertBase):
     # Activity identification.
     activity_id = Column(BigInteger, primary_key=True)
     user_id = Column(BigInteger, fkey("garmin", "user", "user_id"), nullable=False)
+    # For a leg of a multi-sport (duathlon/triathlon) activity, the activity_id of the
+    # parent multi_sport activity; NULL for standalone activities and the parent itself.
+    parent_activity_id = Column(BigInteger, fkey("garmin", "activity", "activity_id"))
     activity_name = Column(String)
     activity_type_id = Column(Integer, nullable=False)
     activity_type_key = Column(String, nullable=False)
@@ -860,6 +863,29 @@ class MenstrualCycleSummary(UpsertBase):
     start_date = Column(Date, primary_key=True)
     period_length = Column(Integer)
     predicted_cycle = Column(Boolean, nullable=False)
+
+
+class RunningTolerance(UpsertBase):
+    """
+    Daily running tolerance from Garmin's biomechanical running-load model.
+
+    One row per calendar day, keyed by (user_id, date). ``total_impact_load`` is the
+    day's accumulated running impact load and ``tolerance`` the modeled load ceiling;
+    the week-grouping fields (``start_of_week``, ``end_of_week``, ``week_index``) come
+    from Garmin's own weekly bucketing. Populated only for accounts with a compatible
+    watch.
+    """
+
+    __tablename__ = "running_tolerance"
+
+    user_id = Column(BigInteger, fkey("garmin", "user", "user_id"), primary_key=True)
+    date = Column(Date, primary_key=True)
+    total_impact_load = Column(Integer)
+    total_distance = Column(Float)
+    tolerance = Column(Integer)
+    start_of_week = Column(Date)
+    end_of_week = Column(Date)
+    week_index = Column(Integer)
 
 
 class PersonalRecord(InsertBase):

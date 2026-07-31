@@ -200,14 +200,26 @@ CREATE TABLE IF NOT EXISTS garmin.activity (
     , pr BOOLEAN NOT NULL
     , auto_calc_calories BOOLEAN NOT NULL
 
+    -- Multi-sport leg linkage.
+    , parent_activity_id BIGINT REFERENCES garmin.activity (
+        activity_id
+    ) ON DELETE CASCADE
+
     -- Audit fields.
     , create_ts TIMESTAMPTZ NOT NULL DEFAULT NOW()
     , update_ts TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
 -- Create indexes on activity table foreign key and text columns.
+-- Uniqueness of (user_id, start_ts) is enforced only for non-leg activities. A
+-- multi-sport leg (parent_activity_id IS NOT NULL) may legitimately share a start
+-- instant with an independently-recorded standalone activity, so leg rows are excluded;
+-- standalone activities and multi_sport parents stay uniquely constrained (#66/#67).
 CREATE UNIQUE INDEX IF NOT EXISTS activity_user_id_start_ts_unique_idx
-ON garmin.activity (user_id, start_ts);
+ON garmin.activity (user_id, start_ts)
+WHERE parent_activity_id IS NULL;
+CREATE INDEX IF NOT EXISTS activity_parent_activity_id_idx
+ON garmin.activity (parent_activity_id);
 CREATE INDEX IF NOT EXISTS activity_user_id_idx
 ON garmin.activity (user_id);
 CREATE INDEX IF NOT EXISTS activity_activity_name_idx
@@ -281,6 +293,10 @@ COMMENT ON COLUMN garmin.activity.activity_id IS
 'Unique identifier for the activity in Garmin Connect.';
 COMMENT ON COLUMN garmin.activity.user_id IS
 'References garmin.user(user_id). Identifies which user performed this activity.';
+COMMENT ON COLUMN garmin.activity.parent_activity_id IS
+'For a leg of a multi-sport (duathlon/triathlon) activity, the activity_id of the '
+'parent multi_sport activity. NULL for standalone activities and the multi_sport '
+'parent itself.';
 COMMENT ON COLUMN garmin.activity.activity_name IS
 'User-defined name for the activity.';
 COMMENT ON COLUMN garmin.activity.activity_type_id IS
@@ -2239,6 +2255,65 @@ COMMENT ON COLUMN garmin.menstrual_cycle_summary.predicted_cycle IS
 COMMENT ON COLUMN garmin.menstrual_cycle_summary.create_ts IS
 'Timestamp when the record was created in the database.';
 COMMENT ON COLUMN garmin.menstrual_cycle_summary.update_ts IS
+'Timestamp when the record was last modified in the database.';
+
+----------------------------------------------------------------------------------------
+-- Running Tolerance table
+----------------------------------------------------------------------------------------
+
+-- Daily running tolerance from Garmin's biomechanical running-load model. One row per
+-- calendar day keyed by (user_id, date). total_impact_load is the day's accumulated
+-- running impact load and tolerance the modeled load ceiling; the week-grouping fields
+-- come from Garmin's own weekly bucketing. Populated only for accounts with a compatible
+-- watch.
+CREATE TABLE IF NOT EXISTS garmin.running_tolerance (
+    user_id BIGINT NOT NULL REFERENCES garmin.user (user_id)
+    , date DATE NOT NULL
+    , total_impact_load INTEGER
+    , total_distance FLOAT
+    , tolerance INTEGER
+    , start_of_week DATE
+    , end_of_week DATE
+    , week_index INTEGER
+
+    -- Audit fields.
+    , create_ts TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    , update_ts TIMESTAMPTZ NOT NULL DEFAULT NOW()
+
+    -- Primary key.
+    , PRIMARY KEY (user_id, date)
+);
+
+CREATE INDEX IF NOT EXISTS running_tolerance_user_id_idx
+ON garmin.running_tolerance (user_id);
+CREATE INDEX IF NOT EXISTS running_tolerance_date_brin_idx
+ON garmin.running_tolerance USING brin (date);
+
+-- Table comment.
+COMMENT ON TABLE garmin.running_tolerance IS
+'Daily running tolerance from Garmin''s biomechanical running-load model. One row per '
+'calendar day. Populated only for accounts with a compatible watch.';
+
+-- Column comments.
+COMMENT ON COLUMN garmin.running_tolerance.user_id IS
+'References garmin.user(user_id).';
+COMMENT ON COLUMN garmin.running_tolerance.date IS
+'calendarDate. Calendar day of the running-tolerance measurement.';
+COMMENT ON COLUMN garmin.running_tolerance.total_impact_load IS
+'totalImpactLoad. Accumulated running impact load for the day.';
+COMMENT ON COLUMN garmin.running_tolerance.total_distance IS
+'totalDistance. Running distance for the day, in meters.';
+COMMENT ON COLUMN garmin.running_tolerance.tolerance IS
+'tolerance. Modeled running-load ceiling the athlete can tolerate.';
+COMMENT ON COLUMN garmin.running_tolerance.start_of_week IS
+'startOfWeek. First day of the Garmin week bucket this row belongs to.';
+COMMENT ON COLUMN garmin.running_tolerance.end_of_week IS
+'endOfWeek. Last day of the Garmin week bucket this row belongs to.';
+COMMENT ON COLUMN garmin.running_tolerance.week_index IS
+'weekIndex. Garmin''s index of the week bucket within the queried range.';
+COMMENT ON COLUMN garmin.running_tolerance.create_ts IS
+'Timestamp when the record was created in the database.';
+COMMENT ON COLUMN garmin.running_tolerance.update_ts IS
 'Timestamp when the record was last modified in the database.';
 
 ----------------------------------------------------------------------------------------

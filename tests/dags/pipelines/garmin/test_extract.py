@@ -14,7 +14,7 @@ import json
 import tempfile
 import zipfile
 
-from datetime import date
+from datetime import date, timedelta
 from pathlib import Path
 from unittest.mock import ANY, MagicMock, call, patch
 
@@ -23,13 +23,109 @@ import pytest
 from airflow.sdk.exceptions import AirflowFailException, AirflowSkipException
 
 from dags.lib.etl_config import ETLConfig
-from dags.pipelines.garmin.constants import APIMethodTimeParam, GarminDataType
+from dags.pipelines.garmin.constants import (
+    APIMethodTimeParam,
+    GARMIN_DATA_REGISTRY,
+    GarminDataType,
+)
 from dags.pipelines.garmin.extract import (
     GarminExtractor,
+    _RETROACTIVE_LOOKBACK_DAYS,
+    _retroactive_lookback_start,
     extract,
     cli_extract,
     discover_accounts,
 )
+
+
+class TestRetroactiveLookback:
+    """
+    Tests for the retroactive-edit lookback (ports garmin-health-data#75).
+
+    Some DAILY types have already-extracted past days that change when the user edits
+    history in Garmin Connect (e.g. moving a menstrual period start recomputes
+    ``dayInCycle`` for every following day). Those days fall outside the narrow
+    incremental window, so the extractor extends the start back a fixed lookback to re-
+    fetch and overwrite them.
+    """
+
+    def test_extends_recent_start_back_to_lookback_window(self) -> None:
+        """
+        For a registered type (MENSTRUAL_CYCLE_DAY, 90 days), a recent start is pulled
+        back to ``end_date - 90`` so retroactively-recomputed past days are re-fetched.
+        """
+        menstrual_day = GARMIN_DATA_REGISTRY.get_by_name("MENSTRUAL_CYCLE_DAY")
+        end = date(2026, 4, 30)
+        effective = _retroactive_lookback_start(menstrual_day, date(2026, 4, 28), end)
+        assert effective == end - timedelta(days=90)
+
+    def test_does_not_shrink_an_already_older_start(self) -> None:
+        """
+        A start already earlier than ``end - lookback`` (e.g. an explicit full-history
+        backfill) is left untouched: the lookback only ever moves the start earlier.
+        """
+        menstrual_day = GARMIN_DATA_REGISTRY.get_by_name("MENSTRUAL_CYCLE_DAY")
+        end = date(2026, 4, 30)
+        old_start = date(2025, 1, 1)  # Far older than end - 90 days.
+        effective = _retroactive_lookback_start(menstrual_day, old_start, end)
+        assert effective == old_start
+
+    def test_noop_for_unregistered_type(self) -> None:
+        """
+        A DAILY type with no retroactive-lookback registration (e.g. SLEEP) is returned
+        unchanged.
+        """
+        sleep = GARMIN_DATA_REGISTRY.get_by_name("SLEEP")
+        start = date(2026, 4, 28)
+        assert _retroactive_lookback_start(sleep, start, date(2026, 4, 30)) == start
+
+    def test_menstrual_cycle_day_registered_with_90_days(self) -> None:
+        """
+        MENSTRUAL_CYCLE_DAY is registered with a 90-day retroactive lookback (one full
+        cycle's worth of cascade).
+        """
+        assert _RETROACTIVE_LOOKBACK_DAYS.get("MENSTRUAL_CYCLE_DAY") == 90
+
+    def test_daily_dispatch_applies_lookback(self, tmp_path: Path) -> None:
+        """
+        ``_extract_data_by_type`` for a registered DAILY type calls
+        ``_extract_day_by_day`` with the lookback-extended start, not the raw
+        incremental start.
+        """
+        extractor = GarminExtractor(
+            start_date=date(2026, 4, 28),
+            end_date=date(2026, 4, 30),
+            ingest_dir=tmp_path,
+        )
+        extractor._extract_day_by_day = MagicMock(return_value=[])
+        menstrual_day = GARMIN_DATA_REGISTRY.get_by_name("MENSTRUAL_CYCLE_DAY")
+        end = date(2026, 4, 30)
+
+        extractor._extract_data_by_type(menstrual_day, date(2026, 4, 28), end)
+
+        extractor._extract_day_by_day.assert_called_once_with(
+            menstrual_day, end - timedelta(days=90), end
+        )
+
+    def test_daily_dispatch_no_lookback_for_unregistered_type(
+        self, tmp_path: Path
+    ) -> None:
+        """
+        A DAILY type without a registration is dispatched with its original start.
+        """
+        extractor = GarminExtractor(
+            start_date=date(2026, 4, 28),
+            end_date=date(2026, 4, 30),
+            ingest_dir=tmp_path,
+        )
+        extractor._extract_day_by_day = MagicMock(return_value=[])
+        sleep = GARMIN_DATA_REGISTRY.get_by_name("SLEEP")
+
+        extractor._extract_data_by_type(sleep, date(2026, 4, 28), date(2026, 4, 30))
+
+        extractor._extract_day_by_day.assert_called_once_with(
+            sleep, date(2026, 4, 28), date(2026, 4, 30)
+        )
 
 
 class TestGarminExtractor:
@@ -1098,6 +1194,133 @@ class TestExerciseSetsExtraction:
 
         # Assert.
         assert result is None
+
+    def test_extract_multisport_children_success(
+        self, extractor, mock_garmin_client, temp_dir
+    ) -> None:
+        """
+        A multi-sport parent's legs are fetched via metadataDTO.childIds and saved as
+        one MULTISPORT_CHILDREN file wrapping every leg's detail.
+
+        :param extractor: GarminExtractor fixture.
+        :param mock_garmin_client: Mock Garmin client fixture.
+        :param temp_dir: Temporary directory fixture.
+        """
+        # Arrange.
+        extractor.garmin_client = mock_garmin_client
+        extractor.user_id = "123456789"
+        mock_garmin_client.get_activity_details.side_effect = [
+            {"metadataDTO": {"childIds": [1002, 1003]}},  # Parent detail.
+            {"activityId": 1002, "summaryDTO": {"distance": 750.0}},  # Swim leg.
+            {"activityId": 1003, "summaryDTO": {"distance": 5000.0}},  # Run leg.
+        ]
+
+        # Act.
+        result = extractor._extract_multisport_children(1001, "2025-01-01T12:00:00Z")
+
+        # Assert.
+        assert result is not None
+        assert result.exists()
+        assert "MULTISPORT_CHILDREN_1001" in result.name
+        with open(result, "r") as f:
+            saved = json.load(f)
+        assert int(saved["parentActivityId"]) == 1001
+        assert [c["activityId"] for c in saved["children"]] == [1002, 1003]
+
+    def test_extract_multisport_children_no_childids(
+        self, extractor, mock_garmin_client
+    ) -> None:
+        """
+        A parent whose detail has no ``metadataDTO.childIds`` list produces no file.
+
+        :param extractor: GarminExtractor fixture.
+        :param mock_garmin_client: Mock Garmin client fixture.
+        """
+        # Arrange.
+        extractor.garmin_client = mock_garmin_client
+        extractor.user_id = "123456789"
+        mock_garmin_client.get_activity_details.return_value = {"metadataDTO": {}}
+
+        # Act.
+        result = extractor._extract_multisport_children(1001, "2025-01-01T12:00:00Z")
+
+        # Assert.
+        assert result is None
+
+    def test_extract_multisport_children_api_error(
+        self, extractor, mock_garmin_client
+    ) -> None:
+        """
+        A failure fetching the parent detail is swallowed and yields no file.
+
+        :param extractor: GarminExtractor fixture.
+        :param mock_garmin_client: Mock Garmin client fixture.
+        """
+        # Arrange.
+        extractor.garmin_client = mock_garmin_client
+        extractor.user_id = "123456789"
+        mock_garmin_client.get_activity_details.side_effect = Exception("API error")
+
+        # Act.
+        result = extractor._extract_multisport_children(1001, "2025-01-01T12:00:00Z")
+
+        # Assert.
+        assert result is None
+
+    @patch("dags.pipelines.garmin.extract.time.sleep")
+    @patch("dags.pipelines.garmin.extract.LOGGER")
+    def test_fit_extraction_triggers_multisport_children(
+        self, mock_logger, mock_sleep, extractor, mock_garmin_client, temp_dir
+    ) -> None:
+        """
+        extract_fit_activities fetches child legs for an activity flagged
+        ``parent=True``.
+
+        :param mock_logger: Mock logger.
+        :param mock_sleep: Mock sleep function.
+        :param extractor: GarminExtractor fixture.
+        :param mock_garmin_client: Mock Garmin client fixture.
+        :param temp_dir: Temporary directory fixture.
+        """
+        # Arrange.
+        extractor.garmin_client = mock_garmin_client
+        extractor.user_id = "123456789"
+
+        activities = [
+            {
+                "activityId": "5001",
+                "startTimeLocal": "2025-01-01T10:00:00.000",
+                "parent": True,
+                "activityType": {"typeId": 89, "typeKey": "multi_sport"},
+            },
+        ]
+        mock_garmin_client.get_activities_by_date.return_value = activities
+
+        # Create mock ZIP file for the parent's combined FIT download.
+        zip_buffer = io.BytesIO()
+        with zipfile.ZipFile(zip_buffer, "w") as zip_file:
+            zip_file.writestr("activity.fit", b"FIT_DATA")
+        zip_buffer.seek(0)
+        mock_garmin_client.download_activity.return_value = zip_buffer.getvalue()
+
+        # Parent detail (childIds) then one detail per leg.
+        mock_garmin_client.get_activity_details.side_effect = [
+            {"metadataDTO": {"childIds": [5002, 5003]}},
+            {"activityId": 5002, "summaryDTO": {}},
+            {"activityId": 5003, "summaryDTO": {}},
+        ]
+
+        # Act.
+        result = extractor.extract_fit_activities()
+
+        # Assert - both the FIT file and the MULTISPORT_CHILDREN file are saved.
+        assert len(result) == 2
+        json_files = list(temp_dir.glob("*MULTISPORT_CHILDREN*.json"))
+        assert len(json_files) == 1
+        with open(json_files[0], "r") as f:
+            saved = json.load(f)
+        assert int(saved["parentActivityId"]) == 5001
+        assert len(saved["children"]) == 2
 
     @patch("dags.pipelines.garmin.extract.time.sleep")
     @patch("dags.pipelines.garmin.extract.LOGGER")

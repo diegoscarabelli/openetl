@@ -41,6 +41,8 @@ from dags.pipelines.garmin.sqla_models import (
     PersonalRecord,
     RacePredictions,
     Respiration,
+    RunningAggMetrics,
+    RunningTolerance,
     Sleep,
     SleepLevel,
     SleepMovement,
@@ -50,6 +52,7 @@ from dags.pipelines.garmin.sqla_models import (
     StrengthExercise,
     StrengthSet,
     Stress,
+    SwimmingAggMetrics,
     TrainingLoad,
     TrainingReadiness,
     User,
@@ -4547,6 +4550,426 @@ class TestGarminProcessor:
     # ==================================================================================
     # Race Predictions Processing Tests.
     # ==================================================================================
+
+    @patch("dags.pipelines.garmin.process.upsert_model_instances")
+    def test_process_running_tolerance_file(
+        self, mock_upsert, processor, mock_session, temp_dir
+    ):
+        """
+        _process_running_tolerance maps the daily running-tolerance fields and upserts
+        by (user_id, date) with update-on-conflict.
+        """
+        # Arrange.
+        data = [
+            {
+                "calendarDate": "2026-04-15",
+                "totalImpactLoad": 1200,
+                "totalDistance": 8000.0,
+                "tolerance": 1500,
+                "startOfWeek": "2026-04-13",
+                "endOfWeek": "2026-04-19",
+                "weekIndex": 0,
+            }
+        ]
+        rt_file = temp_dir / "123456789_RUNNING_TOLERANCE_2026-04-15T12:00:00Z.json"
+        with open(rt_file, "w", encoding="utf-8") as f:
+            json.dump(data, f)
+        processor.user_id = 1
+
+        # Act.
+        processor._process_running_tolerance(rt_file, mock_session)
+
+        # Assert.
+        mock_upsert.assert_called_once()
+        call_args = mock_upsert.call_args
+        assert call_args[1]["conflict_columns"] == ["user_id", "date"]
+        assert call_args[1]["on_conflict_update"] is True
+
+        instances = call_args[1]["model_instances"]
+        assert len(instances) == 1
+        rt = instances[0]
+        assert isinstance(rt, RunningTolerance)
+        assert rt.user_id == 1
+        assert rt.date == date(2026, 4, 15)
+        assert rt.total_impact_load == 1200
+        assert rt.total_distance == 8000.0
+        assert rt.tolerance == 1500
+        assert rt.start_of_week == date(2026, 4, 13)
+        assert rt.end_of_week == date(2026, 4, 19)
+        assert rt.week_index == 0
+
+    @patch("dags.pipelines.garmin.process.upsert_model_instances")
+    def test_process_running_tolerance_skips_rows_without_calendar_date(
+        self, mock_upsert, processor, mock_session, temp_dir
+    ):
+        """
+        Rows missing ``calendarDate`` (or non-dict rows) are skipped; only the well-
+        formed row is upserted.
+        """
+        # Arrange.
+        data = [
+            "not-a-dict",
+            {"totalImpactLoad": 999},  # No calendarDate: skipped.
+            {"calendarDate": "2026-04-16", "totalImpactLoad": 1100},  # Good.
+        ]
+        rt_file = temp_dir / "123456789_RUNNING_TOLERANCE_2026-04-16T12:00:00Z.json"
+        with open(rt_file, "w", encoding="utf-8") as f:
+            json.dump(data, f)
+        processor.user_id = 1
+
+        # Act.
+        processor._process_running_tolerance(rt_file, mock_session)
+
+        # Assert: only the one good row reaches the upsert.
+        mock_upsert.assert_called_once()
+        instances = mock_upsert.call_args[1]["model_instances"]
+        assert len(instances) == 1
+        assert instances[0].date == date(2026, 4, 16)
+        assert instances[0].total_impact_load == 1100
+
+    @patch("dags.pipelines.garmin.process.upsert_model_instances")
+    def test_process_multisport_child_running_leg(
+        self, mock_upsert, processor, mock_session
+    ):
+        """
+        A running leg becomes an activity row linked to the parent, plus a
+        RunningAggMetrics row mapped from the leg's summaryDTO field names.
+        """
+        # Arrange.
+        processor.user_id = 1
+        child = {
+            "activityId": 2002,
+            "activityTypeDTO": {"typeId": 1, "typeKey": "running"},
+            "eventTypeDTO": {"typeId": 9, "typeKey": "multi_sport"},
+            "summaryDTO": {
+                "startTimeGMT": "2026-04-15T10:30:00.0",
+                "startTimeLocal": "2026-04-15T12:30:00.0",
+                "endTimeGMT": "2026-04-15T11:00:00.0",
+                "duration": 1800.0,
+                "distance": 5000.0,
+                "averageRunCadence": 170.0,
+                "maxRunCadence": 185.0,
+                "averagePower": 300.0,
+            },
+        }
+
+        # Act.
+        result = processor._process_multisport_child(child, 2001, mock_session)
+
+        # Assert.
+        assert result is True
+        # Two upserts: the activity row, then the running aggregate row.
+        assert mock_upsert.call_count == 2
+        activity = mock_upsert.call_args_list[0][1]["model_instances"][0]
+        assert isinstance(activity, Activity)
+        assert activity.activity_id == 2002
+        assert activity.parent_activity_id == 2001
+        assert activity.activity_type_key == "running"
+        assert activity.parent is False
+        assert activity.distance == 5000.0
+        assert activity.start_ts == datetime(2026, 4, 15, 10, 30, tzinfo=timezone.utc)
+        agg = mock_upsert.call_args_list[1][1]["model_instances"][0]
+        assert isinstance(agg, RunningAggMetrics)
+        assert agg.activity_id == 2002
+        assert agg.avg_running_cadence == 170.0
+        assert agg.max_running_cadence == 185.0
+        assert agg.avg_power == 300.0
+
+    @patch("dags.pipelines.garmin.process.upsert_model_instances")
+    def test_process_multisport_child_swimming_leg(
+        self, mock_upsert, processor, mock_session
+    ):
+        """
+        A swimming leg maps its summaryDTO into a SwimmingAggMetrics row.
+        """
+        # Arrange.
+        processor.user_id = 1
+        child = {
+            "activityId": 2003,
+            "activityTypeDTO": {"typeId": 26, "typeKey": "open_water_swimming"},
+            "eventTypeDTO": {"typeId": 9, "typeKey": "multi_sport"},
+            "summaryDTO": {
+                "startTimeGMT": "2026-04-15T10:00:00.0",
+                "startTimeLocal": "2026-04-15T12:00:00.0",
+                "duration": 900.0,
+                "averageSwimCadence": 30.0,
+                "averageSWOLF": 40.0,
+                "averageStrokeDistance": 1.5,
+                "totalNumberOfStrokes": 450.0,
+            },
+        }
+
+        # Act.
+        result = processor._process_multisport_child(child, 2001, mock_session)
+
+        # Assert.
+        assert result is True
+        agg = mock_upsert.call_args_list[1][1]["model_instances"][0]
+        assert isinstance(agg, SwimmingAggMetrics)
+        assert agg.avg_swim_cadence == 30.0
+        assert agg.avg_swolf == 40.0
+        assert agg.avg_stroke_distance == 1.5
+        assert agg.strokes == 450.0
+
+    @patch("dags.pipelines.garmin.process.upsert_model_instances")
+    def test_process_multisport_child_transition_writes_no_agg(
+        self, mock_upsert, processor, mock_session
+    ):
+        """
+        A transition leg gets an activity row but no sport-specific aggregate row.
+        """
+        # Arrange.
+        processor.user_id = 1
+        child = {
+            "activityId": 2004,
+            "activityTypeDTO": {"typeId": 84, "typeKey": "transition_v2"},
+            "eventTypeDTO": {"typeId": 9, "typeKey": "multi_sport"},
+            "summaryDTO": {
+                "startTimeGMT": "2026-04-15T11:00:00.0",
+                "startTimeLocal": "2026-04-15T13:00:00.0",
+                "duration": 60.0,
+            },
+        }
+
+        # Act.
+        result = processor._process_multisport_child(child, 2001, mock_session)
+
+        # Assert - only the activity upsert; transitions have no aggregate table.
+        assert result is True
+        assert mock_upsert.call_count == 1
+        activity = mock_upsert.call_args_list[0][1]["model_instances"][0]
+        assert activity.activity_type_key == "transition_v2"
+        assert activity.parent_activity_id == 2001
+
+    @patch("dags.pipelines.garmin.process.upsert_model_instances")
+    def test_process_multisport_child_skips_incomplete_leg(
+        self, mock_upsert, processor, mock_session
+    ):
+        """
+        A leg missing required detail (e.g. no activityTypeDTO) is skipped, not written.
+        """
+        # Arrange.
+        processor.user_id = 1
+        child = {"activityId": 2005, "summaryDTO": {"duration": 60.0}}
+
+        # Act.
+        result = processor._process_multisport_child(child, 2001, mock_session)
+
+        # Assert.
+        assert result is False
+        mock_upsert.assert_not_called()
+
+    @patch("dags.pipelines.garmin.process.upsert_model_instances")
+    def test_process_multisport_children_file_processes_legs(
+        self, mock_upsert, processor, mock_session, temp_dir
+    ):
+        """
+        A MULTISPORT_CHILDREN file whose parent exists processes each leg.
+        """
+        # Arrange.
+        processor.user_id = 1
+        # Parent activity row exists in the DB.
+        mock_session.execute.return_value.scalar_one_or_none.return_value = 2001
+        payload = {
+            "parentActivityId": 2001,
+            "children": [
+                {
+                    "activityId": 2002,
+                    "activityTypeDTO": {"typeId": 1, "typeKey": "running"},
+                    "eventTypeDTO": {"typeId": 9, "typeKey": "multi_sport"},
+                    "summaryDTO": {
+                        "startTimeGMT": "2026-04-15T10:30:00.0",
+                        "startTimeLocal": "2026-04-15T12:30:00.0",
+                        "duration": 1800.0,
+                    },
+                }
+            ],
+        }
+        f = temp_dir / "1_MULTISPORT_CHILDREN_2001_2026-04-15T12:00:00Z.json"
+        with open(f, "w", encoding="utf-8") as fh:
+            json.dump(payload, fh)
+
+        # Act.
+        processor._process_multisport_children(f, mock_session)
+
+        # Assert - the leg activity row was written, linked to the parent.
+        assert mock_upsert.call_count >= 1
+        activity = mock_upsert.call_args_list[0][1]["model_instances"][0]
+        assert activity.activity_id == 2002
+        assert activity.parent_activity_id == 2001
+
+    @patch("dags.pipelines.garmin.process.upsert_model_instances")
+    def test_process_multisport_children_skips_when_parent_missing(
+        self, mock_upsert, processor, mock_session, temp_dir
+    ):
+        """
+        If the parent activity row is absent, its legs are skipped (no FK orphan).
+        """
+        # Arrange.
+        processor.user_id = 1
+        mock_session.execute.return_value.scalar_one_or_none.return_value = None
+        payload = {"parentActivityId": 2001, "children": [{"activityId": 2002}]}
+        f = temp_dir / "1_MULTISPORT_CHILDREN_2001_2026-04-15T12:00:00Z.json"
+        with open(f, "w", encoding="utf-8") as fh:
+            json.dump(payload, fh)
+
+        # Act.
+        processor._process_multisport_children(f, mock_session)
+
+        # Assert.
+        mock_upsert.assert_not_called()
+
+    def test_activity_base_dedup_scoped_to_non_legs(self, processor, mock_session):
+        """
+        The (user_id, start_ts) duplicate guard excludes multi-sport legs, so a leg
+        sharing a start instant with a standalone activity is not treated as a
+        duplicate.
+        """
+        # Arrange - capture the SQL of the duplicate-detection query.
+        captured = {}
+
+        def fake_execute(stmt):
+            captured["sql"] = str(stmt)
+            m = MagicMock()
+            m.scalar_one_or_none.return_value = None
+            return m
+
+        mock_session.execute.side_effect = fake_execute
+        processor.user_id = 1
+        activity_data = {
+            "activityId": 3001,
+            "activityType": {"typeId": 1, "typeKey": "running"},
+            "eventType": {"typeId": 9, "typeKey": "uncategorized"},
+            "startTimeGMT": "2026-04-15T10:00:00.0",
+            "startTimeLocal": "2026-04-15T12:00:00.0",
+            "endTimeGMT": "2026-04-15T10:30:00.0",
+            "parent": False,
+            "purposeful": True,
+            "favorite": False,
+            "pr": False,
+            "hasPolyline": False,
+            "hasImages": False,
+            "hasVideo": False,
+            "hasHeatMap": False,
+            "manualActivity": False,
+            "autoCalcCalories": True,
+        }
+
+        # Act.
+        with patch(
+            "dags.pipelines.garmin.process.upsert_model_instances"
+        ) as mock_upsert:
+            mock_upsert.return_value = [MagicMock(activity_id=3001)]
+            processor._process_activity_base(activity_data, mock_session)
+
+        # Assert - the guard is scoped to non-leg rows.
+        assert "parent_activity_id IS NULL" in captured["sql"]
+
+    @patch("dags.pipelines.garmin.process.upsert_model_instances")
+    def test_process_running_tolerance_skips_unparseable_calendar_date(
+        self, mock_upsert, processor, mock_session, temp_dir
+    ):
+        """
+        A row with an unparseable ``calendarDate`` is skipped (not raised), so the good
+        rows in the same file still upsert.
+        """
+        # Arrange.
+        processor.user_id = 1
+        data = [
+            {"calendarDate": "not-a-date", "totalImpactLoad": 1},  # Bad: skipped.
+            {"calendarDate": "2026-04-16", "totalImpactLoad": 1100},  # Good.
+        ]
+        rt_file = temp_dir / "1_RUNNING_TOLERANCE_2026-04-16T12:00:00Z.json"
+        with open(rt_file, "w", encoding="utf-8") as fh:
+            json.dump(data, fh)
+
+        # Act.
+        processor._process_running_tolerance(rt_file, mock_session)
+
+        # Assert - only the good row reached the upsert.
+        mock_upsert.assert_called_once()
+        instances = mock_upsert.call_args[1]["model_instances"]
+        assert len(instances) == 1
+        assert instances[0].date == date(2026, 4, 16)
+
+    @patch("dags.pipelines.garmin.process.upsert_model_instances")
+    def test_process_running_tolerance_tolerates_malformed_week_dates(
+        self, mock_upsert, processor, mock_session, temp_dir
+    ):
+        """
+        A malformed ``startOfWeek`` / ``endOfWeek`` is stored as NULL rather than
+        dropping the whole row (only ``calendarDate`` is required).
+        """
+        # Arrange.
+        processor.user_id = 1
+        data = [
+            {
+                "calendarDate": "2026-04-16",
+                "totalImpactLoad": 1100,
+                "startOfWeek": "garbage",
+                "endOfWeek": None,
+            }
+        ]
+        rt_file = temp_dir / "1_RUNNING_TOLERANCE_2026-04-16T12:00:00Z.json"
+        with open(rt_file, "w", encoding="utf-8") as fh:
+            json.dump(data, fh)
+
+        # Act.
+        processor._process_running_tolerance(rt_file, mock_session)
+
+        # Assert - row stored with NULL week bounds.
+        rt = mock_upsert.call_args[1]["model_instances"][0]
+        assert rt.date == date(2026, 4, 16)
+        assert rt.start_of_week is None
+        assert rt.end_of_week is None
+
+    @patch("dags.pipelines.garmin.process.upsert_model_instances")
+    def test_process_multisport_children_non_dict_payload(
+        self, mock_upsert, processor, mock_session, temp_dir
+    ):
+        """
+        A malformed MULTISPORT_CHILDREN payload (a JSON list, not an object) is skipped
+        gracefully rather than raising AttributeError on ``.get()``.
+        """
+        # Arrange.
+        processor.user_id = 1
+        f = temp_dir / "1_MULTISPORT_CHILDREN_2001_2026-04-15T12:00:00Z.json"
+        with open(f, "w", encoding="utf-8") as fh:
+            json.dump(["not", "a", "dict"], fh)
+
+        # Act (must not raise).
+        processor._process_multisport_children(f, mock_session)
+
+        # Assert.
+        mock_upsert.assert_not_called()
+
+    @patch("dags.pipelines.garmin.process.upsert_model_instances")
+    def test_process_multisport_child_skips_unparseable_timestamp(
+        self, mock_upsert, processor, mock_session
+    ):
+        """
+        A leg whose ``summaryDTO`` timestamps are unparseable is skipped (returns False,
+        no upsert) rather than aborting the whole MULTISPORT_CHILDREN file.
+        """
+        # Arrange.
+        processor.user_id = 1
+        child = {
+            "activityId": 2099,
+            "activityTypeDTO": {"typeId": 1, "typeKey": "running"},
+            "eventTypeDTO": {"typeId": 9, "typeKey": "multi_sport"},
+            "summaryDTO": {
+                "startTimeGMT": "not-a-timestamp",
+                "startTimeLocal": "also-bad",
+                "duration": 60.0,
+            },
+        }
+
+        # Act.
+        result = processor._process_multisport_child(child, 2001, mock_session)
+
+        # Assert.
+        assert result is False
+        mock_upsert.assert_not_called()
 
     @pytest.fixture
     def sample_race_predictions_data(self) -> Dict:

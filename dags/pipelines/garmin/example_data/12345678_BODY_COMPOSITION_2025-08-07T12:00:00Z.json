@@ -1,12 +1,9 @@
 {
-  "startDate": "2025-08-07",
-  "endDate": "2025-08-07",
   "dateWeightList": [
     {
-      "samplePk": 1754568000000,
-      "date": 1754568000000,
-      "calendarDate": "2025-08-07",
-      "timestampGMT": 1754568000000,
+      "samplePk": 1754546400000,
+      "date": 1754546400000,
+      "timestampGMT": 1754546400000,
       "weight": 75300.0,
       "bmi": 24.5,
       "bodyFat": 22.5,
@@ -17,14 +14,21 @@
       "visceralFat": 8,
       "metabolicAge": 30,
       "sourceType": "INDEX_SCALE"
+    },
+    {
+      "samplePk": 1754589600000,
+      "date": 1754589600000,
+      "timestampGMT": 1754589600000,
+      "weight": 75100.0,
+      "bmi": 24.4,
+      "bodyFat": 22.3,
+      "bodyWater": 55.4,
+      "boneMass": 3500.0,
+      "muscleMass": 60100.0,
+      "physiqueRating": 5,
+      "visceralFat": 8,
+      "metabolicAge": 30,
+      "sourceType": "INDEX_SCALE"
     }
-  ],
-  "totalAverage": {
-    "weight": 75300.0,
-    "bmi": 24.5,
-    "bodyFat": 22.5,
-    "bodyWater": 55.2,
-    "boneMass": 3500.0,
-    "muscleMass": 60000.0
-  }
+  ]
 }

@@ -111,13 +111,17 @@ USER_SUMMARY_CHART_URL = "/wellness-service/wellness/dailySummaryChart"
 FLOORS_CHART_DAILY_URL = "/wellness-service/wellness/floorsChartData/daily"
 DAILY_INTENSITY_MINUTES_URL = "/wellness-service/wellness/daily/im"
 
-# Weight / body composition.
-WEIGHT_DATERANGE_URL = "/weight-service/weight/daterangesnapshot"
+# Weight / body composition. The ``range`` endpoint with ``includeAll=true`` returns
+# every weigh-in per day (grouped under ``dailyWeightSummaries[].allWeightMetrics``),
+# unlike the ``daterangesnapshot`` endpoint (behind Garmin Connect's weight trend chart)
+# which returns only one representative weigh-in per day.
+WEIGHT_RANGE_URL = "/weight-service/weight/range"
 
 # Metrics endpoints.
 TRAINING_READINESS_URL = "/metrics-service/metrics/trainingreadiness"
 TRAINING_STATUS_URL = "/metrics-service/metrics/trainingstatus/aggregated"
 RACE_PREDICTOR_URL = "/metrics-service/metrics/racepredictions"
+RUNNING_TOLERANCE_URL = "/metrics-service/metrics/runningtolerance/stats"
 
 # Personal records.
 PERSONAL_RECORD_URL = "/personalrecord-service/personalrecord/prs"

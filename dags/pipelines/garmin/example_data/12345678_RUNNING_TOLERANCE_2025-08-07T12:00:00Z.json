@@ -1,0 +1,11 @@
+[
+  {
+    "calendarDate": "2025-08-07",
+    "totalImpactLoad": 1240,
+    "totalDistance": 8200.0,
+    "tolerance": 1500,
+    "startOfWeek": "2025-08-04",
+    "endOfWeek": "2025-08-10",
+    "weekIndex": 0
+  }
+]
