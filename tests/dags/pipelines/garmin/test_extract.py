@@ -750,6 +750,32 @@ class TestExtractFunction:
 
     @patch("dags.pipelines.garmin.extract.discover_accounts")
     @patch("dags.pipelines.garmin.extract.GarminExtractor")
+    def test_extract_skips_when_start_after_end(
+        self, mock_extractor_class, mock_discover, mock_config
+    ) -> None:
+        """
+        An inverted window (resolved start after end) skips before discovering accounts
+        or constructing the extractor, instead of pulling future dates.
+
+        :param mock_extractor_class: Mock GarminExtractor class.
+        :param mock_discover: Mock discover_accounts function.
+        :param mock_config: Mock ETL config.
+        """
+        # Arrange: start after end, e.g. an up-to-date pipeline whose resumed
+        # start (prev_data_interval_end_success) has caught up past the end.
+        data_interval_start = pendulum.datetime(2025, 1, 3, tz="UTC")
+        data_interval_end = pendulum.datetime(2025, 1, 1, tz="UTC")
+
+        # Act & Assert.
+        with pytest.raises(AirflowSkipException, match="Nothing to extract"):
+            extract(
+                mock_config.data_dirs.ingest, data_interval_start, data_interval_end
+            )
+        mock_discover.assert_not_called()
+        mock_extractor_class.assert_not_called()
+
+    @patch("dags.pipelines.garmin.extract.discover_accounts")
+    @patch("dags.pipelines.garmin.extract.GarminExtractor")
     def test_extract_no_data_found(
         self, mock_extractor_class, mock_discover, mock_config
     ) -> None:
