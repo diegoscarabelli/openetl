@@ -1308,6 +1308,21 @@ def extract(
     else:
         end_date = original_end_date  # Inclusive logic for same-day processing.
 
+    # An inverted resolved window (start after end) means there is nothing to
+    # extract: most often the pipeline is already current (the resumed start,
+    # prev_data_interval_end_success, has caught up to the end), but it also
+    # covers an inverted caller-supplied range, so the message stays neutral.
+    # Skip before any account discovery or API calls. This also deliberately
+    # skips the per-type retroactive look-back (e.g. MENSTRUAL_CYCLE_DAY's
+    # 90-day refresh): that window was already re-fetched on the run that
+    # advanced the pipeline, and the next advancing run re-covers it, so a
+    # no-op re-run needs no calls.
+    if start_date > end_date:
+        raise AirflowSkipException(
+            f"Nothing to extract (start {start_date.isoformat()} is after end "
+            f"{end_date.isoformat()})."
+        )
+
     # Discover configured accounts.
     try:
         accounts = discover_accounts()
