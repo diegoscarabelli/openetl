@@ -5345,6 +5345,46 @@ class TestGarminProcessor:
         ):
             processor._process_fit_file(fit_file, mock_session)
 
+    def test_parse_filename_accepts_legacy_utc_offset(self, processor):
+        """
+        Test a legacy filename carrying a +00:00 UTC offset still parses.
+
+        Files stamped by a pre-fix extractor on pendulum 2.x carry a +00:00 offset; the
+        widened pattern keeps them parseable so they can be recovered from quarantine.
+        """
+        parsed = processor._parse_filename("1_STEPS_2026-08-15T12:00:00+00:00.json")
+
+        assert parsed["user_id"] == "1"
+        assert parsed["data_type"] == "STEPS"
+        assert parsed["timestamp"] == "2026-08-15T12:00:00+00:00"
+        assert parsed["file_extension"] == "json"
+
+    def test_process_fit_file_accepts_legacy_offset_filename(
+        self, processor, mock_session, temp_dir
+    ):
+        """
+        Test a legacy +00:00 offset FIT filename still yields its activity_id.
+
+        The widened activity_id pattern parses the offset form so a FIT file written
+        before the deterministic-stamp fix is not quarantined on reprocess.
+        """
+        fit_file = temp_dir / "1_ACTIVITY_12345_2025-08-07T12:00:00+00:00.fit"
+        fit_file.write_bytes(b"dummy fit data")
+
+        mock_activity = MagicMock()
+        mock_activity.activity_id = 12345
+        mock_session.execute.return_value.scalars.return_value.first.return_value = (
+            mock_activity
+        )
+
+        mock_fit_reader = MagicMock()
+        mock_fit_reader.__enter__.return_value = []
+
+        with patch("fitdecode.FitReader", return_value=mock_fit_reader):
+            with patch("fitdecode.FIT_FRAME_DATA", 4):
+                # Must not raise "Cannot extract activity_id from filename".
+                processor._process_fit_file(fit_file, mock_session)
+
     def test_process_fit_file_filters_unknown_fields(
         self, processor, mock_session, temp_dir
     ):

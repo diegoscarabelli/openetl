@@ -309,7 +309,10 @@ class GarminProcessor(Processor):
         :return: Dictionary with `user_id`, `data_type`, and `timestamp`.
         :raises ValueError: If filename doesn't match expected pattern.
         """
-        pattern = r"^(\d+)_([A-Z_]+)(?:_\d+)?_([0-9T:\-Z\.]+)\.(json|fit)$"
+        # `+` in the timestamp class lets legacy filenames written by a pre-fix
+        # extractor on pendulum 2.x (which stamped a `+00:00` UTC offset) still parse,
+        # so files quarantined by an affected install can be recovered.
+        pattern = r"^(\d+)_([A-Z_]+)(?:_\d+)?_([0-9T:+\-Z\.]+)\.(json|fit)$"
         match = re.match(pattern, filename)
 
         if not match:
@@ -3188,8 +3191,9 @@ class GarminProcessor(Processor):
         """
         # Extract `activity_id` from filename.
         # FIT files have format: {user_id}_ACTIVITY_{activity_id}_{timestamp}.fit
-        # Use regex to extract activity_id directly from filename.
-        pattern = r"^(\d+)_ACTIVITY_(\d+)_([0-9T:\-Z\.]+)\.fit$"
+        # Use regex to extract activity_id directly from filename. `+` in the timestamp
+        # class keeps legacy pre-fix `+00:00`-offset filenames parseable for recovery.
+        pattern = r"^(\d+)_ACTIVITY_(\d+)_([0-9T:+\-Z\.]+)\.fit$"
         match = re.match(pattern, file_path.name)
 
         if not match:

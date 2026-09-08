@@ -13,7 +13,7 @@ import zipfile
 import io
 
 from dataclasses import dataclass
-from datetime import datetime, timedelta, date
+from datetime import timedelta, date
 from pathlib import Path
 from typing import Callable, Dict, List, Optional, Tuple, Union
 
@@ -115,6 +115,24 @@ def _with_retries(fn: Callable, *args, **kwargs):
                 f"(attempt {attempt + 2}/{total_attempts})..."
             )
             time.sleep(backoff)
+
+
+def _utc_midday_stamp(day: date) -> str:
+    """
+    Build the deterministic midday-UTC filename timestamp shared by a day's files.
+
+    All files extracted for a given calendar day share one midday-UTC timestamp so the
+    processor groups them into a single FileSet. The stamp is built directly as a fixed
+    midday-UTC string rather than by formatting a ``pendulum`` instance, so the on-disk
+    name is independent of the installed ``pendulum`` version, whose ISO-8601 rendering
+    of a UTC instant differs across major releases (2.x emits a ``+00:00`` offset, 3.x
+    emits ``Z``) and previously produced ``+``-bearing names the processor's filename
+    patterns rejected.
+
+    :param day: Calendar day the file's data belongs to.
+    :return: Filename timestamp of the form ``YYYY-MM-DDT12:00:00Z``.
+    """
+    return f"{day.isoformat()}T12:00:00Z"
 
 
 @dataclass
@@ -632,6 +650,75 @@ class GarminExtractor:
             saved.extend(self._save_garmin_data(payload, data_type, cal_date))
         return saved
 
+    def _menstrual_days_have_data(self, start_date: date, end_date: date) -> bool:
+        """
+        Probe the menstrual calendar endpoint to decide whether the per-day
+        MENSTRUAL_CYCLE_DAY fan-out is worth running for a window.
+
+        The dayview endpoint is populated only for dates inside a menstrual cycle window
+        (observed or predicted); dates outside all cycle windows return a bare payload
+        the extractor drops. The calendar endpoint reports every cycle whose window
+        overlaps the queried range (a cycle is returned even when its start predates the
+        window), so zero reported cycles means every dayview call in the window is
+        empty. Accounts that do not track menstrual data (e.g. most male accounts)
+        report no cycles, letting the extractor skip ~90 guaranteed-empty dayview calls
+        per run.
+
+        Runs the fan-out when the window contains any reported cycle or any logged
+        symptom/ovulation/note day, so a logged day that falls outside every cycle
+        window is never skipped (rather than relying on the assumption that logged days
+        always sit inside a cycle).
+
+        Fails open, and reuses ``_with_retries`` so a transient blip is retried rather
+        than paid for with the far more expensive full fan-out. When retries are
+        exhausted, a non-transient error raises, the wrapper returns ``None``, or the
+        response omits ``cycleSummaries``, this returns ``True`` so it never suppresses
+        a real extraction.
+
+        :param start_date: Effective start of the dayview window (inclusive).
+        :param end_date: End of the dayview window (inclusive).
+        :return: Whether to run the per-day fan-out (``True``) or skip it (``False``).
+        """
+        try:
+            summary = _with_retries(
+                self.garmin_client.get_menstrual_calendar_data,
+                start_date.strftime("%Y-%m-%d"),
+                end_date.strftime("%Y-%m-%d"),
+            )
+        except Exception as e:
+            LOGGER.warning(
+                f"⚠️ MENSTRUAL_CYCLE_DAY summary probe failed "
+                f"({type(e).__name__}: {e}); running the full window."
+            )
+            return True
+        if summary is None:
+            LOGGER.warning(
+                "⚠️ MENSTRUAL_CYCLE_DAY summary probe returned no calendar response; "
+                "running the full window."
+            )
+            return True
+        cycles = summary.get("cycleSummaries")
+        if cycles is None:
+            # The wrapper guarantees a cycleSummaries list on any non-None response, so
+            # a missing key means an unexpected/partial shape: fail open rather than
+            # silently skip a real extraction.
+            LOGGER.warning(
+                "⚠️ MENSTRUAL_CYCLE_DAY summary probe returned an unexpected shape "
+                "(missing cycleSummaries); running the full window."
+            )
+            return True
+        # Run the fan-out when the window contains any cycle OR any logged
+        # symptom/ovulation/note day. Gating on cycles alone would rely on the
+        # assumption that every logged day sits inside a cycle window; also
+        # checking the logged-day lists closes that gap, so a logged day outside
+        # any cycle is never skipped. Strictly safer: it can only ever run more.
+        return bool(
+            cycles
+            or summary.get("loggedSymptomDays")
+            or summary.get("loggedOvulationDays")
+            or summary.get("loggedNoteDays")
+        )
+
     def _extract_data_by_type(
         self, data_type: GarminDataType, start_date: date, end_date: date
     ) -> List[Path]:
@@ -666,6 +753,20 @@ class GarminExtractor:
             effective_start = _retroactive_lookback_start(
                 data_type, start_date, end_date
             )
+            # MENSTRUAL_CYCLE_DAY's dayview is populated only for dates inside a cycle
+            # window, so gate its ~90-call fan-out on a cheap probe of the companion
+            # calendar/summary endpoint: skip entirely when no cycle overlaps the window
+            # (e.g. accounts that do not track menstrual data). The probe fails open, so
+            # accounts that do track cycles always run the full fan-out.
+            if data_type.name == "MENSTRUAL_CYCLE_DAY":
+                if not self._menstrual_days_have_data(effective_start, end_date):
+                    # An account with no cycles in the window skips this every run, so
+                    # this is an expected optimization outcome rather than a warning.
+                    LOGGER.info(
+                        f"{data_type.emoji} {data_type.name}: no cycles reported in "
+                        f"{effective_start}..{end_date}; skipping per-day extraction."
+                    )
+                    return []
             return self._extract_day_by_day(data_type, effective_start, end_date)
 
         if data_type.api_method_time_param == APIMethodTimeParam.RANGE:
@@ -713,11 +814,8 @@ class GarminExtractor:
         :param file_date: Date for timestamp generation used in filename.
         :return: List of saved file paths.
         """
-        # Create midday timestamp for consistent grouping.
-        midday_datetime = datetime.combine(file_date, datetime.min.time()).replace(
-            hour=12, minute=0, second=0
-        )
-        timestamp = pendulum.instance(midday_datetime, tz="UTC").to_iso8601_string()
+        # Deterministic midday-UTC timestamp shared by the day's files for grouping.
+        timestamp = _utc_midday_stamp(file_date)
 
         # Generate filename: {user_id}_{DATA_TYPE}_{timestamp}.json.
         filename = f"{self.user_id}_{data_type.name}_{timestamp}.json"
@@ -915,15 +1013,11 @@ class GarminExtractor:
         for activity in activities:
             activity_id = activity["activityId"]
 
-            # Generate filename with local timezone date at noon for consistent batching
-            # with ACTIVITIES_LIST file. Uses same midday timestamp approach as
-            # _save_garmin_data().
-            activity_start = pendulum.parse(activity.get("startTimeLocal"))
-            activity_date = activity_start.date()
-            midday_datetime = datetime.combine(
-                activity_date, datetime.min.time()
-            ).replace(hour=12, minute=0, second=0)
-            timestamp = pendulum.instance(midday_datetime, tz="UTC").to_iso8601_string()
+            # Stamp the activity's files with its local start date at midday UTC so they
+            # batch with that day's ACTIVITIES_LIST file, using the same deterministic
+            # midday timestamp as _save_garmin_data().
+            activity_date = pendulum.parse(activity.get("startTimeLocal")).date()
+            timestamp = _utc_midday_stamp(activity_date)
             filename = f"{self.user_id}_ACTIVITY_{activity_id}_{timestamp}.fit"
             filepath = self.ingest_dir / filename
 
