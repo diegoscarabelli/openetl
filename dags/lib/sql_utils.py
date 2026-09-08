@@ -13,10 +13,10 @@ credential management. It includes:
 """
 
 import csv
-import io
 import json
 import os
 import socket
+import tempfile
 import urllib.parse
 
 from datetime import datetime, timezone
@@ -72,27 +72,33 @@ def copy_records(
     map to NULL, do not use this helper for text columns whose legitimate value can be
     the empty string.
 
+    Rows are buffered in a spooled temporary file (in memory up to 64 MB, then on disk)
+    so worker memory stays bounded regardless of row count.
+
     :param session: SQLAlchemy Session whose transaction the COPY joins.
     :param table: Schema-qualified target table (e.g. "wid.observation").
     :param columns: Ordered column names to populate.
     :param rows: Iterable of tuples aligned to ``columns``.
     :return: Number of rows written.
     """
-    buffer = io.StringIO()
-    writer = csv.writer(buffer)
+    spooled = tempfile.SpooledTemporaryFile(
+        max_size=64 * 1024 * 1024, mode="w+", newline=""
+    )
+    writer = csv.writer(spooled)
     count = 0
     for row in rows:
         writer.writerow(["" if value is None else value for value in row])
         count += 1
-    buffer.seek(0)
+    spooled.seek(0)
 
     column_list = ", ".join(columns)
     raw_connection = session.connection().connection
     with raw_connection.cursor() as cursor:
         cursor.copy_expert(
             f"COPY {table} ({column_list}) FROM STDIN WITH (FORMAT CSV)",
-            buffer,
+            spooled,
         )
+    spooled.close()
     return count
 
 

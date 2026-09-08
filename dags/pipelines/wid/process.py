@@ -91,7 +91,7 @@ def _to_float(value: Optional[str]) -> Optional[float]:
         return None
 
 
-def parse_metadata(path: Path) -> Dict[Tuple[str, str, str], Dict[str, Optional[str]]]:
+def parse_metadata(path: Path) -> Dict[Tuple[str, str, str], Dict[str, object]]:
     """
     Parse a WID_metadata CSV into a lookup keyed by (sixlet, age, pop).
 
@@ -100,7 +100,7 @@ def parse_metadata(path: Path) -> Dict[Tuple[str, str, str], Dict[str, Optional[
         plus country-specific provenance fields (source, method, data_quality_score,
         country).
     """
-    result: Dict[Tuple[str, str, str], Dict[str, Optional[str]]] = {}
+    result: Dict[Tuple[str, str, str], Dict[str, object]] = {}
     with open(path, newline="", encoding="utf-8") as handle:
         reader = csv.DictReader(handle, delimiter=";")
         for row in reader:
@@ -175,7 +175,7 @@ def iter_observations(path: Path) -> Iterator[tuple]:
 
 
 def build_variable_rows(
-    path: Path, meta: Dict[Tuple[str, str, str], Dict[str, Optional[str]]]
+    path: Path, meta: Dict[Tuple[str, str, str], Dict[str, object]]
 ) -> List[Dict[str, Optional[str]]]:
     """
     Build distinct variable-dimension rows from an observation CSV plus metadata.
