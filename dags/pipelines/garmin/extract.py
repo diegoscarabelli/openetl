@@ -632,6 +632,63 @@ class GarminExtractor:
             saved.extend(self._save_garmin_data(payload, data_type, cal_date))
         return saved
 
+    def _menstrual_days_have_data(self, start_date: date, end_date: date) -> bool:
+        """
+        Probe the menstrual calendar endpoint to decide whether the per-day
+        MENSTRUAL_CYCLE_DAY fan-out is worth running for a window.
+
+        The dayview endpoint is populated only for dates inside a menstrual cycle window
+        (observed or predicted); dates outside all cycle windows return a bare payload
+        the extractor drops. The calendar endpoint reports every cycle whose window
+        overlaps the queried range (a cycle is returned even when its start predates the
+        window), so zero reported cycles means every dayview call in the window is
+        empty. Accounts that do not track menstrual data (e.g. most male accounts)
+        report no cycles, letting the extractor skip ~90 guaranteed-empty dayview calls
+        per run.
+
+        Gated on ``cycleSummaries`` only: logged symptom/ovulation/note days sit inside
+        a cycle, so they never cover dates the cycle list misses.
+
+        Fails open, and reuses ``_with_retries`` so a transient blip is retried rather
+        than paid for with the far more expensive full fan-out. When retries are
+        exhausted, a non-transient error raises, the wrapper returns ``None``, or the
+        response omits ``cycleSummaries``, this returns ``True`` so it never suppresses
+        a real extraction.
+
+        :param start_date: Effective start of the dayview window (inclusive).
+        :param end_date: End of the dayview window (inclusive).
+        :return: Whether to run the per-day fan-out (``True``) or skip it (``False``).
+        """
+        try:
+            summary = _with_retries(
+                self.garmin_client.get_menstrual_calendar_data,
+                start_date.strftime("%Y-%m-%d"),
+                end_date.strftime("%Y-%m-%d"),
+            )
+        except Exception as e:
+            LOGGER.warning(
+                f"⚠️ MENSTRUAL_CYCLE_DAY summary probe failed "
+                f"({type(e).__name__}: {e}); running the full window."
+            )
+            return True
+        if summary is None:
+            LOGGER.warning(
+                "⚠️ MENSTRUAL_CYCLE_DAY summary probe returned no calendar response; "
+                "running the full window."
+            )
+            return True
+        cycles = summary.get("cycleSummaries")
+        if cycles is None:
+            # The wrapper guarantees a cycleSummaries list on any non-None response, so
+            # a missing key means an unexpected/partial shape: fail open rather than
+            # silently skip a real extraction.
+            LOGGER.warning(
+                "⚠️ MENSTRUAL_CYCLE_DAY summary probe returned an unexpected shape "
+                "(missing cycleSummaries); running the full window."
+            )
+            return True
+        return bool(cycles)
+
     def _extract_data_by_type(
         self, data_type: GarminDataType, start_date: date, end_date: date
     ) -> List[Path]:
@@ -666,6 +723,18 @@ class GarminExtractor:
             effective_start = _retroactive_lookback_start(
                 data_type, start_date, end_date
             )
+            # MENSTRUAL_CYCLE_DAY's dayview is populated only for dates inside a cycle
+            # window, so gate its ~90-call fan-out on a cheap probe of the companion
+            # calendar/summary endpoint: skip entirely when no cycle overlaps the window
+            # (e.g. accounts that do not track menstrual data). The probe fails open, so
+            # accounts that do track cycles always run the full fan-out.
+            if data_type.name == "MENSTRUAL_CYCLE_DAY":
+                if not self._menstrual_days_have_data(effective_start, end_date):
+                    LOGGER.warning(
+                        f"{data_type.emoji} {data_type.name}: no cycles reported in "
+                        f"{effective_start}..{end_date}; skipping per-day extraction."
+                    )
+                    return []
             return self._extract_day_by_day(data_type, effective_start, end_date)
 
         if data_type.api_method_time_param == APIMethodTimeParam.RANGE:

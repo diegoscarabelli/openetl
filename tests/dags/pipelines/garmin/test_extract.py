@@ -128,6 +128,181 @@ class TestRetroactiveLookback:
         )
 
 
+class TestMenstrualCycleDayGate:
+    """
+    Tests for the MENSTRUAL_CYCLE_DAY summary-probe gate.
+
+    The per-day dayview fan-out is preceded by a single calendar/summary probe; when the
+    probe reports no cycles overlapping the window, the ~90 dayview calls are skipped.
+    The probe fails open, so a transient error never suppresses a real extraction for an
+    account that does track menstrual data.
+    """
+
+    def _extractor(self, tmp_path: Path) -> GarminExtractor:
+        """
+        Build a GarminExtractor whose window forces the 90-day retroactive look-back.
+
+        :param tmp_path: Pytest tmp_path fixture.
+        :return: GarminExtractor instance.
+        """
+        return GarminExtractor(
+            start_date=date(2025, 1, 1),
+            end_date=date(2025, 1, 3),
+            ingest_dir=tmp_path,
+        )
+
+    def test_skips_day_fanout_when_no_cycles(self, tmp_path: Path) -> None:
+        """
+        An empty cycleSummaries skips the per-day extraction entirely.
+
+        :param tmp_path: Pytest tmp_path fixture.
+        """
+        extractor = self._extractor(tmp_path)
+        extractor.garmin_client = MagicMock()
+        extractor.garmin_client.get_menstrual_calendar_data.return_value = {
+            "cycleSummaries": []
+        }
+        menstrual_day = GARMIN_DATA_REGISTRY.get_by_name("MENSTRUAL_CYCLE_DAY")
+
+        result = extractor._extract_data_by_type(
+            menstrual_day, date(2025, 1, 1), date(2025, 1, 3)
+        )
+
+        assert result == []
+        extractor.garmin_client.get_menstrual_data_for_date.assert_not_called()
+        extractor.garmin_client.get_menstrual_calendar_data.assert_called_once()
+
+    def test_runs_day_fanout_when_cycles_present(self, tmp_path: Path) -> None:
+        """
+        A non-empty cycleSummaries proceeds to the per-day extraction.
+
+        This is the guardrail for accounts that do track menstrual data (a family
+        member's account): the probe reports cycles and the full fan-out still runs.
+
+        :param tmp_path: Pytest tmp_path fixture.
+        """
+        extractor = self._extractor(tmp_path)
+        extractor.garmin_client = MagicMock()
+        extractor.garmin_client.get_menstrual_calendar_data.return_value = {
+            "cycleSummaries": [{"startDate": "2024-12-01"}]
+        }
+        extractor.garmin_client.get_menstrual_data_for_date.return_value = None
+        menstrual_day = GARMIN_DATA_REGISTRY.get_by_name("MENSTRUAL_CYCLE_DAY")
+
+        result = extractor._extract_data_by_type(
+            menstrual_day, date(2025, 1, 1), date(2025, 1, 3)
+        )
+
+        assert result == []
+        extractor.garmin_client.get_menstrual_calendar_data.assert_called_once()
+        assert extractor.garmin_client.get_menstrual_data_for_date.called
+
+    def test_probe_covers_the_retroactive_lookback_window(self, tmp_path: Path) -> None:
+        """
+        The probe queries the 90-day look-back window, not just the requested range.
+
+        :param tmp_path: Pytest tmp_path fixture.
+        """
+        extractor = self._extractor(tmp_path)
+        extractor.garmin_client = MagicMock()
+        extractor.garmin_client.get_menstrual_calendar_data.return_value = {
+            "cycleSummaries": []
+        }
+        menstrual_day = GARMIN_DATA_REGISTRY.get_by_name("MENSTRUAL_CYCLE_DAY")
+
+        extractor._extract_data_by_type(
+            menstrual_day, date(2025, 1, 1), date(2025, 1, 3)
+        )
+
+        # Start extended back 90 days from the end (2025-01-03 -> 2024-10-05).
+        extractor.garmin_client.get_menstrual_calendar_data.assert_called_once_with(
+            "2024-10-05", "2025-01-03"
+        )
+
+    def test_gate_does_not_touch_other_daily_types(self, tmp_path: Path) -> None:
+        """
+        A non-menstrual daily type never triggers the summary probe.
+
+        :param tmp_path: Pytest tmp_path fixture.
+        """
+        extractor = self._extractor(tmp_path)
+        extractor.garmin_client = MagicMock()
+        extractor._extract_day_by_day = MagicMock(return_value=[])
+        sleep = GARMIN_DATA_REGISTRY.get_by_name("SLEEP")
+
+        extractor._extract_data_by_type(sleep, date(2025, 1, 1), date(2025, 1, 3))
+
+        extractor.garmin_client.get_menstrual_calendar_data.assert_not_called()
+
+    def test_probe_returns_true_when_cycles_present(self, tmp_path: Path) -> None:
+        """
+        The probe returns True when the summary reports cycles.
+
+        :param tmp_path: Pytest tmp_path fixture.
+        """
+        extractor = self._extractor(tmp_path)
+        extractor.garmin_client = MagicMock()
+        extractor.garmin_client.get_menstrual_calendar_data.return_value = {
+            "cycleSummaries": [{"startDate": "2024-12-01"}]
+        }
+
+        assert (
+            extractor._menstrual_days_have_data(date(2024, 10, 5), date(2025, 1, 3))
+            is True
+        )
+
+    def test_probe_returns_false_when_no_cycles(self, tmp_path: Path) -> None:
+        """
+        The probe returns False when the summary reports no cycles.
+
+        :param tmp_path: Pytest tmp_path fixture.
+        """
+        extractor = self._extractor(tmp_path)
+        extractor.garmin_client = MagicMock()
+        extractor.garmin_client.get_menstrual_calendar_data.return_value = {
+            "cycleSummaries": []
+        }
+
+        assert (
+            extractor._menstrual_days_have_data(date(2024, 10, 5), date(2025, 1, 3))
+            is False
+        )
+
+    def test_probe_fails_open_on_none_missing_key_and_error(
+        self, tmp_path: Path
+    ) -> None:
+        """
+        The probe fails open (returns True) on a None response, a missing cycleSummaries
+        key, or an exception, so it never suppresses a real extraction.
+
+        :param tmp_path: Pytest tmp_path fixture.
+        """
+        extractor = self._extractor(tmp_path)
+        extractor.garmin_client = MagicMock()
+
+        extractor.garmin_client.get_menstrual_calendar_data.return_value = None
+        assert (
+            extractor._menstrual_days_have_data(date(2024, 10, 5), date(2025, 1, 3))
+            is True
+        )
+
+        extractor.garmin_client.get_menstrual_calendar_data.return_value = {
+            "loggedSymptomDays": []
+        }
+        assert (
+            extractor._menstrual_days_have_data(date(2024, 10, 5), date(2025, 1, 3))
+            is True
+        )
+
+        extractor.garmin_client.get_menstrual_calendar_data.side_effect = Exception(
+            "boom"
+        )
+        assert (
+            extractor._menstrual_days_have_data(date(2024, 10, 5), date(2025, 1, 3))
+            is True
+        )
+
+
 class TestGarminExtractor:
     """
     Test class for GarminExtractor functionality.
