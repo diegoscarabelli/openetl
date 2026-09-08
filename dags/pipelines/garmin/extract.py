@@ -13,7 +13,7 @@ import zipfile
 import io
 
 from dataclasses import dataclass
-from datetime import datetime, timedelta, date
+from datetime import timedelta, date
 from pathlib import Path
 from typing import Callable, Dict, List, Optional, Tuple, Union
 
@@ -115,6 +115,24 @@ def _with_retries(fn: Callable, *args, **kwargs):
                 f"(attempt {attempt + 2}/{total_attempts})..."
             )
             time.sleep(backoff)
+
+
+def _utc_midday_stamp(day: date) -> str:
+    """
+    Build the deterministic midday-UTC filename timestamp shared by a day's files.
+
+    All files extracted for a given calendar day are stamped with one midday-UTC
+    timestamp so the processor groups them into a single FileSet. Rendered as ``YYYY-MM-
+    DDT12:00:00Z``: built directly rather than by formatting a ``pendulum`` instance, so
+    the on-disk name is independent of the installed ``pendulum`` version, whose
+    ISO-8601 rendering of a UTC instant differs across major releases (2.x emits a
+    ``+00:00`` offset, 3.x emits ``Z``) and previously produced ``+``-bearing names the
+    processor's filename patterns rejected.
+
+    :param day: Calendar day the file's data belongs to.
+    :return: Filename timestamp of the form ``YYYY-MM-DDT12:00:00Z``.
+    """
+    return f"{day.isoformat()}T12:00:00Z"
 
 
 @dataclass
@@ -782,11 +800,8 @@ class GarminExtractor:
         :param file_date: Date for timestamp generation used in filename.
         :return: List of saved file paths.
         """
-        # Create midday timestamp for consistent grouping.
-        midday_datetime = datetime.combine(file_date, datetime.min.time()).replace(
-            hour=12, minute=0, second=0
-        )
-        timestamp = pendulum.instance(midday_datetime, tz="UTC").to_iso8601_string()
+        # Deterministic midday-UTC timestamp shared by the day's files for grouping.
+        timestamp = _utc_midday_stamp(file_date)
 
         # Generate filename: {user_id}_{DATA_TYPE}_{timestamp}.json.
         filename = f"{self.user_id}_{data_type.name}_{timestamp}.json"
@@ -984,15 +999,11 @@ class GarminExtractor:
         for activity in activities:
             activity_id = activity["activityId"]
 
-            # Generate filename with local timezone date at noon for consistent batching
-            # with ACTIVITIES_LIST file. Uses same midday timestamp approach as
-            # _save_garmin_data().
-            activity_start = pendulum.parse(activity.get("startTimeLocal"))
-            activity_date = activity_start.date()
-            midday_datetime = datetime.combine(
-                activity_date, datetime.min.time()
-            ).replace(hour=12, minute=0, second=0)
-            timestamp = pendulum.instance(midday_datetime, tz="UTC").to_iso8601_string()
+            # Stamp the activity's files with its local start date at midday UTC so they
+            # batch with that day's ACTIVITIES_LIST file, using the same deterministic
+            # midday timestamp as _save_garmin_data().
+            activity_date = pendulum.parse(activity.get("startTimeLocal")).date()
+            timestamp = _utc_midday_stamp(activity_date)
             filename = f"{self.user_id}_ACTIVITY_{activity_id}_{timestamp}.fit"
             filepath = self.ingest_dir / filename
 

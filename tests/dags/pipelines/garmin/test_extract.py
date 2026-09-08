@@ -32,6 +32,7 @@ from dags.pipelines.garmin.extract import (
     GarminExtractor,
     _RETROACTIVE_LOOKBACK_DAYS,
     _retroactive_lookback_start,
+    _utc_midday_stamp,
     extract,
     cli_extract,
     discover_accounts,
@@ -301,6 +302,48 @@ class TestMenstrualCycleDayGate:
             extractor._menstrual_days_have_data(date(2024, 10, 5), date(2025, 1, 3))
             is True
         )
+
+
+class TestDeterministicFilenames:
+    """
+    Tests for the pendulum-version-independent midday-UTC filename stamp.
+    """
+
+    def test_renders_fixed_midday_utc_stamp(self) -> None:
+        """
+        A calendar day renders as a colon-form, Z-suffixed midday-UTC stamp.
+        """
+        assert _utc_midday_stamp(date(2026, 8, 15)) == "2026-08-15T12:00:00Z"
+
+    def test_stamp_is_offset_free(self) -> None:
+        """
+        The stamp carries no + offset and ends with Z, independent of pendulum version.
+        """
+        stamp = _utc_midday_stamp(date(2026, 1, 2))
+
+        assert "+" not in stamp
+        assert stamp.endswith("Z")
+
+    def test_save_garmin_data_deterministic_filename(self, tmp_path: Path) -> None:
+        """
+        _save_garmin_data stamps a deterministic midday-UTC filename with no + offset.
+
+        :param tmp_path: Pytest tmp_path fixture.
+        """
+        extractor = GarminExtractor(
+            start_date=date(2025, 1, 1),
+            end_date=date(2025, 1, 1),
+            ingest_dir=tmp_path,
+        )
+        extractor.user_id = "1"
+
+        paths = extractor._save_garmin_data(
+            {"value": 1}, GARMIN_DATA_REGISTRY.get_by_name("STEPS"), date(2025, 1, 1)
+        )
+
+        name = paths[0].name
+        assert name == "1_STEPS_2025-01-01T12:00:00Z.json"
+        assert "+" not in name
 
 
 class TestGarminExtractor:
