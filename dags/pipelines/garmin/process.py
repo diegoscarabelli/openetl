@@ -3516,6 +3516,16 @@ class GarminProcessor(Processor):
                                 # field as ISO 8601 text.
                                 if isinstance(field_value, datetime):
                                     field_value = field_value.isoformat()
+                                else:
+                                    # Some FIT event fields carry exotic types
+                                    # (enums, bytes, ...) that psycopg cannot adapt
+                                    # to JSONB. Fall back to str() for anything not
+                                    # natively JSON-serializable so one odd field
+                                    # never raises at bind time and aborts the file.
+                                    try:
+                                        json.dumps(field_value)
+                                    except (TypeError, ValueError):
+                                        field_value = str(field_value)
                                 event_data[field.name] = field_value
 
                         # Skip frames missing the two NOT NULL columns
@@ -3677,7 +3687,9 @@ class GarminProcessor(Processor):
             session.add_all(event_rows)
             LOGGER.info(f"Processed {len(event_rows)} event records.")
         else:
-            LOGGER.warning("⚠️ No event data found.")
+            # Absence of event messages is normal for many activities, so this is
+            # info rather than a warning (matching the hrv/swim-length branches).
+            LOGGER.info("ℹ️ No event data found.")
 
         # Build and insert activity GPS path for deck.gl visualization.
         if gps_records:

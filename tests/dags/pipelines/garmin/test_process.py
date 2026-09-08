@@ -6951,6 +6951,57 @@ class TestGarminProcessor:
         assert len(events) == 1
         assert events[0].data_json == {"local_timestamp": local_ts.isoformat()}
 
+    def test_process_fit_file_event_non_serializable_field_coerced_to_str(
+        self, processor, mock_session, temp_dir
+    ):
+        """
+        Test a non-JSON-serializable event field value is coerced to str in data_json.
+
+        Some FIT event fields carry exotic types (bytes, enums) that psycopg cannot
+        adapt to JSONB; such values fall back to str() so one odd field never raises at
+        bind time and aborts the whole file.
+        """
+        # Arrange.
+        activity_id = 12345
+        fit_file = (
+            temp_dir / f"15007510_ACTIVITY_{activity_id}_2025-08-07T12:00:00Z.fit"
+        )
+        fit_file.write_bytes(b"dummy fit data")
+
+        mock_activity = MagicMock()
+        mock_activity.activity_id = activity_id
+        mock_session.execute.return_value.scalars.return_value.first.return_value = (
+            mock_activity
+        )
+
+        def _field(name, value):
+            field = MagicMock()
+            field.name = name
+            field.value = value
+            return field
+
+        frame = MagicMock()
+        frame.frame_type = 4
+        frame.name = "event"
+        raw_blob = b"\x00\x01"
+        frame.fields = [
+            _field("timestamp", datetime(2024, 1, 1, 8, 0, 1, tzinfo=timezone.utc)),
+            _field("event", "front_gear_change"),
+            _field("raw_blob", raw_blob),
+        ]
+
+        mock_fit_reader = MagicMock()
+        mock_fit_reader.__enter__.return_value = [frame]
+
+        with patch("fitdecode.FitReader", return_value=mock_fit_reader):
+            with patch("fitdecode.FIT_FRAME_DATA", 4):
+                # Act.
+                processor._process_fit_file(fit_file, mock_session)
+
+        events = self._event_batch(mock_session)
+        assert len(events) == 1
+        assert events[0].data_json == {"raw_blob": str(raw_blob)}
+
     # ==================== FIT Session Supplemental Metric Tests ==============
 
     @staticmethod
