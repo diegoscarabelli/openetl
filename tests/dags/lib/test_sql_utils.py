@@ -154,6 +154,49 @@ class TestUpsertModelInstances:
         )
         assert result.col_a == "B"
 
+    def test_upsert_values_preserve_existing_on_null(self, db_session):
+        """
+        preserve_existing_on_null keeps existing non-null values on NULL input.
+        """
+        # Seed a fully populated row.
+        _upsert_values(
+            MyTest,
+            [{"id": 1, "col_a": "A", "col_b": "B"}],
+            db_session,
+            conflict_columns=["id"],
+            on_conflict_update=True,
+        )
+        db_session.commit()
+
+        # With the flag on, col_a updates but the NULL col_b keeps its old value.
+        _upsert_values(
+            MyTest,
+            [{"id": 1, "col_a": "A2", "col_b": None}],
+            db_session,
+            conflict_columns=["id"],
+            on_conflict_update=True,
+            update_columns=["col_a", "col_b"],
+            preserve_existing_on_null=True,
+        )
+        db_session.commit()
+        row = db_session.execute(select(MyTest).where(MyTest.id == 1)).scalars().first()
+        assert row.col_a == "A2"
+        assert row.col_b == "B"
+
+        # Without the flag, the same NULL input overwrites col_b.
+        _upsert_values(
+            MyTest,
+            [{"id": 1, "col_a": "A3", "col_b": None}],
+            db_session,
+            conflict_columns=["id"],
+            on_conflict_update=True,
+            update_columns=["col_a", "col_b"],
+        )
+        db_session.commit()
+        row = db_session.execute(select(MyTest).where(MyTest.id == 1)).scalars().first()
+        assert row.col_a == "A3"
+        assert row.col_b is None
+
     def test_upsert_values_insert_ignore(self, db_session):
         """
         Test _upsert_values INSERT_IGNORE mode does not update on conflict.

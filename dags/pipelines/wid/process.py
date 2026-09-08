@@ -284,12 +284,19 @@ class WidProcessor(Processor):
 
         variable_rows = build_variable_rows(data_path, meta)
         if variable_rows:
+            # The variable dimension is global (keyed by fully_qualified_code, no
+            # country). Concept-level metadata is country-invariant but not present
+            # in every country's metadata file, so a country lacking a given
+            # (sixlet, age, pop) row would otherwise overwrite another country's
+            # populated fields with NULL. preserve_existing_on_null keeps the
+            # existing non-null values in that case.
             upsert_model_instances(
                 session=session,
                 model_instances=[Variable(**row) for row in variable_rows],
                 conflict_columns=["fully_qualified_code"],
                 on_conflict_update=True,
                 update_columns=list(_VARIABLE_META_FIELDS),
+                preserve_existing_on_null=True,
             )
 
         provenance = [
