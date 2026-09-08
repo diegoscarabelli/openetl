@@ -131,8 +131,8 @@ _MULTISPORT_SWIMMING_AGG_MAP = {
 
 # FIT `session`-message scalar fields that the Connect API never exposes (advanced
 # cycling pedal dynamics, mechanical work, subjective effort). Written 1:1 into
-# supplemental_activity_metric, reusing the field name as the metric name. Sourced from
-# garmin-health-data#91.
+# supplemental_activity_metric, reusing the field name as the metric name. Ported from
+# garmin-health-data#95.
 _FIT_SESSION_SCALAR_METRICS = [
     "avg_left_torque_effectiveness",
     "avg_right_torque_effectiveness",

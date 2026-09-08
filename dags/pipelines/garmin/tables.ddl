@@ -2653,7 +2653,13 @@ CREATE TABLE IF NOT EXISTS garmin.activity_hrv (
     , CONSTRAINT activity_hrv_rr_json_is_array
     CHECK (JSONB_TYPEOF(rr_json) = 'array')
     , CONSTRAINT activity_hrv_interval_count_matches_array
-    CHECK (interval_count = JSONB_ARRAY_LENGTH(rr_json))
+    CHECK (
+        CASE
+            WHEN JSONB_TYPEOF(rr_json) = 'array'
+                THEN interval_count = JSONB_ARRAY_LENGTH(rr_json)
+            ELSE FALSE
+        END
+    )
     , CONSTRAINT activity_hrv_interval_count_positive
     CHECK (interval_count > 0)
 );
