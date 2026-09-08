@@ -148,6 +148,9 @@ GRANT DELETE ON garmin.activity_ts_metric TO airflow_garmin;
 GRANT DELETE ON garmin.activity_split_metric TO airflow_garmin;
 GRANT DELETE ON garmin.activity_lap_metric TO airflow_garmin;
 GRANT DELETE ON garmin.activity_path TO airflow_garmin;
+GRANT DELETE ON garmin.activity_hrv TO airflow_garmin;
+GRANT DELETE ON garmin.swim_length TO airflow_garmin;
+GRANT DELETE ON garmin.activity_event TO airflow_garmin;
 -- menstrual_cycle_tag: delete-then-reinsert per (user_id, date) so user-removed
 -- tags propagate. menstrual_cycle_summary: wipe-and-replace predicted_cycle=true
 -- rows on each extract because Garmin's projection dates shift between runs.
