@@ -664,8 +664,10 @@ class GarminExtractor:
         report no cycles, letting the extractor skip ~90 guaranteed-empty dayview calls
         per run.
 
-        Gated on ``cycleSummaries`` only: logged symptom/ovulation/note days sit inside
-        a cycle, so they never cover dates the cycle list misses.
+        Runs the fan-out when the window contains any reported cycle or any logged
+        symptom/ovulation/note day, so a logged day that falls outside every cycle
+        window is never skipped (rather than relying on the assumption that logged days
+        always sit inside a cycle).
 
         Fails open, and reuses ``_with_retries`` so a transient blip is retried rather
         than paid for with the far more expensive full fan-out. When retries are
@@ -705,7 +707,17 @@ class GarminExtractor:
                 "(missing cycleSummaries); running the full window."
             )
             return True
-        return bool(cycles)
+        # Run the fan-out when the window contains any cycle OR any logged
+        # symptom/ovulation/note day. Gating on cycles alone would rely on the
+        # assumption that every logged day sits inside a cycle window; also
+        # checking the logged-day lists closes that gap, so a logged day outside
+        # any cycle is never skipped. Strictly safer: it can only ever run more.
+        return bool(
+            cycles
+            or summary.get("loggedSymptomDays")
+            or summary.get("loggedOvulationDays")
+            or summary.get("loggedNoteDays")
+        )
 
     def _extract_data_by_type(
         self, data_type: GarminDataType, start_date: date, end_date: date

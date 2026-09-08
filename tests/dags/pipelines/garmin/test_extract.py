@@ -269,6 +269,28 @@ class TestMenstrualCycleDayGate:
             is False
         )
 
+    def test_probe_runs_when_logged_days_but_no_cycles(self, tmp_path: Path) -> None:
+        """
+        A logged day with no reported cycle still runs the per-day fan-out.
+
+        Hardening beyond the upstream cycleSummaries-only gate: if Garmin ever reports a
+        logged symptom/ovulation/note day outside every cycle window, the probe must not
+        skip that day's dayview.
+
+        :param tmp_path: Pytest tmp_path fixture.
+        """
+        extractor = self._extractor(tmp_path)
+        extractor.garmin_client = MagicMock()
+        extractor.garmin_client.get_menstrual_calendar_data.return_value = {
+            "cycleSummaries": [],
+            "loggedSymptomDays": [{"calendarDate": "2024-12-01"}],
+        }
+
+        assert (
+            extractor._menstrual_days_have_data(date(2024, 10, 5), date(2025, 1, 3))
+            is True
+        )
+
     def test_probe_fails_open_on_none_missing_key_and_error(
         self, tmp_path: Path
     ) -> None:
