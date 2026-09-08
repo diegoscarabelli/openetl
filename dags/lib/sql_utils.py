@@ -13,17 +13,17 @@ credential management. It includes:
 """
 
 import csv
+import io
 import json
 import os
 import socket
-import tempfile
 import urllib.parse
 
 from datetime import datetime, timezone
-from typing import Any, Dict, Iterable, List, Optional, Type
+from typing import Any, Dict, Iterable, Iterator, List, Optional, Type
 
 from psycopg2 import sql
-from sqlalchemy import create_engine, DateTime, ForeignKey, func, MetaData
+from sqlalchemy import create_engine, DateTime, ForeignKey, MetaData
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.engine import Engine
 from sqlalchemy.orm import (
@@ -53,6 +53,52 @@ class QueryType:
     INSERT_IGNORE = "insert_ignore"
 
 
+# COPY reads this unquoted token as SQL NULL, which lets a legitimate empty
+# string round-trip as an empty string instead of collapsing to NULL.
+_COPY_NULL_MARKER = "\\N"
+
+
+class _StringIteratorIO(io.TextIOBase):
+    """
+    Adapt an iterator of text chunks into a readable stream for ``copy_expert``.
+
+    ``copy_expert`` pulls from the stream with ``read(size)``. This reads from the
+    underlying iterator only as needed, so rows are rendered and streamed to PostgreSQL
+    incrementally rather than materialized in full beforehand.
+    """
+
+    def __init__(self, iterator: Iterator[str]) -> None:
+        """
+        :param iterator: Iterator yielding text chunks (one CSV line each).
+        """
+        self._iterator = iterator
+        self._buffer = ""
+
+    def readable(self) -> bool:
+        """
+        :return: Always True; the stream is read-only.
+        """
+        return True
+
+    def read(self, size: Optional[int] = -1) -> str:
+        """
+        Read up to ``size`` characters, rendering more rows on demand.
+
+        :param size: Maximum characters to return (None or negative for all).
+        :return: The characters read; empty string at end of stream.
+        """
+        while size is None or size < 0 or len(self._buffer) < size:
+            try:
+                self._buffer += next(self._iterator)
+            except StopIteration:
+                break
+        if size is None or size < 0:
+            chunk, self._buffer = self._buffer, ""
+        else:
+            chunk, self._buffer = self._buffer[:size], self._buffer[size:]
+        return chunk
+
+
 def copy_records(
     session: Session,
     table: str,
@@ -69,12 +115,14 @@ def copy_records(
     ``upsert_model_instances``.
 
     Columns omitted from ``columns`` take their database defaults (e.g. ``create_ts`` /
-    ``update_ts``). A ``None`` value is written as SQL NULL; because empty CSV fields
-    map to NULL, do not use this helper for text columns whose legitimate value can be
-    the empty string.
+    ``update_ts``). A ``None`` value is written as SQL NULL and an empty string is
+    preserved as an empty string. The one unsupported value is the literal two-character
+    string ``\\N`` (backslash-N), which COPY would read as NULL; the sole caller loads
+    numeric observations, so this does not arise in practice.
 
-    Rows are buffered in a spooled temporary file (in memory up to 64 MB, then on disk)
-    so worker memory stays bounded regardless of row count.
+    Rows are rendered and streamed to PostgreSQL on demand (one CSV line buffered at a
+    time), so worker memory stays bounded regardless of row count and the COPY starts
+    without first writing a second full-size copy of the data.
 
     :param session: SQLAlchemy Session whose transaction the COPY joins.
     :param table: Schema-qualified target table (e.g. "wid.observation").
@@ -82,30 +130,41 @@ def copy_records(
     :param rows: Iterable of tuples aligned to ``columns``.
     :return: Number of rows written.
     """
-    spooled = tempfile.SpooledTemporaryFile(
-        max_size=64 * 1024 * 1024, mode="w+", newline="", encoding="utf-8"
-    )
-    try:
-        writer = csv.writer(spooled)
-        count = 0
-        for row in rows:
-            writer.writerow(["" if value is None else value for value in row])
-            count += 1
-        spooled.seek(0)
+    count = 0
 
-        # Quote the schema-qualified table and each column as SQL identifiers so a
-        # non-constant caller cannot inject SQL through the table or column names.
-        copy_statement = sql.SQL(
-            "COPY {table} ({columns}) FROM STDIN WITH (FORMAT CSV)"
-        ).format(
-            table=sql.SQL(".").join(sql.Identifier(part) for part in table.split(".")),
-            columns=sql.SQL(", ").join(sql.Identifier(column) for column in columns),
+    def _lines() -> Iterator[str]:
+        """
+        Render each row as one CSV line, counting rows as they are consumed.
+
+        :return: Iterator of CSV-encoded lines.
+        """
+        nonlocal count
+        line_buffer = io.StringIO()
+        writer = csv.writer(line_buffer, lineterminator="\n")
+        for row in rows:
+            writer.writerow(
+                [_COPY_NULL_MARKER if value is None else value for value in row]
+            )
+            line = line_buffer.getvalue()
+            line_buffer.seek(0)
+            line_buffer.truncate(0)
+            count += 1
+            yield line
+
+    # Quote the schema-qualified table and each column as SQL identifiers so a
+    # non-constant caller cannot inject SQL through the table or column names.
+    copy_statement = sql.SQL(
+        "COPY {table} ({columns}) FROM STDIN WITH (FORMAT CSV, NULL {null})"
+    ).format(
+        table=sql.SQL(".").join(sql.Identifier(part) for part in table.split(".")),
+        columns=sql.SQL(", ").join(sql.Identifier(column) for column in columns),
+        null=sql.Literal(_COPY_NULL_MARKER),
+    )
+    raw_connection = session.connection().connection
+    with raw_connection.cursor() as cursor:
+        cursor.copy_expert(
+            copy_statement.as_string(cursor), _StringIteratorIO(_lines())
         )
-        raw_connection = session.connection().connection
-        with raw_connection.cursor() as cursor:
-            cursor.copy_expert(copy_statement.as_string(cursor), spooled)
-    finally:
-        spooled.close()
     return count
 
 
@@ -314,7 +373,6 @@ def upsert_model_instances(
     latest_check_inclusive: bool = False,
     returning_columns: Optional[List[str]] = None,
     chunk_size: int = 10_000,
-    preserve_existing_on_null: bool = False,
 ) -> Optional[List[Any]]:
     """
     Bulk upsert SQLAlchemy ORM model instances into SQL database tables, handling
@@ -376,11 +434,6 @@ def upsert_model_instances(
         omitting ``returning_columns``.
     :param chunk_size: Maximum rows per INSERT statement. Clamped internally so the
         total parameter count never exceeds the psycopg3 limit.
-    :param preserve_existing_on_null: If True (UPSERT mode only), each updated
-        column is set to ``COALESCE(excluded.col, table.col)`` so an incoming
-        NULL keeps the existing value instead of overwriting it. Useful when
-        the same row is enriched from several partial inputs and a later,
-        less-complete input must not wipe fields an earlier one populated.
     :return: List of SQLAlchemy model instances (with only the requested columns
         populated) if returning_columns is specified, otherwise None.
     """
@@ -411,7 +464,6 @@ def upsert_model_instances(
         latest_check_inclusive=latest_check_inclusive,
         returning_columns=returning_columns,
         chunk_size=chunk_size,
-        preserve_existing_on_null=preserve_existing_on_null,
     )
 
     if results is None:
@@ -431,7 +483,6 @@ def _upsert_values(
     latest_check_inclusive: bool = False,
     returning_columns: Optional[List[str]] = None,
     chunk_size: int = 10_000,
-    preserve_existing_on_null: bool = False,
 ) -> Optional[List[Dict[str, Any]]]:
     """
     Bulk upsert dictionaries of values into SQL database tables using SQLAlchemy ORM
@@ -489,9 +540,6 @@ def _upsert_values(
         path is preserved when ``returning_columns`` is None.
     :param chunk_size: Maximum rows per INSERT statement. Clamped internally so the
         total parameter count never exceeds the psycopg3 limit.
-    :param preserve_existing_on_null: If True (UPSERT mode only), each updated
-        column is set to ``COALESCE(excluded.col, table.col)`` so an incoming
-        NULL keeps the existing value instead of overwriting it.
     :return: List of dictionaries with returned values if returning_columns is
         specified, otherwise None.
     """
@@ -617,16 +665,7 @@ def _upsert_values(
         insert_stmt = insert(model).values(chunk)
 
         if query_type == QueryType.UPSERT:
-            if preserve_existing_on_null:
-                # COALESCE keeps the existing value when the incoming value is
-                # NULL, so a partial input row never overwrites previously loaded
-                # non-null data with NULL.
-                update_dict = {
-                    col: func.coalesce(insert_stmt.excluded[col], getattr(model, col))
-                    for col in update_columns
-                }
-            else:
-                update_dict = {col: insert_stmt.excluded[col] for col in update_columns}
+            update_dict = {col: insert_stmt.excluded[col] for col in update_columns}
 
             # Automatically update update_ts column if it exists in the model.
             if hasattr(model, "update_ts") and "update_ts" not in update_dict:

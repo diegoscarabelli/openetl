@@ -285,18 +285,17 @@ class WidProcessor(Processor):
         variable_rows = build_variable_rows(data_path, meta)
         if variable_rows:
             # The variable dimension is global (keyed by fully_qualified_code, no
-            # country). Concept-level metadata is country-invariant but not present
-            # in every country's metadata file, so a country lacking a given
-            # (sixlet, age, pop) row would otherwise overwrite another country's
-            # populated fields with NULL. preserve_existing_on_null keeps the
-            # existing non-null values in that case.
+            # country) and its concept-level metadata is country-invariant, so the
+            # first country to introduce a code sets its definition. Insert missing
+            # codes and leave existing rows untouched (DO NOTHING): this avoids
+            # re-updating shared codes once per country (~200 redundant writes and
+            # update_ts bumps for common codes) and never overwrites a populated
+            # row with a later country's NULLs.
             upsert_model_instances(
                 session=session,
                 model_instances=[Variable(**row) for row in variable_rows],
                 conflict_columns=["fully_qualified_code"],
-                on_conflict_update=True,
-                update_columns=list(_VARIABLE_META_FIELDS),
-                preserve_existing_on_null=True,
+                on_conflict_update=False,
             )
 
         provenance = [
