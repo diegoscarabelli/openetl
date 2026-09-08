@@ -6299,6 +6299,867 @@ class TestGarminProcessor:
         assert path_row.path_json[1][0] == pytest.approx(expected_b[0])
         assert path_row.path_json[1][1] == pytest.approx(expected_b[1])
 
+    # ==================== Activity HRV Tests ====================
+
+    def test_process_fit_file_creates_activity_hrv(
+        self, processor, mock_session, temp_dir
+    ):
+        """
+        Test FIT hrv frames flatten into a single activity_hrv row.
+
+        Each hrv frame's `time` field is a tuple of up to five R-R intervals right-
+        padded with None. The null padding is dropped and the remaining values are
+        flattened across frames in recorded order, with interval_count matching the
+        flattened length. The activity_hrv delete also fires so reprocessing replaces
+        the prior row.
+        """
+        # Arrange.
+        activity_id = 12345
+        fit_file = (
+            temp_dir / f"15007510_ACTIVITY_{activity_id}_2025-08-07T12:00:00Z.fit"
+        )
+        fit_file.write_bytes(b"dummy fit data")
+
+        mock_activity = MagicMock()
+        mock_activity.activity_id = activity_id
+        mock_session.execute.return_value.scalars.return_value.first.return_value = (
+            mock_activity
+        )
+
+        def _hrv_frame(rr_tuple):
+            time_field = MagicMock()
+            time_field.name = "time"
+            time_field.value = rr_tuple
+            frame = MagicMock()
+            frame.frame_type = 4
+            frame.name = "hrv"
+            frame.fields = [time_field]
+            return frame
+
+        frames = [
+            _hrv_frame((0.528, 0.527, None, None, None)),
+            _hrv_frame((0.531, None, None, None, None)),
+            _hrv_frame((0.533, 0.539, None, None, None)),
+        ]
+
+        mock_fit_reader = MagicMock()
+        mock_fit_reader.__enter__.return_value = frames
+
+        with patch("fitdecode.FitReader", return_value=mock_fit_reader):
+            with patch("fitdecode.FIT_FRAME_DATA", 4):
+                # Act.
+                processor._process_fit_file(fit_file, mock_session)
+
+        # Assert: a single activity_hrv row with the flattened, ordered R-R series.
+        hrv_batches = [
+            call.args[0]
+            for call in mock_session.add_all.call_args_list
+            if call.args and call.args[0] and hasattr(call.args[0][0], "rr_json")
+        ]
+        assert len(hrv_batches) == 1
+        hrv_rows = hrv_batches[0]
+        assert len(hrv_rows) == 1
+        row = hrv_rows[0]
+        assert row.activity_id == activity_id
+        assert row.interval_count == 5
+        assert isinstance(row.rr_json, list)
+        assert row.rr_json == pytest.approx([0.528, 0.527, 0.531, 0.533, 0.539])
+
+        # Idempotency: the activity_hrv delete fires before insert.
+        deleted_tables = {
+            call.args[0].table.name
+            for call in mock_session.execute.call_args_list
+            if call.args and type(call.args[0]).__name__ == "Delete"
+        }
+        assert "activity_hrv" in deleted_tables
+
+    def test_process_fit_file_no_hrv_skips_activity_hrv(
+        self, processor, mock_session, temp_dir
+    ):
+        """
+        Test a FIT file with no hrv frames produces no activity_hrv row.
+
+        Activities recorded without a compatible heart rate source carry no hrv frames
+        and must not create an activity_hrv row, while record processing is unaffected.
+        """
+        # Arrange.
+        activity_id = 12345
+        fit_file = (
+            temp_dir / f"15007510_ACTIVITY_{activity_id}_2025-08-07T12:00:00Z.fit"
+        )
+        fit_file.write_bytes(b"dummy fit data")
+
+        mock_activity = MagicMock()
+        mock_activity.activity_id = activity_id
+        mock_session.execute.return_value.scalars.return_value.first.return_value = (
+            mock_activity
+        )
+
+        ts_field = MagicMock()
+        ts_field.name = "timestamp"
+        ts_field.value = datetime(2025, 8, 7, 14, 30, tzinfo=timezone.utc)
+        hr_field = MagicMock()
+        hr_field.name = "heart_rate"
+        hr_field.value = 150
+        hr_field.units = "bpm"
+        record_frame = MagicMock()
+        record_frame.frame_type = 4
+        record_frame.name = "record"
+        record_frame.fields = [ts_field, hr_field]
+
+        mock_fit_reader = MagicMock()
+        mock_fit_reader.__enter__.return_value = [record_frame]
+
+        with patch("fitdecode.FitReader", return_value=mock_fit_reader):
+            with patch("fitdecode.FIT_FRAME_DATA", 4):
+                # Act.
+                processor._process_fit_file(fit_file, mock_session)
+
+        # Assert: no add_all batch carries an activity_hrv row.
+        hrv_batches = [
+            call.args[0]
+            for call in mock_session.add_all.call_args_list
+            if call.args and call.args[0] and hasattr(call.args[0][0], "rr_json")
+        ]
+        assert hrv_batches == []
+
+    def test_process_fit_file_hrv_non_iterable_time_skipped(
+        self, processor, mock_session, temp_dir
+    ):
+        """
+        Test a malformed (non-iterable) hrv `time` value is skipped, not fatal.
+
+        A bad hrv frame whose `time` is a scalar is skipped without aborting the file;
+        the remaining valid hrv frame is still flattened into the row.
+        """
+        # Arrange.
+        activity_id = 12345
+        fit_file = (
+            temp_dir / f"15007510_ACTIVITY_{activity_id}_2025-08-07T12:00:00Z.fit"
+        )
+        fit_file.write_bytes(b"dummy fit data")
+
+        mock_activity = MagicMock()
+        mock_activity.activity_id = activity_id
+        mock_session.execute.return_value.scalars.return_value.first.return_value = (
+            mock_activity
+        )
+
+        bad_time_field = MagicMock()
+        bad_time_field.name = "time"
+        bad_time_field.value = 0.5  # Scalar, not a tuple.
+        bad_frame = MagicMock()
+        bad_frame.frame_type = 4
+        bad_frame.name = "hrv"
+        bad_frame.fields = [bad_time_field]
+
+        good_time_field = MagicMock()
+        good_time_field.name = "time"
+        good_time_field.value = (0.52, 0.53, None, None, None)
+        good_frame = MagicMock()
+        good_frame.frame_type = 4
+        good_frame.name = "hrv"
+        good_frame.fields = [good_time_field]
+
+        mock_fit_reader = MagicMock()
+        mock_fit_reader.__enter__.return_value = [bad_frame, good_frame]
+
+        with patch("fitdecode.FitReader", return_value=mock_fit_reader):
+            with patch("fitdecode.FIT_FRAME_DATA", 4):
+                # Act.
+                processor._process_fit_file(fit_file, mock_session)
+
+        # Assert: only the valid frame's two intervals are stored.
+        hrv_batches = [
+            call.args[0]
+            for call in mock_session.add_all.call_args_list
+            if call.args and call.args[0] and hasattr(call.args[0][0], "rr_json")
+        ]
+        assert len(hrv_batches) == 1
+        row = hrv_batches[0][0]
+        assert row.interval_count == 2
+        assert row.rr_json == pytest.approx([0.52, 0.53])
+
+    # ==================== Swim Length Tests ====================
+
+    def test_process_fit_file_creates_swim_length(
+        self, processor, mock_session, temp_dir
+    ):
+        """
+        Test FIT length frames create typed swim_length rows.
+
+        Active and idle length frames each produce a swim_length row: the active length
+        carries stroke/timing/stroke-count data, and the idle (rest) length stores a NULL
+        swim_stroke since the device emits no stroke for it. The swim_length delete also
+        fires so reprocessing replaces prior rows.
+        """
+        # Arrange.
+        activity_id = 12345
+        fit_file = (
+            temp_dir / f"15007510_ACTIVITY_{activity_id}_2025-08-07T12:00:00Z.fit"
+        )
+        fit_file.write_bytes(b"dummy fit data")
+
+        mock_activity = MagicMock()
+        mock_activity.activity_id = activity_id
+        mock_session.execute.return_value.scalars.return_value.first.return_value = (
+            mock_activity
+        )
+
+        def _field(name, value, units=None):
+            field = MagicMock()
+            field.name = name
+            field.value = value
+            field.units = units
+            return field
+
+        active_start = datetime(2024, 1, 1, 8, 0, 0)
+        idle_start = datetime(2024, 1, 1, 8, 0, 36)
+
+        active_frame = MagicMock()
+        active_frame.frame_type = 4
+        active_frame.name = "length"
+        active_frame.fields = [
+            _field("message_index", 0),
+            _field("length_type", "active"),
+            _field("swim_stroke", "freestyle"),
+            _field("start_time", active_start),
+            _field("total_timer_time", 36.0, "s"),
+            _field("total_elapsed_time", 36.0, "s"),
+            _field("total_strokes", 13),
+            _field("avg_speed", 0.635, "m/s"),
+            _field("avg_swimming_cadence", 22.0, "strokes/min"),
+        ]
+
+        # Idle (rest) lengths carry no swim_stroke or stroke-count fields.
+        idle_frame = MagicMock()
+        idle_frame.frame_type = 4
+        idle_frame.name = "length"
+        idle_frame.fields = [
+            _field("message_index", 1),
+            _field("length_type", "idle"),
+            _field("start_time", idle_start),
+            _field("total_timer_time", 15.0, "s"),
+            _field("total_elapsed_time", 15.0, "s"),
+        ]
+
+        mock_fit_reader = MagicMock()
+        mock_fit_reader.__enter__.return_value = [active_frame, idle_frame]
+
+        with patch("fitdecode.FitReader", return_value=mock_fit_reader):
+            with patch("fitdecode.FIT_FRAME_DATA", 4):
+                # Act.
+                processor._process_fit_file(fit_file, mock_session)
+
+        # Assert: a single add_all batch carries the two typed swim_length rows.
+        length_batches = [
+            call.args[0]
+            for call in mock_session.add_all.call_args_list
+            if call.args and call.args[0] and hasattr(call.args[0][0], "length_idx")
+        ]
+        assert len(length_batches) == 1
+        rows = sorted(length_batches[0], key=lambda r: r.length_idx)
+        assert len(rows) == 2
+
+        active_row, idle_row = rows
+        assert active_row.length_idx == 0
+        assert active_row.length_type == "active"
+        assert active_row.swim_stroke == "freestyle"
+        assert active_row.start_time == active_start.replace(tzinfo=timezone.utc)
+        assert active_row.total_timer_time == 36.0
+        assert active_row.total_elapsed_time == 36.0
+        assert active_row.total_strokes == 13
+        assert active_row.avg_speed == 0.635
+        assert active_row.avg_swimming_cadence == 22.0
+        assert active_row.total_calories is None
+
+        assert idle_row.length_idx == 1
+        assert idle_row.length_type == "idle"
+        assert idle_row.swim_stroke is None
+        assert idle_row.total_strokes is None
+        assert idle_row.avg_speed is None
+
+        # Idempotency: the swim_length delete fires before insert.
+        deleted_tables = {
+            call.args[0].table.name
+            for call in mock_session.execute.call_args_list
+            if call.args and type(call.args[0]).__name__ == "Delete"
+        }
+        assert "swim_length" in deleted_tables
+
+    def test_process_fit_file_no_length_frames_creates_no_swim_length(
+        self, processor, mock_session, temp_dir
+    ):
+        """
+        Test a non-swim FIT file (no length frames) creates no swim_length rows.
+
+        Record and lap processing is unaffected; only the swim_length insert is skipped.
+        """
+        # Arrange.
+        activity_id = 12345
+        fit_file = (
+            temp_dir / f"15007510_ACTIVITY_{activity_id}_2025-08-07T12:00:00Z.fit"
+        )
+        fit_file.write_bytes(b"dummy fit data")
+
+        mock_activity = MagicMock()
+        mock_activity.activity_id = activity_id
+        mock_session.execute.return_value.scalars.return_value.first.return_value = (
+            mock_activity
+        )
+
+        ts_field = MagicMock()
+        ts_field.name = "timestamp"
+        ts_field.value = datetime(2024, 1, 1, 8, 0, 1, tzinfo=timezone.utc)
+        hr_field = MagicMock()
+        hr_field.name = "heart_rate"
+        hr_field.value = 150
+        hr_field.units = "bpm"
+        record_frame = MagicMock()
+        record_frame.frame_type = 4
+        record_frame.name = "record"
+        record_frame.fields = [ts_field, hr_field]
+
+        mock_fit_reader = MagicMock()
+        mock_fit_reader.__enter__.return_value = [record_frame]
+
+        with patch("fitdecode.FitReader", return_value=mock_fit_reader):
+            with patch("fitdecode.FIT_FRAME_DATA", 4):
+                # Act.
+                processor._process_fit_file(fit_file, mock_session)
+
+        # Assert: no add_all batch carries a swim_length row.
+        length_batches = [
+            call.args[0]
+            for call in mock_session.add_all.call_args_list
+            if call.args and call.args[0] and hasattr(call.args[0][0], "length_idx")
+        ]
+        assert length_batches == []
+
+    # ==================== Activity Event Tests ====================
+
+    def _event_batch(self, mock_session):
+        """
+        Return the single add_all batch of activity_event rows, or an empty list.
+        """
+        batches = [
+            call.args[0]
+            for call in mock_session.add_all.call_args_list
+            if call.args and call.args[0] and hasattr(call.args[0][0], "event_idx")
+        ]
+        return batches[0] if batches else []
+
+    def test_process_fit_file_creates_activity_event_rows(
+        self, processor, mock_session, temp_dir
+    ):
+        """
+        Test FIT event frames create ordered activity_event rows.
+
+        Gear-change, rider-position-change, and timer events produce rows with correct
+        event_idx ordering, event/event_type columns, and data_json built from the
+        remaining named fields. The activity_event delete also fires for idempotency.
+        """
+        # Arrange.
+        activity_id = 12345
+        fit_file = (
+            temp_dir / f"15007510_ACTIVITY_{activity_id}_2025-08-07T12:00:00Z.fit"
+        )
+        fit_file.write_bytes(b"dummy fit data")
+
+        mock_activity = MagicMock()
+        mock_activity.activity_id = activity_id
+        mock_session.execute.return_value.scalars.return_value.first.return_value = (
+            mock_activity
+        )
+
+        def _field(name, value):
+            field = MagicMock()
+            field.name = name
+            field.value = value
+            return field
+
+        def _event_frame(fields):
+            frame = MagicMock()
+            frame.frame_type = 4
+            frame.name = "event"
+            frame.fields = fields
+            return frame
+
+        ts0 = datetime(2024, 1, 1, 8, 0, 1, tzinfo=timezone.utc)
+        ts1 = datetime(2024, 1, 1, 8, 0, 2, tzinfo=timezone.utc)
+        ts2 = datetime(2024, 1, 1, 8, 0, 3, tzinfo=timezone.utc)
+
+        frames = [
+            _event_frame(
+                [
+                    _field("timestamp", ts0),
+                    _field("event", "rear_gear_change"),
+                    _field("event_type", "marker"),
+                    _field("front_gear", 34),
+                    _field("rear_gear", 15),
+                    _field("gear_change_data", 218107937),
+                ]
+            ),
+            _event_frame(
+                [
+                    _field("timestamp", ts1),
+                    _field("event", "rider_position_change"),
+                    _field("event_type", "marker"),
+                    _field("rider_position", "seated"),
+                ]
+            ),
+            _event_frame(
+                [
+                    _field("timestamp", ts2),
+                    _field("event", "timer"),
+                    _field("event_type", "start"),
+                    _field("timer_trigger", "manual"),
+                ]
+            ),
+        ]
+
+        mock_fit_reader = MagicMock()
+        mock_fit_reader.__enter__.return_value = frames
+
+        with patch("fitdecode.FitReader", return_value=mock_fit_reader):
+            with patch("fitdecode.FIT_FRAME_DATA", 4):
+                # Act.
+                processor._process_fit_file(fit_file, mock_session)
+
+        events = sorted(self._event_batch(mock_session), key=lambda r: r.event_idx)
+        assert len(events) == 3
+
+        assert events[0].event_idx == 0
+        assert events[0].event == "rear_gear_change"
+        assert events[0].event_type == "marker"
+        assert events[0].timestamp == ts0
+        assert events[0].data_json == {
+            "front_gear": 34,
+            "rear_gear": 15,
+            "gear_change_data": 218107937,
+        }
+
+        assert events[1].event_idx == 1
+        assert events[1].event == "rider_position_change"
+        assert events[1].data_json == {"rider_position": "seated"}
+
+        assert events[2].event_idx == 2
+        assert events[2].event == "timer"
+        assert events[2].event_type == "start"
+        assert events[2].data_json == {"timer_trigger": "manual"}
+
+        # Idempotency: the activity_event delete fires before insert.
+        deleted_tables = {
+            call.args[0].table.name
+            for call in mock_session.execute.call_args_list
+            if call.args and type(call.args[0]).__name__ == "Delete"
+        }
+        assert "activity_event" in deleted_tables
+
+    def test_process_fit_file_event_data_json_none_when_no_extra_fields(
+        self, processor, mock_session, temp_dir
+    ):
+        """
+        Test an event frame with only timestamp/event/event_type stores data_json None.
+        """
+        # Arrange.
+        activity_id = 12345
+        fit_file = (
+            temp_dir / f"15007510_ACTIVITY_{activity_id}_2025-08-07T12:00:00Z.fit"
+        )
+        fit_file.write_bytes(b"dummy fit data")
+
+        mock_activity = MagicMock()
+        mock_activity.activity_id = activity_id
+        mock_session.execute.return_value.scalars.return_value.first.return_value = (
+            mock_activity
+        )
+
+        def _field(name, value):
+            field = MagicMock()
+            field.name = name
+            field.value = value
+            return field
+
+        frame = MagicMock()
+        frame.frame_type = 4
+        frame.name = "event"
+        frame.fields = [
+            _field("timestamp", datetime(2024, 1, 1, 8, 0, 1, tzinfo=timezone.utc)),
+            _field("event", "timer"),
+            _field("event_type", "stop"),
+        ]
+
+        mock_fit_reader = MagicMock()
+        mock_fit_reader.__enter__.return_value = [frame]
+
+        with patch("fitdecode.FitReader", return_value=mock_fit_reader):
+            with patch("fitdecode.FIT_FRAME_DATA", 4):
+                # Act.
+                processor._process_fit_file(fit_file, mock_session)
+
+        events = self._event_batch(mock_session)
+        assert len(events) == 1
+        assert events[0].event == "timer"
+        assert events[0].data_json is None
+
+    def test_process_fit_file_event_unmapped_int_stored_as_text(
+        self, processor, mock_session, temp_dir
+    ):
+        """
+        Test an unmapped enum event code (raw int) is stored as text.
+
+        Enum values fitdecode cannot name arrive as raw ints; they are cast to str so
+        `event` stays a uniform text column, while other named fields land in data_json.
+        """
+        # Arrange.
+        activity_id = 12345
+        fit_file = (
+            temp_dir / f"15007510_ACTIVITY_{activity_id}_2025-08-07T12:00:00Z.fit"
+        )
+        fit_file.write_bytes(b"dummy fit data")
+
+        mock_activity = MagicMock()
+        mock_activity.activity_id = activity_id
+        mock_session.execute.return_value.scalars.return_value.first.return_value = (
+            mock_activity
+        )
+
+        def _field(name, value):
+            field = MagicMock()
+            field.name = name
+            field.value = value
+            return field
+
+        frame = MagicMock()
+        frame.frame_type = 4
+        frame.name = "event"
+        frame.fields = [
+            _field("timestamp", datetime(2024, 1, 1, 8, 0, 1, tzinfo=timezone.utc)),
+            _field("event", 39),
+            _field("data", 12345),
+        ]
+
+        mock_fit_reader = MagicMock()
+        mock_fit_reader.__enter__.return_value = [frame]
+
+        with patch("fitdecode.FitReader", return_value=mock_fit_reader):
+            with patch("fitdecode.FIT_FRAME_DATA", 4):
+                # Act.
+                processor._process_fit_file(fit_file, mock_session)
+
+        events = self._event_batch(mock_session)
+        assert len(events) == 1
+        assert events[0].event == "39"
+        assert events[0].event_type is None
+        assert events[0].data_json == {"data": 12345}
+
+    def test_process_fit_file_event_excludes_unknown_fields(
+        self, processor, mock_session, temp_dir
+    ):
+        """
+        Test event fields whose name contains "unknown" are excluded from data_json.
+        """
+        # Arrange.
+        activity_id = 12345
+        fit_file = (
+            temp_dir / f"15007510_ACTIVITY_{activity_id}_2025-08-07T12:00:00Z.fit"
+        )
+        fit_file.write_bytes(b"dummy fit data")
+
+        mock_activity = MagicMock()
+        mock_activity.activity_id = activity_id
+        mock_session.execute.return_value.scalars.return_value.first.return_value = (
+            mock_activity
+        )
+
+        def _field(name, value):
+            field = MagicMock()
+            field.name = name
+            field.value = value
+            return field
+
+        frame = MagicMock()
+        frame.frame_type = 4
+        frame.name = "event"
+        frame.fields = [
+            _field("timestamp", datetime(2024, 1, 1, 8, 0, 1, tzinfo=timezone.utc)),
+            _field("event", "recovery_hr"),
+            _field("unknown_87", 42),
+        ]
+
+        mock_fit_reader = MagicMock()
+        mock_fit_reader.__enter__.return_value = [frame]
+
+        with patch("fitdecode.FitReader", return_value=mock_fit_reader):
+            with patch("fitdecode.FIT_FRAME_DATA", 4):
+                # Act.
+                processor._process_fit_file(fit_file, mock_session)
+
+        events = self._event_batch(mock_session)
+        assert len(events) == 1
+        assert events[0].event == "recovery_hr"
+        assert events[0].data_json is None
+
+    def test_process_fit_file_event_datetime_field_serialized_to_iso(
+        self, processor, mock_session, temp_dir
+    ):
+        """
+        Test a non-timestamp datetime field is serialized to ISO 8601 in data_json.
+
+        JSON has no native datetime type, so any datetime-valued field other than the
+        primary `timestamp` is stored as an ISO 8601 string.
+        """
+        # Arrange.
+        activity_id = 12345
+        fit_file = (
+            temp_dir / f"15007510_ACTIVITY_{activity_id}_2025-08-07T12:00:00Z.fit"
+        )
+        fit_file.write_bytes(b"dummy fit data")
+
+        mock_activity = MagicMock()
+        mock_activity.activity_id = activity_id
+        mock_session.execute.return_value.scalars.return_value.first.return_value = (
+            mock_activity
+        )
+
+        def _field(name, value):
+            field = MagicMock()
+            field.name = name
+            field.value = value
+            return field
+
+        local_ts = datetime(2024, 1, 1, 8, 0, 0, tzinfo=timezone.utc)
+        frame = MagicMock()
+        frame.frame_type = 4
+        frame.name = "event"
+        frame.fields = [
+            _field("timestamp", datetime(2024, 1, 1, 8, 0, 1, tzinfo=timezone.utc)),
+            _field("event", "front_gear_change"),
+            _field("local_timestamp", local_ts),
+        ]
+
+        mock_fit_reader = MagicMock()
+        mock_fit_reader.__enter__.return_value = [frame]
+
+        with patch("fitdecode.FitReader", return_value=mock_fit_reader):
+            with patch("fitdecode.FIT_FRAME_DATA", 4):
+                # Act.
+                processor._process_fit_file(fit_file, mock_session)
+
+        events = self._event_batch(mock_session)
+        assert len(events) == 1
+        assert events[0].data_json == {"local_timestamp": local_ts.isoformat()}
+
+    # ==================== FIT Session Supplemental Metric Tests ==============
+
+    @staticmethod
+    def _session_frame(fields):
+        """
+        Build a mock FIT `session` frame from (name, value) field pairs.
+        """
+        frame = MagicMock()
+        frame.frame_type = 4
+        frame.name = "session"
+        frame.fields = []
+        for name, value in fields:
+            field = MagicMock()
+            field.name = name
+            field.value = value
+            frame.fields.append(field)
+        return frame
+
+    @patch("dags.pipelines.garmin.process.upsert_model_instances")
+    def test_process_fit_file_session_scalar_and_pair_metrics(
+        self, mock_upsert, processor, mock_session, temp_dir
+    ):
+        """
+        Test FIT session-frame allowlisted scalars and seated/standing pairs.
+
+        Allowlisted scalars are written 1:1 (including a legitimate 0, which must not be
+        treated as absent), and seated/standing pairs are unpacked into `_seated` /
+        `_standing` metrics, skipping a None slot and an unexpected (non 2-tuple) shape.
+        """
+        # Arrange.
+        activity_id = 12345
+        fit_file = (
+            temp_dir / f"15007510_ACTIVITY_{activity_id}_2025-08-07T12:00:00Z.fit"
+        )
+        fit_file.write_bytes(b"dummy fit data")
+        mock_activity = MagicMock()
+        mock_activity.activity_id = activity_id
+        mock_session.execute.return_value.scalars.return_value.first.return_value = (
+            mock_activity
+        )
+
+        session_frame = self._session_frame(
+            [
+                ("avg_left_torque_effectiveness", 72.5),
+                ("avg_left_pco", 0),
+                ("stand_count", 6),
+                ("total_work", 1555781),
+                ("avg_power_position", (166, 184)),
+                ("max_power_position", (657, None)),
+                ("avg_cadence_position", (72, 63)),
+                ("max_cadence_position", 42),
+            ]
+        )
+
+        mock_fit_reader = MagicMock()
+        mock_fit_reader.__enter__.return_value = [session_frame]
+        with patch("fitdecode.FitReader", return_value=mock_fit_reader):
+            with patch("fitdecode.FIT_FRAME_DATA", 4):
+                # Act.
+                processor._process_fit_file(fit_file, mock_session)
+
+        # Assert.
+        mock_upsert.assert_called_once()
+        records = mock_upsert.call_args[1]["model_instances"]
+        result = {r.metric: r.value for r in records}
+        assert result == {
+            "avg_left_torque_effectiveness": 72.5,
+            "avg_left_pco": 0.0,
+            "stand_count": 6.0,
+            "total_work": 1555781.0,
+            "avg_power_position_seated": 166.0,
+            "avg_power_position_standing": 184.0,
+            "max_power_position_seated": 657.0,
+            "avg_cadence_position_seated": 72.0,
+            "avg_cadence_position_standing": 63.0,
+        }
+        for value in result.values():
+            assert isinstance(value, float)
+        assert mock_upsert.call_args[1]["conflict_columns"] == [
+            "activity_id",
+            "metric",
+        ]
+        assert mock_upsert.call_args[1]["on_conflict_update"] is True
+
+    @patch("dags.pipelines.garmin.process.upsert_model_instances")
+    def test_process_fit_file_session_excludes_non_allowlisted(
+        self, mock_upsert, processor, mock_session, temp_dir
+    ):
+        """
+        Test text, duplicate, and non-allowlisted session fields never produce rows.
+
+        `sport_profile_name` (text), `training_load_peak` (duplicates
+        `activity.activity_training_load`), and fields outside the allowlist (e.g.
+        `avg_heart_rate`, captured elsewhere) are all excluded.
+        """
+        # Arrange.
+        activity_id = 12345
+        fit_file = (
+            temp_dir / f"15007510_ACTIVITY_{activity_id}_2025-08-07T12:00:00Z.fit"
+        )
+        fit_file.write_bytes(b"dummy fit data")
+        mock_activity = MagicMock()
+        mock_activity.activity_id = activity_id
+        mock_session.execute.return_value.scalars.return_value.first.return_value = (
+            mock_activity
+        )
+
+        session_frame = self._session_frame(
+            [
+                ("sport_profile_name", "ROAD"),
+                ("training_load_peak", 22.49),
+                ("avg_heart_rate", 145.0),
+                ("total_work", 246662),
+            ]
+        )
+
+        mock_fit_reader = MagicMock()
+        mock_fit_reader.__enter__.return_value = [session_frame]
+        with patch("fitdecode.FitReader", return_value=mock_fit_reader):
+            with patch("fitdecode.FIT_FRAME_DATA", 4):
+                # Act.
+                processor._process_fit_file(fit_file, mock_session)
+
+        # Assert.
+        mock_upsert.assert_called_once()
+        records = mock_upsert.call_args[1]["model_instances"]
+        assert {r.metric: r.value for r in records} == {"total_work": 246662.0}
+
+    @patch("dags.pipelines.garmin.process.upsert_model_instances")
+    def test_process_fit_file_no_session_frame_no_supplemental(
+        self, mock_upsert, processor, mock_session, temp_dir
+    ):
+        """
+        Test a FIT file with no session frame writes no supplemental metrics.
+        """
+        # Arrange.
+        activity_id = 12345
+        fit_file = (
+            temp_dir / f"15007510_ACTIVITY_{activity_id}_2025-08-07T12:00:00Z.fit"
+        )
+        fit_file.write_bytes(b"dummy fit data")
+        mock_activity = MagicMock()
+        mock_activity.activity_id = activity_id
+        mock_session.execute.return_value.scalars.return_value.first.return_value = (
+            mock_activity
+        )
+
+        ts_field = MagicMock()
+        ts_field.name = "timestamp"
+        ts_field.value = datetime(2024, 1, 1, 8, 0, 1, tzinfo=timezone.utc)
+        hr_field = MagicMock()
+        hr_field.name = "heart_rate"
+        hr_field.value = 150
+        hr_field.units = "bpm"
+        record_frame = MagicMock()
+        record_frame.frame_type = 4
+        record_frame.name = "record"
+        record_frame.fields = [ts_field, hr_field]
+
+        mock_fit_reader = MagicMock()
+        mock_fit_reader.__enter__.return_value = [record_frame]
+        with patch("fitdecode.FitReader", return_value=mock_fit_reader):
+            with patch("fitdecode.FIT_FRAME_DATA", 4):
+                # Act.
+                processor._process_fit_file(fit_file, mock_session)
+
+        # Assert: the FIT session upsert path is never entered.
+        mock_upsert.assert_not_called()
+
+    @patch("dags.pipelines.garmin.process.upsert_model_instances")
+    def test_process_fit_file_multiple_session_frames_last_wins(
+        self, mock_upsert, processor, mock_session, temp_dir
+    ):
+        """
+        Test a multi-sport FIT file resolves a repeated metric to the last frame.
+
+        A multi-sport FIT file carries one session frame per leg; the same metric in
+        more than one frame resolves to the last frame's value.
+        """
+        # Arrange.
+        activity_id = 12345
+        fit_file = (
+            temp_dir / f"15007510_ACTIVITY_{activity_id}_2025-08-07T12:00:00Z.fit"
+        )
+        fit_file.write_bytes(b"dummy fit data")
+        mock_activity = MagicMock()
+        mock_activity.activity_id = activity_id
+        mock_session.execute.return_value.scalars.return_value.first.return_value = (
+            mock_activity
+        )
+
+        frames = [
+            self._session_frame([("total_work", 50000)]),
+            self._session_frame([("total_work", 300000)]),
+            self._session_frame([("total_work", 450000)]),
+        ]
+
+        mock_fit_reader = MagicMock()
+        mock_fit_reader.__enter__.return_value = frames
+        with patch("fitdecode.FitReader", return_value=mock_fit_reader):
+            with patch("fitdecode.FIT_FRAME_DATA", 4):
+                # Act.
+                processor._process_fit_file(fit_file, mock_session)
+
+        # Assert.
+        mock_upsert.assert_called_once()
+        records = mock_upsert.call_args[1]["model_instances"]
+        assert {r.metric: r.value for r in records} == {"total_work": 450000.0}
+
     # ==================== Strength Training Tests ====================
 
     def test_process_strength_metrics(self, processor, mock_session) -> None:

@@ -32,6 +32,8 @@ from dags.pipelines.garmin.constants import (
 from dags.pipelines.garmin.sqla_models import (
     Acclimation,
     Activity,
+    ActivityEvent,
+    ActivityHrv,
     ActivityLapMetric,
     ActivityPath,
     ActivitySplitMetric,
@@ -62,6 +64,7 @@ from dags.pipelines.garmin.sqla_models import (
     StrengthSet,
     Stress,
     SupplementalActivityMetric,
+    SwimLength,
     SwimmingAggMetrics,
     TrainingLoad,
     TrainingReadiness,
@@ -125,6 +128,36 @@ _MULTISPORT_SWIMMING_AGG_MAP = {
     "avg_stroke_distance": "averageStrokeDistance",
     "strokes": "totalNumberOfStrokes",
 }
+
+# FIT `session`-message scalar fields that the Connect API never exposes (advanced
+# cycling pedal dynamics, mechanical work, subjective effort). Written 1:1 into
+# supplemental_activity_metric, reusing the field name as the metric name. Sourced from
+# garmin-health-data#91.
+_FIT_SESSION_SCALAR_METRICS = [
+    "avg_left_torque_effectiveness",
+    "avg_right_torque_effectiveness",
+    "avg_left_pedal_smoothness",
+    "avg_right_pedal_smoothness",
+    "avg_left_pco",
+    "avg_right_pco",
+    "time_standing",
+    "stand_count",
+    "threshold_power",
+    "avg_vam",
+    "total_work",
+    "workout_feel",
+    "workout_rpe",
+]
+
+# FIT `session`-message seated/standing pair fields. Each value is a 2-element
+# ``(seated, standing)`` tuple, unpacked into two supplemental_activity_metric rows
+# named ``<field>_seated`` / ``<field>_standing``, skipping either slot that is None.
+_FIT_SESSION_POSITION_PAIR_METRICS = [
+    "avg_power_position",
+    "max_power_position",
+    "avg_cadence_position",
+    "max_cadence_position",
+]
 
 
 class GarminProcessor(Processor):
@@ -3139,12 +3172,16 @@ class GarminProcessor(Processor):
 
     def _process_fit_file(self, file_path: Path, session: Session):
         """
-        Process a FIT file and extract time-series, lap, and split metrics.
+        Process a FIT file and extract its per-frame metrics.
 
-        Parses the FIT binary using fitdecode and extracts three metric types:
-        record frames (time-series), lap frames, and split frames. Uses
-        delete+insert for idempotent reprocessing: existing rows for the
-        activity are deleted before inserting fresh data.
+        Parses the FIT binary using fitdecode and extracts record frames
+        (time-series and GPS path), split frames, lap frames, length frames
+        (per-length pool swim data), event frames (gear/timer/etc.), and hrv
+        frames (beat-to-beat R-R intervals). All of these use delete+insert for
+        idempotent reprocessing: existing rows for the activity are deleted
+        before inserting fresh data. FIT `session`-message metrics (advanced
+        cycling pedal dynamics, mechanical work, subjective effort) are upserted
+        into `supplemental_activity_metric` via `_persist_fit_session_metrics`.
 
         :param file_path: Path to the FIT file.
         :param session: SQLAlchemy Session object.
@@ -3190,8 +3227,12 @@ class GarminProcessor(Processor):
         ts_metrics = []
         split_metrics = []
         lap_metrics = []
+        length_metrics = []
+        event_rows = []
+        rr_values: List[float] = []
         split_idx = 0
         lap_idx = 0
+        event_idx = 0
 
         # Collect raw GPS samples for activity_path materialization. One entry per
         # record frame that contains both position_lat and position_long. Stored as
@@ -3200,6 +3241,13 @@ class GarminProcessor(Processor):
         # than a dict keyed by timestamp) preserves all points even if multiple
         # record frames share the same timestamp.
         gps_records: List[Tuple[datetime, int, int]] = []
+
+        # Collect FIT `session`-message allowlisted metrics, keyed by metric name.
+        # Named `session_fields`, not `session`, so it cannot shadow the SQLAlchemy
+        # `session` parameter. A multi-sport FIT file carries one session frame per
+        # leg; keying by metric name means a later leg's value overwrites an earlier
+        # leg's, matching how the Connect API reports the parent's cumulative value.
+        session_fields: Dict[str, float] = {}
 
         with fitdecode.FitReader(file_path) as fit:
             for frame in fit:
@@ -3369,6 +3417,174 @@ class GarminProcessor(Processor):
                                     # Skip fields that can't be converted to float.
                                     continue
 
+                    # Process length frames: one per pool length (each
+                    # wall-to-wall segment), active (swum) or idle (rest).
+                    # Unlike lap/split, length carries categorical fields
+                    # (length_type, swim_stroke) and a datetime (start_time)
+                    # that the generic name/value pattern cannot hold, so fields
+                    # are extracted by name into a typed SwimLength row.
+                    elif frame.name == "length":
+                        length_idx = None
+                        length_type_value = None
+                        swim_stroke_value = None
+                        start_time_value = None
+                        total_timer_time_value = None
+                        total_elapsed_time_value = None
+                        total_strokes_value = None
+                        avg_speed_value = None
+                        avg_swimming_cadence_value = None
+                        total_calories_value = None
+
+                        for field in frame.fields:
+                            if field.name is None or field.value is None:
+                                continue
+                            try:
+                                if field.name == "message_index":
+                                    length_idx = int(field.value)
+                                elif field.name == "length_type":
+                                    length_type_value = str(field.value)
+                                elif field.name == "swim_stroke":
+                                    swim_stroke_value = str(field.value)
+                                elif field.name == "start_time":
+                                    start_time_value = field.value.replace(
+                                        tzinfo=timezone.utc
+                                    )
+                                elif field.name == "total_timer_time":
+                                    total_timer_time_value = float(field.value)
+                                elif field.name == "total_elapsed_time":
+                                    total_elapsed_time_value = float(field.value)
+                                elif field.name == "total_strokes":
+                                    total_strokes_value = int(field.value)
+                                elif field.name == "avg_speed":
+                                    avg_speed_value = float(field.value)
+                                elif field.name == "avg_swimming_cadence":
+                                    avg_swimming_cadence_value = float(field.value)
+                                elif field.name == "total_calories":
+                                    total_calories_value = float(field.value)
+                            except (ValueError, TypeError, AttributeError):
+                                # Skip fields that can't be converted to the
+                                # expected type.
+                                continue
+
+                        # message_index is the ordinal PK component alongside
+                        # activity_id; skip malformed length frames without it.
+                        if length_idx is not None:
+                            length_metrics.append(
+                                SwimLength(
+                                    activity_id=activity_id,
+                                    length_idx=length_idx,
+                                    length_type=length_type_value,
+                                    swim_stroke=swim_stroke_value,
+                                    start_time=start_time_value,
+                                    total_timer_time=total_timer_time_value,
+                                    total_elapsed_time=total_elapsed_time_value,
+                                    total_strokes=total_strokes_value,
+                                    avg_speed=avg_speed_value,
+                                    avg_swimming_cadence=avg_swimming_cadence_value,
+                                    total_calories=total_calories_value,
+                                )
+                            )
+
+                    # Process event frames: capture every FIT `event` message
+                    # generically (gear changes, rider position, timer,
+                    # recovery_hr, off_course, ...). The common event,
+                    # event_type, and timestamp fields stay first-class columns;
+                    # every other named field goes into data_json so current and
+                    # future event subtypes are captured without schema changes.
+                    elif frame.name == "event":
+                        event_timestamp = None
+                        event_value = None
+                        event_type_value = None
+                        event_data: Dict[str, Any] = {}
+
+                        for field in frame.fields:
+                            if field.name == "timestamp" and field.value:
+                                event_timestamp = field.value.replace(
+                                    tzinfo=timezone.utc
+                                )
+                            elif field.name == "event":
+                                event_value = field.value
+                            elif field.name == "event_type":
+                                event_type_value = field.value
+                            elif (
+                                field.name is not None
+                                and "unknown" not in field.name.lower()
+                                and field.value is not None
+                            ):
+                                field_value = field.value
+                                # JSON has no datetime type; store any datetime
+                                # field as ISO 8601 text.
+                                if isinstance(field_value, datetime):
+                                    field_value = field_value.isoformat()
+                                event_data[field.name] = field_value
+
+                        # Skip frames missing the two NOT NULL columns
+                        # (timestamp, event); avoids an insert failure on a
+                        # malformed frame.
+                        if event_timestamp is not None and event_value is not None:
+                            event_rows.append(
+                                ActivityEvent(
+                                    activity_id=activity_id,
+                                    event_idx=event_idx,
+                                    timestamp=event_timestamp,
+                                    event=str(event_value),
+                                    event_type=(
+                                        str(event_type_value)
+                                        if event_type_value is not None
+                                        else None
+                                    ),
+                                    data_json=event_data if event_data else None,
+                                )
+                            )
+                            event_idx += 1
+
+                    # Process session frames: pull the allowlisted FIT-only
+                    # fields (see the module-level constants) into
+                    # `session_fields`. Everything else in `session` restates
+                    # columns already populated from the Connect API and is
+                    # intentionally not collected here.
+                    elif frame.name == "session":
+                        field_map = {field.name: field.value for field in frame.fields}
+
+                        for metric_name in _FIT_SESSION_SCALAR_METRICS:
+                            value = field_map.get(metric_name)
+                            # Accept only numeric int/float/bool; skip anything
+                            # else so a stray non-numeric field cannot abort the
+                            # whole file.
+                            if isinstance(value, (int, float, bool)):
+                                session_fields[metric_name] = float(value)
+
+                        for metric_name in _FIT_SESSION_POSITION_PAIR_METRICS:
+                            pair = field_map.get(metric_name)
+                            if not isinstance(pair, (tuple, list)) or len(pair) != 2:
+                                continue
+                            seated, standing = pair
+                            if isinstance(seated, (int, float, bool)):
+                                session_fields[f"{metric_name}_seated"] = float(seated)
+                            if isinstance(standing, (int, float, bool)):
+                                session_fields[f"{metric_name}_standing"] = float(
+                                    standing
+                                )
+
+                    # Process hrv frames: beat-to-beat R-R intervals in seconds.
+                    # The `time` field is a tuple of up to 5 R-R intervals,
+                    # right-padded with None; null padding is dropped and the
+                    # remaining values are appended in recorded order.
+                    elif frame.name == "hrv":
+                        for field in frame.fields:
+                            if field.name == "time" and isinstance(
+                                field.value, (tuple, list)
+                            ):
+                                # Keep only numeric R-R intervals: drop the None
+                                # padding and any non-numeric entries, and coerce
+                                # to float for JSONB serialization. bool is
+                                # excluded since it is a subclass of int.
+                                for interval in field.value:
+                                    if isinstance(
+                                        interval, (int, float)
+                                    ) and not isinstance(interval, bool):
+                                        rr_values.append(float(interval))
+
         # Flush session to ensure foreign key relationships are resolved.
         session.flush()
 
@@ -3392,6 +3608,21 @@ class GarminProcessor(Processor):
         session.execute(
             delete(ActivityPath)
             .where(ActivityPath.activity_id == activity_id)
+            .execution_options(synchronize_session=False)
+        )
+        session.execute(
+            delete(ActivityHrv)
+            .where(ActivityHrv.activity_id == activity_id)
+            .execution_options(synchronize_session=False)
+        )
+        session.execute(
+            delete(SwimLength)
+            .where(SwimLength.activity_id == activity_id)
+            .execution_options(synchronize_session=False)
+        )
+        session.execute(
+            delete(ActivityEvent)
+            .where(ActivityEvent.activity_id == activity_id)
             .execution_options(synchronize_session=False)
         )
 
@@ -3434,6 +3665,20 @@ class GarminProcessor(Processor):
         else:
             LOGGER.warning("⚠️ No lap data found.")
 
+        # Non-swim activities legitimately have no length data, so absence is
+        # info rather than a warning.
+        if length_metrics:
+            session.add_all(length_metrics)
+            LOGGER.info(f"Processed {len(length_metrics)} swim length records.")
+        else:
+            LOGGER.info("ℹ️ No swim length data found.")
+
+        if event_rows:
+            session.add_all(event_rows)
+            LOGGER.info(f"Processed {len(event_rows)} event records.")
+        else:
+            LOGGER.warning("⚠️ No event data found.")
+
         # Build and insert activity GPS path for deck.gl visualization.
         if gps_records:
             # Sort ascending by timestamp so path order matches activity progress.
@@ -3463,3 +3708,73 @@ class GarminProcessor(Processor):
             LOGGER.info(f"Materialized GPS path with {len(path_coords)} points.")
         else:
             LOGGER.info("ℹ️ No GPS data found, skipping activity_path materialization.")
+
+        # Materialize the beat-to-beat R-R interval series (raw HRV) as one row.
+        # Activities recorded without a compatible heart rate source have no hrv
+        # frames and get no row; the delete above still clears any stale row.
+        if rr_values:
+            session.add_all(
+                [
+                    ActivityHrv(
+                        activity_id=activity_id,
+                        rr_json=rr_values,
+                        interval_count=len(rr_values),
+                    )
+                ]
+            )
+            LOGGER.info(f"Processed {len(rr_values)} HRV R-R intervals.")
+        else:
+            LOGGER.info("ℹ️ No HRV data found, skipping activity_hrv materialization.")
+
+        self._persist_fit_session_metrics(
+            activity_id=activity_id,
+            session_fields=session_fields,
+            session=session,
+        )
+
+    def _persist_fit_session_metrics(
+        self,
+        activity_id: int,
+        session_fields: Dict[str, float],
+        session: Session,
+    ) -> None:
+        """
+        Upsert FIT `session`-message metrics into supplemental_activity_metric.
+
+        Writes the FIT-only fields collected from the `session` frame(s) by
+        `_process_fit_file` (advanced cycling pedal dynamics, mechanical work,
+        subjective effort) using the same upsert-by-(activity_id, metric) pattern as the
+        Connect API path (`_process_supplemental_metrics`). These metric names are never
+        written by that API path, so this upsert can never collide with or overwrite its
+        rows.
+
+        Upsert (rather than delete+insert) keeps reprocessing idempotent: the set of
+        session fields in a given FIT file is deterministic across reprocesses of that
+        file, so re-upserting always writes the same values for the same (activity_id,
+        metric) keys.
+
+        :param activity_id: Activity primary key.
+        :param session_fields: Metric name to value collected from the FIT `session`
+            frame(s). Empty for activities with no session frame or none of the
+            allowlisted fields, in which case this is a no-op.
+        :param session: SQLAlchemy Session object.
+        """
+        if not session_fields:
+            return
+
+        records = [
+            SupplementalActivityMetric(
+                activity_id=activity_id,
+                metric=metric_name,
+                value=value,
+            )
+            for metric_name, value in session_fields.items()
+        ]
+
+        upsert_model_instances(
+            session=session,
+            model_instances=records,
+            conflict_columns=["activity_id", "metric"],
+            on_conflict_update=True,
+        )
+        LOGGER.info(f"Processed {len(records)} FIT session supplemental metrics.")

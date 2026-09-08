@@ -2636,6 +2636,178 @@ COMMENT ON COLUMN garmin.activity_path.create_ts IS
 
 ----------------------------------------------------------------------------------------
 
+-- Activity beat-to-beat R-R interval (raw HRV) table.
+CREATE TABLE IF NOT EXISTS garmin.activity_hrv (
+    activity_id BIGINT PRIMARY KEY REFERENCES garmin.activity (
+        activity_id
+    ) ON DELETE CASCADE
+    , rr_json JSONB NOT NULL
+    , interval_count INTEGER NOT NULL
+
+    -- Audit fields.
+    , create_ts TIMESTAMPTZ NOT NULL DEFAULT NOW()
+
+    -- Integrity constraints: rr_json is always a JSON array, interval_count stays
+    -- in sync with the array length, and we never persist an empty series (the
+    -- writer skips activities without HRV data instead of inserting an empty row).
+    , CONSTRAINT activity_hrv_rr_json_is_array
+    CHECK (JSONB_TYPEOF(rr_json) = 'array')
+    , CONSTRAINT activity_hrv_interval_count_matches_array
+    CHECK (interval_count = JSONB_ARRAY_LENGTH(rr_json))
+    , CONSTRAINT activity_hrv_interval_count_positive
+    CHECK (interval_count > 0)
+);
+
+-- Indexes (activity_id covered by primary key).
+CREATE INDEX IF NOT EXISTS activity_hrv_interval_count_idx
+ON garmin.activity_hrv (interval_count);
+
+-- Table comment.
+COMMENT ON TABLE garmin.activity_hrv IS
+'Per-activity beat-to-beat R-R interval series (raw HRV) extracted from activity '
+'FIT files. Stores the ordered sequence of intervals between consecutive '
+'heartbeats in seconds, as recorded by a compatible heart rate source during the '
+'activity. Distinct from the garmin.hrv table, which holds Garmin''s overnight '
+'5-minute HRV summary in milliseconds keyed by sleep_id; this table holds raw '
+'beat-to-beat data in seconds keyed by activity_id. One row per activity with HRV '
+'data; activities without a compatible heart rate source have no row. TCX files '
+'carry no HRV message stream, so this table is populated from FIT files only.';
+
+-- Column comments.
+COMMENT ON COLUMN garmin.activity_hrv.activity_id IS
+'References garmin.activity(activity_id). One row per activity.';
+COMMENT ON COLUMN garmin.activity_hrv.rr_json IS
+'Ordered array of beat-to-beat R-R intervals in seconds, in recorded order. '
+'Stored as JSONB. Deliberately kept out of activity_ts_metric so downsampling '
+'never averages the intervals into time buckets, which would destroy the '
+'successive-beat differences that are the HRV signal.';
+COMMENT ON COLUMN garmin.activity_hrv.interval_count IS
+'Number of R-R intervals in rr_json. Denormalized for cheap filtering.';
+COMMENT ON COLUMN garmin.activity_hrv.create_ts IS
+'Timestamp when the record was created in the database.';
+
+----------------------------------------------------------------------------------------
+
+-- Per-length pool swim data table.
+CREATE TABLE IF NOT EXISTS garmin.swim_length (
+    activity_id BIGINT REFERENCES garmin.activity (activity_id) ON DELETE CASCADE
+    , length_idx INTEGER NOT NULL
+
+    -- Length metadata.
+    , length_type TEXT
+    , swim_stroke TEXT
+    , start_time TIMESTAMPTZ
+
+    -- Timing and effort.
+    , total_timer_time FLOAT
+    , total_elapsed_time FLOAT
+    , total_strokes INTEGER
+    , avg_speed FLOAT
+    , avg_swimming_cadence FLOAT
+    , total_calories FLOAT
+
+    -- Audit fields.
+    , create_ts TIMESTAMPTZ NOT NULL DEFAULT NOW()
+
+    -- Composite primary key.
+    , PRIMARY KEY (activity_id, length_idx)
+);
+
+-- Table comment.
+COMMENT ON TABLE garmin.swim_length IS
+'Per-length pool swim data extracted from activity FIT files, one row per length '
+'message (each pool wall-to-wall segment). Companion to the activity-level rollup '
+'in swimming_agg_metrics: preserves per-length SWOLF, pace, stroke type, and rest '
+'intervals the aggregate does not. Both active (swum) and idle (rest) lengths are '
+'stored. TCX files carry no length concept, so this table is populated from FIT '
+'files only.';
+
+-- Column comments.
+COMMENT ON COLUMN garmin.swim_length.activity_id IS
+'References garmin.activity(activity_id). Identifies which swim activity this '
+'length belongs to.';
+COMMENT ON COLUMN garmin.swim_length.length_idx IS
+'message_index; the length''s position in the swim (0-based).';
+COMMENT ON COLUMN garmin.swim_length.length_type IS
+'''active'' (a swum length) or ''idle'' (a rest/pause between sets).';
+COMMENT ON COLUMN garmin.swim_length.swim_stroke IS
+'Detected stroke (freestyle, backstroke, breaststroke, drill, ...). NULL for idle '
+'lengths.';
+COMMENT ON COLUMN garmin.swim_length.start_time IS
+'When the length started.';
+COMMENT ON COLUMN garmin.swim_length.total_timer_time IS
+'Seconds to complete the length (moving time).';
+COMMENT ON COLUMN garmin.swim_length.total_elapsed_time IS
+'Elapsed seconds including pauses.';
+COMMENT ON COLUMN garmin.swim_length.total_strokes IS
+'Strokes taken during the length.';
+COMMENT ON COLUMN garmin.swim_length.avg_speed IS
+'Average speed for the length in m/s.';
+COMMENT ON COLUMN garmin.swim_length.avg_swimming_cadence IS
+'Average cadence in strokes per minute.';
+COMMENT ON COLUMN garmin.swim_length.total_calories IS
+'Calories for the length (often NULL).';
+COMMENT ON COLUMN garmin.swim_length.create_ts IS
+'Timestamp when the record was created in the database.';
+
+----------------------------------------------------------------------------------------
+
+-- Generic per-activity FIT event table.
+CREATE TABLE IF NOT EXISTS garmin.activity_event (
+    activity_id BIGINT REFERENCES garmin.activity (activity_id) ON DELETE CASCADE
+    , event_idx INTEGER NOT NULL
+    , timestamp TIMESTAMPTZ NOT NULL
+    , event TEXT NOT NULL
+    , event_type TEXT
+    , data_json JSONB
+
+    -- Audit fields.
+    , create_ts TIMESTAMPTZ NOT NULL DEFAULT NOW()
+
+    -- Composite primary key.
+    , PRIMARY KEY (activity_id, event_idx)
+
+    -- Integrity constraint: data_json, when present, is a JSON object.
+    , CONSTRAINT activity_event_data_json_is_object
+    CHECK (data_json IS NULL OR JSONB_TYPEOF(data_json) = 'object')
+);
+
+-- Table comment.
+COMMENT ON TABLE garmin.activity_event IS
+'Generic per-activity events extracted from activity FIT files, capturing every '
+'FIT event message (gear changes, rider position changes, timer start/stop, '
+'recovery heart rate, off-course alerts, and other subtypes). Each record is a '
+'single event in file order. Event-specific fields (gear teeth/indices, '
+'rider_position, timer_trigger, ...) live in data_json so every event kind, '
+'including unmapped or future firmware ones, is captured without recurring schema '
+'changes. TCX files carry no event concept, so this table is populated from FIT '
+'files only.';
+
+-- Column comments.
+COMMENT ON COLUMN garmin.activity_event.activity_id IS
+'References garmin.activity(activity_id). Identifies which activity this event '
+'belongs to.';
+COMMENT ON COLUMN garmin.activity_event.event_idx IS
+'Ordinal of the event within the activity (0-based), preserving FIT file order. '
+'Used instead of timestamp as the PK component because two events can share a '
+'timestamp.';
+COMMENT ON COLUMN garmin.activity_event.timestamp IS
+'When the event occurred.';
+COMMENT ON COLUMN garmin.activity_event.event IS
+'Event kind (front_gear_change, rear_gear_change, rider_position_change, timer, '
+'recovery_hr, off_course, ...). Unmapped enum codes are stored as their raw '
+'integer rendered as text so this column stays uniform.';
+COMMENT ON COLUMN garmin.activity_event.event_type IS
+'Event qualifier (start, stop, marker, ...).';
+COMMENT ON COLUMN garmin.activity_event.data_json IS
+'Remaining event-specific fields as a JSON object (gear teeth/indices, '
+'rider_position, timer_trigger, ...). NULL when the event carries no extra '
+'fields.';
+COMMENT ON COLUMN garmin.activity_event.create_ts IS
+'Timestamp when the record was created in the database.';
+
+----------------------------------------------------------------------------------------
+
 -- Strength training per-exercise aggregates from summarizedExerciseSets.
 CREATE TABLE IF NOT EXISTS garmin.strength_exercise (
     activity_id BIGINT REFERENCES garmin.activity (activity_id) ON DELETE CASCADE
