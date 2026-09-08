@@ -121,13 +121,13 @@ def _utc_midday_stamp(day: date) -> str:
     """
     Build the deterministic midday-UTC filename timestamp shared by a day's files.
 
-    All files extracted for a given calendar day are stamped with one midday-UTC
-    timestamp so the processor groups them into a single FileSet. Rendered as ``YYYY-MM-
-    DDT12:00:00Z``: built directly rather than by formatting a ``pendulum`` instance, so
-    the on-disk name is independent of the installed ``pendulum`` version, whose
-    ISO-8601 rendering of a UTC instant differs across major releases (2.x emits a
-    ``+00:00`` offset, 3.x emits ``Z``) and previously produced ``+``-bearing names the
-    processor's filename patterns rejected.
+    All files extracted for a given calendar day share one midday-UTC timestamp so the
+    processor groups them into a single FileSet. The stamp is built directly as a fixed
+    midday-UTC string rather than by formatting a ``pendulum`` instance, so the on-disk
+    name is independent of the installed ``pendulum`` version, whose ISO-8601 rendering
+    of a UTC instant differs across major releases (2.x emits a ``+00:00`` offset, 3.x
+    emits ``Z``) and previously produced ``+``-bearing names the processor's filename
+    patterns rejected.
 
     :param day: Calendar day the file's data belongs to.
     :return: Filename timestamp of the form ``YYYY-MM-DDT12:00:00Z``.
@@ -748,7 +748,9 @@ class GarminExtractor:
             # accounts that do track cycles always run the full fan-out.
             if data_type.name == "MENSTRUAL_CYCLE_DAY":
                 if not self._menstrual_days_have_data(effective_start, end_date):
-                    LOGGER.warning(
+                    # An account with no cycles in the window skips this every run, so
+                    # this is an expected optimization outcome rather than a warning.
+                    LOGGER.info(
                         f"{data_type.emoji} {data_type.name}: no cycles reported in "
                         f"{effective_start}..{end_date}; skipping per-day extraction."
                     )

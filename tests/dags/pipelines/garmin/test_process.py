@@ -5345,9 +5345,7 @@ class TestGarminProcessor:
         ):
             processor._process_fit_file(fit_file, mock_session)
 
-    def test_parse_filename_accepts_legacy_utc_offset(
-        self, processor, mock_session, temp_dir
-    ):
+    def test_parse_filename_accepts_legacy_utc_offset(self, processor):
         """
         Test a legacy filename carrying a +00:00 UTC offset still parses.
 

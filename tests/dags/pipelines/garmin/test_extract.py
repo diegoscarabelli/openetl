@@ -177,8 +177,8 @@ class TestMenstrualCycleDayGate:
         """
         A non-empty cycleSummaries proceeds to the per-day extraction.
 
-        This is the guardrail for accounts that do track menstrual data (a family
-        member's account): the probe reports cycles and the full fan-out still runs.
+        This is the guardrail for accounts that do track menstrual data: the probe
+        reports cycles, so the full per-day fan-out still runs.
 
         :param tmp_path: Pytest tmp_path fixture.
         """
