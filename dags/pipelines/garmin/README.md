@@ -208,7 +208,7 @@ The custom process task uses the [`GarminProcessor`](process.py) class that inhe
 * PostGIS-dependent tables (e.g., `garmin.countries`) defined in [`tables_postgis.ddl`](tables_postgis.ddl); apply only when the PostGIS extension is installed.
 * SQLAlchemy ORM models in [`sqla_models.py`](sqla_models.py) extending base class defined in [`sql_utils.make_base()`](../../lib/sql_utils.py#make_base).
 
-The base schema in [`tables.ddl`](tables.ddl) contains 31 tables organized by category. When PostGIS is enabled, an additional `garmin.countries` table is created from [`tables_postgis.ddl`](tables_postgis.ddl).
+The base schema in [`tables.ddl`](tables.ddl) contains 41 tables organized by category. The per-sample time-series tables are TimescaleDB hypertables (created from [`tables_tsdb.ddl`](tables_tsdb.ddl)). When PostGIS is enabled, an additional `garmin.countries` table is created from [`tables_postgis.ddl`](tables_postgis.ddl).
 
 **User & Profile (2 tables)**
 ```
@@ -217,31 +217,36 @@ user (root table)
 ```
 *Foreign keys: `user_profile` → `user.user_id`*
 
-**Activities (8 tables)**
+**Activities (12 tables)**
 ```
 activity (main activity records)
+├── activity_event (FIT event messages: gear changes, timers, rider position, ...)
+├── activity_hrv (beat-to-beat R-R interval series as a JSON array)
 ├── activity_lap_metric (lap-by-lap metrics)
+├── activity_path (materialized GPS path as a JSON array)
 ├── activity_split_metric (split data)
-├── activity_ts_metric (time-series sensor data)
+├── activity_ts_metric (time-series sensor data, hypertable)
 ├── cycling_agg_metrics (cycling-specific aggregates)
 ├── running_agg_metrics (running-specific aggregates)
+├── swim_length (per-length pool swim data)
 ├── swimming_agg_metrics (swimming-specific aggregates)
 └── supplemental_activity_metric (additional activity metrics)
 ```
 *Foreign keys: `activity` → `user.user_id`; all child tables → `activity.activity_id`*
 
-**Sleep Metrics (6 tables)**
+**Sleep Metrics (7 tables)**
 ```
 sleep (main sleep sessions)
+├── sleep_level (sleep stage levels)
 ├── sleep_movement (movement during sleep)
 ├── sleep_restless_moment (restless periods)
 ├── spo2 (blood oxygen saturation)
-├── hrv (heart rate variability)
+├── hrv (overnight heart rate variability summary)
 └── breathing_disruption (breathing events)
 ```
 *Foreign keys: `sleep` → `user.user_id`; all child tables → `sleep.sleep_id`*
 
-**Health Time-Series (7 tables)**
+**Health Time-Series (8 tables)**
 ```
 heart_rate (continuous heart rate measurements)
 stress (stress level readings)
@@ -250,15 +255,25 @@ respiration (breathing rate data)
 steps (step counts and activity levels)
 floors (floors climbed/descended)
 intensity_minutes (activity intensity tracking)
+body_composition (scale weigh-ins: weight, BMI, body fat, muscle mass, ...)
 ```
 *Foreign keys: all tables → `user.user_id`*
 
-**Training Metrics (4 tables)**
+**Training Metrics (5 tables)**
 ```
 vo2_max (VO2 max estimates)
-├── acclimation (heat/altitude acclimation)
-├── training_load (training load metrics)
-└── training_readiness (daily readiness scores)
+acclimation (heat/altitude acclimation)
+training_load (training load metrics)
+training_readiness (daily readiness scores)
+running_tolerance (biomechanical running-load model)
+```
+*Foreign keys: all tables → `user.user_id`*
+
+**Menstrual Cycle (3 tables)**
+```
+menstrual_cycle_day (per-day cycle state: phase, day-in-cycle)
+menstrual_cycle_tag (per-day symptoms, moods, discharge)
+menstrual_cycle_summary (per-cycle summaries: start date, period length, predicted)
 ```
 *Foreign keys: all tables → `user.user_id`*
 
@@ -280,7 +295,7 @@ race_predictions (predicted race times)
 
 The ETL pipeline uses four complementary methods to populate the Garmin schema tables, each optimized for different data patterns and performance requirements.
 
-**1. Bulk Upsert (`upsert_model_instances`). Used for 21 unique tables (25 operations).**
+**1. Bulk Upsert (`upsert_model_instances`). Used for 27 unique tables.**
 - **Purpose**: Efficiently handle both inserts and updates using PostgreSQL's `INSERT ... ON CONFLICT DO UPDATE` syntax.
 - **When used**: Standard tables where records may already exist (activities, daily summaries, body metrics, sleep data).
 - **Why**: Provides optimal performance for batch operations while gracefully handling both new records and updates to existing data.
@@ -298,25 +313,26 @@ The ETL pipeline uses four complementary methods to populate the Garmin schema t
 - **Why**: Provides explicit control over insertion order when state management is critical.
 - **Pattern**: Typically follows `session.execute(update())` to modify existing records before inserting new ones.
 
-**3b. Delete+Insert (`session.execute(delete())` + `session.add_all()`). Used for 5 tables.**
+**3b. Delete+Insert (`session.execute(delete())` + `session.add_all()`). Used for 9 tables.**
 - **Purpose**: Full replacement of records for an activity to handle reprocessing where rows can be added, removed, or changed.
-- **When used**: Strength training tables (`strength_exercise`, `strength_set`) and FIT metric tables (`activity_ts_metric`, `activity_lap_metric`, `activity_split_metric`).
+- **When used**: Strength training tables (`strength_exercise`, `strength_set`) and FIT-derived activity tables (`activity_ts_metric`, `activity_split_metric`, `activity_lap_metric`, `activity_path`, `activity_hrv`, `swim_length`, `activity_event`).
 - **Why**: Standard upsert cannot handle removed rows (orphaned records persist). Delete+insert ensures a clean slate on each reprocessing.
 - **Pattern**: Delete all rows for a given `activity_id`, then insert fresh rows within the same transaction. FIT metric tables use `add_all()` for straightforward ORM inserts. For very large row counts, a bulk insert approach could offer better performance.
 
 The method selection balances three factors: **performance** (bulk operations preferred), **data integrity** (conflict handling when needed), and **code clarity** (ORM methods for complex relationships).
 
-**Why 35 Operations for 31 Tables:**
+**Why There Are More Operations Than Tables:**
 
-The pipeline executes 35 database operations to populate 31 tables because some tables aggregate data from multiple sources:
+The pipeline runs more database operations than there are tables because some tables aggregate data from multiple sources:
 
 - `vo2_max` receives 2 upsert operations both merging into the same daily record using different `update_columns`.
 - `training_load` receives 3 upsert operations all contributing different columns to the same daily record.
-- `user` table is created via raw SQL `INSERT ... ON CONFLICT DO NOTHING` for initial user record creation.
+- `user` is created via raw SQL `INSERT ... ON CONFLICT DO NOTHING` for initial user record creation.
 - `strength_exercise` and `strength_set` each use a delete+insert pair (2 operations per table) for reprocessing safety.
-- `activity_ts_metric`, `activity_lap_metric`, and `activity_split_metric` each use a delete+insert pair (2 operations per table) for idempotent FIT file reprocessing.
+- `activity_ts_metric`, `activity_split_metric`, `activity_lap_metric`, `activity_path`, `activity_hrv`, `swim_length`, and `activity_event` each use a delete+insert pair for idempotent FIT file reprocessing.
+- FIT `session`-message metrics upsert into `supplemental_activity_metric` in addition to the API-sourced rows already written there.
 
-This multi-source aggregation pattern (25 upserts + 3 merges + 1 add + 10 delete+inserts + 1 raw SQL = 40 operations) allows comprehensive daily records to be built incrementally from different data sources while maintaining data integrity through conflict-aware upserts with column-specific updates.
+This multi-source aggregation pattern (bulk upserts, ORM merges, a state-managed direct insert, delete+insert pairs, and one raw SQL insert) lets comprehensive daily records be built incrementally from different data sources while maintaining data integrity through conflict-aware upserts with column-specific updates.
 
 **Processing Flow:**
 
