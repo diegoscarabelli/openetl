@@ -7002,6 +7002,57 @@ class TestGarminProcessor:
         assert len(events) == 1
         assert events[0].data_json == {"raw_blob": str(raw_blob)}
 
+    def test_process_fit_file_event_non_finite_float_coerced_to_str(
+        self, processor, mock_session, temp_dir
+    ):
+        """
+        Test a non-finite float event field value is coerced to str in data_json.
+
+        `json.dumps` renders NaN/Infinity as tokens PostgreSQL's jsonb rejects, so a
+        non-finite float must fall back to str() rather than reach the JSONB column and
+        abort the whole file at bind time.
+        """
+        # Arrange.
+        activity_id = 12345
+        fit_file = (
+            temp_dir / f"15007510_ACTIVITY_{activity_id}_2025-08-07T12:00:00Z.fit"
+        )
+        fit_file.write_bytes(b"dummy fit data")
+
+        mock_activity = MagicMock()
+        mock_activity.activity_id = activity_id
+        mock_session.execute.return_value.scalars.return_value.first.return_value = (
+            mock_activity
+        )
+
+        def _field(name, value):
+            field = MagicMock()
+            field.name = name
+            field.value = value
+            return field
+
+        frame = MagicMock()
+        frame.frame_type = 4
+        frame.name = "event"
+        nan_value = float("nan")
+        frame.fields = [
+            _field("timestamp", datetime(2024, 1, 1, 8, 0, 1, tzinfo=timezone.utc)),
+            _field("event", "front_gear_change"),
+            _field("odd_metric", nan_value),
+        ]
+
+        mock_fit_reader = MagicMock()
+        mock_fit_reader.__enter__.return_value = [frame]
+
+        with patch("fitdecode.FitReader", return_value=mock_fit_reader):
+            with patch("fitdecode.FIT_FRAME_DATA", 4):
+                # Act.
+                processor._process_fit_file(fit_file, mock_session)
+
+        events = self._event_batch(mock_session)
+        assert len(events) == 1
+        assert events[0].data_json == {"odd_metric": str(nan_value)}
+
     # ==================== FIT Session Supplemental Metric Tests ==============
 
     @staticmethod

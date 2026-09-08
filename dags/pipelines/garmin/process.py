@@ -3244,9 +3244,10 @@ class GarminProcessor(Processor):
 
         # Collect FIT `session`-message allowlisted metrics, keyed by metric name.
         # Named `session_fields`, not `session`, so it cannot shadow the SQLAlchemy
-        # `session` parameter. A multi-sport FIT file carries one session frame per
-        # leg; keying by metric name means a later leg's value overwrites an earlier
-        # leg's, matching how the Connect API reports the parent's cumulative value.
+        # `session` parameter. Keying by metric name is exact for the common
+        # single-session activity. A multi-sport FIT carries one session frame per leg;
+        # there the last frame wins, so an additive metric (e.g. total_work) reflects
+        # the final leg rather than the summed total across legs.
         session_fields: Dict[str, float] = {}
 
         with fitdecode.FitReader(file_path) as fit:
@@ -3498,7 +3499,12 @@ class GarminProcessor(Processor):
                         event_data: Dict[str, Any] = {}
 
                         for field in frame.fields:
-                            if field.name == "timestamp" and field.value:
+                            # Only a datetime timestamp is usable; a non-datetime
+                            # value leaves event_timestamp None so the frame is
+                            # skipped below rather than raising on .replace().
+                            if field.name == "timestamp" and isinstance(
+                                field.value, datetime
+                            ):
                                 event_timestamp = field.value.replace(
                                     tzinfo=timezone.utc
                                 )
@@ -3518,12 +3524,13 @@ class GarminProcessor(Processor):
                                     field_value = field_value.isoformat()
                                 else:
                                     # Some FIT event fields carry exotic types
-                                    # (enums, bytes, ...) that psycopg cannot adapt
-                                    # to JSONB. Fall back to str() for anything not
-                                    # natively JSON-serializable so one odd field
-                                    # never raises at bind time and aborts the file.
+                                    # (enums, bytes, ...) or non-finite floats
+                                    # (NaN/Infinity) that PostgreSQL's jsonb rejects.
+                                    # allow_nan=False makes json.dumps raise on those
+                                    # too, so the str() fallback covers them and one
+                                    # odd field never aborts the file at bind time.
                                     try:
-                                        json.dumps(field_value)
+                                        json.dumps(field_value, allow_nan=False)
                                     except (TypeError, ValueError):
                                         field_value = str(field_value)
                                 event_data[field.name] = field_value
