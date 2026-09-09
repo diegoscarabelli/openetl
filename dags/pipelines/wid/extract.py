@@ -37,7 +37,7 @@ class _CorruptDownloadError(Exception):
     """
 
 
-def extract(ingest_dir: Path, **context: dict) -> None:
+def extract(ingest_dir: Path, **context) -> None:
     """
     Airflow entry point: download the WID bulk ZIP and unpack it into the ingest dir.
 

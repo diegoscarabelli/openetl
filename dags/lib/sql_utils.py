@@ -20,7 +20,7 @@ import socket
 import urllib.parse
 
 from datetime import datetime, timezone
-from typing import Any, Dict, Iterable, Iterator, List, Optional, Type
+from typing import Any, Dict, Iterable, Iterator, List, Optional, Tuple, Type
 
 from psycopg2 import sql
 from sqlalchemy import create_engine, DateTime, ForeignKey, MetaData
@@ -105,7 +105,7 @@ def copy_records(
     session: Session,
     table: str,
     columns: List[str],
-    rows: Iterable[tuple],
+    rows: Iterable[Tuple[Any, ...]],
 ) -> int:
     """
     Bulk-load rows into a table using PostgreSQL COPY (psycopg2 ``copy_expert``).

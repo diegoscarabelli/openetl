@@ -157,12 +157,13 @@ def first_country(path: Path) -> Optional[str]:
     return None
 
 
-def iter_observations(path: Path) -> Iterator[tuple]:
+def iter_observations(path: Path) -> Iterator[Tuple[str, str, str, Optional[str]]]:
     """
     Stream observation rows as (country_code, variable_code, year, value) tuples.
 
     :param path: Path to the semicolon-delimited observation CSV.
-    :return: Iterator of tuples aligned to the observation COPY columns.
+    :return: Iterator of (country_code, variable_code, year, value) tuples aligned to
+        the observation COPY columns; value is None when the source cell is empty.
     """
     with open(path, newline="", encoding="utf-8") as handle:
         reader = csv.DictReader(handle, delimiter=";")
