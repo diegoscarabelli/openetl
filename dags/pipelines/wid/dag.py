@@ -18,7 +18,11 @@ from dags.lib.dag_utils import create_dag
 from dags.lib.etl_config import ETLConfig
 from dags.pipelines.wid.constants import WID_FILE_TYPES
 from dags.pipelines.wid.extract import extract
-from dags.pipelines.wid.process import WidProcessor
+from dags.pipelines.wid.process import (
+    finalize_observation_table,
+    prepare_observation_table,
+    WidProcessor,
+)
 
 # Configure the WID data pipeline.
 config = ETLConfig(
@@ -43,7 +47,9 @@ task_batch = dag.get_task("batch")
 task_process = dag.get_task("process")
 task_store = dag.get_task("store")
 
-# Prepend the extract task that downloads and unpacks the WID bulk ZIP.
+# Add the custom tasks that bracket the load: extract downloads and unpacks the bulk
+# ZIP; prepare drops the observation constraints and truncates it for a full reload;
+# finalize rebuilds the constraints (which also validates the load).
 with dag:
     task_extract = PythonOperator(
         task_id="extract",
@@ -55,6 +61,34 @@ with dag:
             "metadata CSVs (plus the countries CSV) into the ingest directory."
         ),
     )
+    task_prepare = PythonOperator(
+        task_id="prepare",
+        python_callable=prepare_observation_table,
+        op_kwargs={"sql_user": config.postgres_user},
+        doc_md=(
+            "Drop the observation primary key and foreign keys and truncate the table "
+            "so the process tasks can bulk-load into it unindexed."
+        ),
+    )
+    task_finalize = PythonOperator(
+        task_id="finalize",
+        python_callable=finalize_observation_table,
+        execution_timeout=timedelta(hours=1),
+        op_kwargs={"sql_user": config.postgres_user},
+        doc_md=(
+            "Rebuild the observation primary key and foreign keys after the load; the "
+            "rebuild also validates it (duplicate keys or orphaned codes fail here)."
+        ),
+    )
 
-# Define the task sequence: extract >> ingest >> batch >> process >> store.
-task_extract >> task_ingest >> task_batch >> task_process >> task_store
+# Define the task sequence:
+# extract >> ingest >> batch >> prepare >> process >> finalize >> store.
+(
+    task_extract
+    >> task_ingest
+    >> task_batch
+    >> task_prepare
+    >> task_process
+    >> task_finalize
+    >> task_store
+)

@@ -13,6 +13,7 @@ services:
   scheduler:
     environment:
       - SQL_DB_HOST=${SQL_DB_HOST:-}
+      - SQL_DB_NAME=${SQL_DB_NAME:-lens}
       - SQL_CREDENTIALS_DIR=/usr/local/airflow/sql_credentials
       - DATA_DIR=/usr/local/airflow/data
       - AIRFLOW__LOGGING__ENABLE_TASK_CONTEXT_LOGGER=False

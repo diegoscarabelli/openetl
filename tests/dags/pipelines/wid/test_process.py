@@ -18,10 +18,12 @@ from dags.pipelines.wid.process import (
     WidProcessor,
     build_variable_code,
     build_variable_rows,
+    finalize_observation_table,
     first_country,
     iter_observations,
     parse_countries,
     parse_metadata,
+    prepare_observation_table,
     variable_fields,
 )
 
@@ -175,7 +177,8 @@ def test_country_fileset_upserts_and_copies(
     processor: WidProcessor, tmp_path: Path
 ) -> None:
     """
-    A country FileSet upserts country, variables, and provenance, then DELETE + COPY.
+    A country FileSet upserts country, variables, and provenance, then appends
+    observations with COPY (no per-country DELETE; the table is truncated in prepare).
     """
     file_set = FileSet(
         files={
@@ -199,7 +202,6 @@ def test_country_fileset_upserts_and_copies(
 
     mock_copy.assert_called_once()
     assert mock_copy.call_args.args[1] == "wid.observation"
-    assert session.execute.called  # the per-country DELETE.
 
 
 def test_countries_fileset_upserts_names(
@@ -221,3 +223,41 @@ def test_countries_fileset_upserts_names(
     assert instance.name == "the Aaland"
     assert instance.region == "Europe"
     mock_copy.assert_not_called()
+
+
+def test_prepare_observation_table_drops_and_truncates() -> None:
+    """
+    prepare_observation_table drops the observation constraints and truncates it.
+    """
+    session = MagicMock()
+    with patch("dags.pipelines.wid.process.get_lens_engine"), patch(
+        "dags.pipelines.wid.process.Session"
+    ) as mock_session_cls:
+        mock_session_cls.return_value.__enter__.return_value = session
+        prepare_observation_table("airflow_wid")
+
+    executed = [str(call.args[0]) for call in session.execute.call_args_list]
+    assert any("DROP CONSTRAINT IF EXISTS observation_pkey" in sql for sql in executed)
+    assert any(
+        "DROP INDEX IF EXISTS wid.wid_observation_variable_idx" in s for s in executed
+    )
+    assert any("TRUNCATE wid.observation" in sql for sql in executed)
+    session.commit.assert_called_once()
+
+
+def test_finalize_observation_table_rebuilds_constraints() -> None:
+    """
+    finalize_observation_table rebuilds the observation primary key and foreign keys.
+    """
+    session = MagicMock()
+    with patch("dags.pipelines.wid.process.get_lens_engine"), patch(
+        "dags.pipelines.wid.process.Session"
+    ) as mock_session_cls:
+        mock_session_cls.return_value.__enter__.return_value = session
+        finalize_observation_table("airflow_wid")
+
+    executed = [str(call.args[0]) for call in session.execute.call_args_list]
+    assert any("ADD CONSTRAINT observation_pkey PRIMARY KEY" in sql for sql in executed)
+    assert any("observation_variable_code_fkey" in sql for sql in executed)
+    assert any("CREATE INDEX wid_observation_variable_idx" in sql for sql in executed)
+    session.commit.assert_called_once()

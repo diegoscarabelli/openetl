@@ -317,6 +317,8 @@ def get_lens_engine(user: str, echo: bool = False) -> Engine:
       "host.docker.internal", which works on Docker Desktop (Mac/Windows).
       Falls back to "172.17.0.1" (Docker bridge gateway on Linux)
       if host.docker.internal is not resolvable.
+    - Database name set via SQL_DB_NAME (defaults to "lens"); set it to a copy such
+      as "lens_dev" for local testing without touching the production database.
     - Uses PostgreSQL protocol.
 
     :param user: SQL database user corresponding to a credential file.
@@ -349,14 +351,15 @@ def get_lens_engine(user: str, echo: bool = False) -> Engine:
         )
         credentials["user"] = user
 
-    # Get the lens database host.
+    # Get the lens database host and name.
     db_host = os.getenv("SQL_DB_HOST") or _get_default_docker_host()
+    db_name = os.getenv("SQL_DB_NAME", "lens")
 
     return get_engine(
         host=db_host,
         username=credentials["user"],
         password=credentials["password"],
-        db_name="lens",
+        db_name=db_name,
         protocol="postgresql",
         echo=echo,
     )

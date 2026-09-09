@@ -190,16 +190,25 @@ ALTER DEFAULT PRIVILEGES IN SCHEMA linkedin
     GRANT USAGE, SELECT, UPDATE ON SEQUENCES TO airflow_linkedin;
 
 -- Grant data manipulation permissions to airflow_wid for pipeline operations.
--- DELETE is required for the per-country replace (DELETE + COPY) observation load.
-GRANT USAGE ON SCHEMA wid TO airflow_wid;
-GRANT INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA wid TO airflow_wid;
+-- REFERENCES lets it rebuild the observation foreign keys against the dimensions;
+-- CREATE lets it rebuild the observation primary key and index (both create objects
+-- in the wid schema) during finalize.
+GRANT USAGE, CREATE ON SCHEMA wid TO airflow_wid;
+GRANT INSERT, UPDATE, DELETE, REFERENCES ON ALL TABLES IN SCHEMA wid TO airflow_wid;
 GRANT USAGE, SELECT, UPDATE ON ALL SEQUENCES IN SCHEMA wid TO airflow_wid;
 
 -- Set default privileges for future objects in wid schema.
 ALTER DEFAULT PRIVILEGES IN SCHEMA wid
-    GRANT INSERT, UPDATE, DELETE ON TABLES TO airflow_wid;
+    GRANT INSERT, UPDATE, DELETE, REFERENCES ON TABLES TO airflow_wid;
 ALTER DEFAULT PRIVILEGES IN SCHEMA wid
     GRANT USAGE, SELECT, UPDATE ON SEQUENCES TO airflow_wid;
+
+-- The pipeline reloads observation in full each run: it drops the primary key and
+-- foreign keys, truncates, bulk-loads unindexed, then rebuilds the constraints
+-- (process.py prepare_observation_table / finalize_observation_table). ALTER and
+-- TRUNCATE require ownership, so airflow_wid owns the observation fact table. (This
+-- runs after tables.ddl has created the table.)
+ALTER TABLE wid.observation OWNER TO airflow_wid;
 
 ----------------------------------------------------------------------------------------
 -- SUPERSET ROLES AND PERMISSIONS (OPTIONAL)

@@ -1,11 +1,14 @@
 """
 WID data processor for the ETL pipeline.
 
-Implements the pure transform helpers and the WidProcessor class. Each country FileSet
-(one observation CSV plus one metadata CSV) is loaded in a single transaction: the
-country row and its variables and provenance are upserted, then the country's
-observations are replaced (DELETE + COPY). The global countries FileSet upserts country
-names and regions.
+Implements the pure transform helpers, the WidProcessor class, and the prepare/finalize
+steps that bracket the load. Each run is a full reload: prepare_observation_table drops
+the observation primary key, foreign keys, and secondary index and truncates the table;
+the parallel process tasks then append each country's observations into that unindexed
+table (alongside upserting the country, variable, and provenance dimensions); and
+finalize_observation_table rebuilds the constraints and index, which also validates the
+load. Building the indexes once is far cheaper than maintaining them across ~141M
+inserts. The global countries FileSet upserts country names and regions.
 """
 
 import csv
@@ -13,15 +16,40 @@ import csv
 from pathlib import Path
 from typing import Dict, Iterator, List, Optional, Tuple
 
-from sqlalchemy import delete
+from sqlalchemy import text
 from sqlalchemy.orm import Session
 
 from dags.lib.dag_utils import Processor
 from dags.lib.filesystem_utils import FileSet
 from dags.lib.logging_utils import LOGGER
-from dags.lib.sql_utils import copy_records, upsert_model_instances
+from dags.lib.sql_utils import copy_records, get_lens_engine, upsert_model_instances
 from dags.pipelines.wid.constants import WIDFileTypes
-from dags.pipelines.wid.sqla_models import Country, Observation, Provenance, Variable
+from dags.pipelines.wid.sqla_models import Country, Provenance, Variable
+
+# Observation primary key and foreign keys, dropped before the load and rebuilt after
+# it (see prepare_observation_table / finalize_observation_table). Loading into an
+# unindexed table and building the composite key once is far faster than maintaining
+# the index and checking the foreign keys on every one of ~141M inserts; the rebuild
+# also validates the load (duplicates fail the PK, orphans fail the FKs). Names match
+# the constraints declared in tables.ddl.
+_OBSERVATION_CONSTRAINTS = {
+    "observation_pkey": "PRIMARY KEY (country_code, variable_code, year)",
+    "observation_country_code_fkey": (
+        "FOREIGN KEY (country_code) REFERENCES wid.country (country_code)"
+    ),
+    "observation_variable_code_fkey": (
+        "FOREIGN KEY (variable_code) REFERENCES wid.variable (fully_qualified_code)"
+    ),
+}
+
+# Secondary index on observation, likewise dropped for the load and rebuilt after, so
+# nothing is maintained per row during the bulk load. Name and definition match
+# tables.ddl.
+_OBSERVATION_INDEX_NAME = "wid_observation_variable_idx"
+_OBSERVATION_INDEX_DDL = (
+    f"CREATE INDEX {_OBSERVATION_INDEX_NAME} ON wid.observation "
+    "(variable_code, year, country_code)"
+)
 
 # Concept-level variable fields sourced from the metadata CSV (same across countries).
 _VARIABLE_META_FIELDS = [
@@ -259,8 +287,8 @@ class WidProcessor(Processor):
         self, data_path: Path, meta_path: Optional[Path], session: Session
     ) -> None:
         """
-        Load one country: upsert country, variables, provenance, then replace
-        observations via DELETE + COPY.
+        Load one country: upsert country, variables, and provenance, then append its
+        observations to the truncated, unindexed observation table.
 
         :param data_path: Path to the country's observation CSV.
         :param meta_path: Path to the country's metadata CSV, if present.
@@ -336,8 +364,8 @@ class WidProcessor(Processor):
                 update_columns=["source", "method", "data_quality_score"],
             )
 
-        # Replace this country's observations: delete then COPY the fresh rows.
-        session.execute(delete(Observation).where(Observation.country_code == country))
+        # Full reload: prepare_observation_table truncated the (now unindexed)
+        # observation table before this task, so just append this country's rows.
         written = copy_records(
             session,
             "wid.observation",
@@ -345,3 +373,52 @@ class WidProcessor(Processor):
             iter_observations(data_path),
         )
         LOGGER.info(f"Loaded {written} observations for {country}.")
+
+
+def prepare_observation_table(sql_user: str, **context) -> None:
+    """
+    Drop the observation primary key and foreign keys and truncate it for a full reload.
+
+    Runs once before the parallel process tasks so they append into an unindexed,
+    constraint-free table (fast bulk load); finalize_observation_table rebuilds the
+    constraints afterwards.
+
+    :param sql_user: SQL user (credential file name) to connect as; must own the
+        observation table so it can ALTER and TRUNCATE it.
+    """
+    engine = get_lens_engine(sql_user)
+    with Session(engine) as session:
+        session.execute(text(f"DROP INDEX IF EXISTS wid.{_OBSERVATION_INDEX_NAME}"))
+        for name in _OBSERVATION_CONSTRAINTS:
+            session.execute(
+                text(f"ALTER TABLE wid.observation DROP CONSTRAINT IF EXISTS {name}")
+            )
+        session.execute(text("TRUNCATE wid.observation"))
+        session.commit()
+    LOGGER.info("Dropped observation constraints and index and truncated the table.")
+
+
+def finalize_observation_table(sql_user: str, **context) -> None:
+    """
+    Rebuild the observation primary key and foreign keys after the load.
+
+    Building the composite key once and validating the foreign keys in a single pass is
+    far cheaper than maintaining them per row during the load, and it doubles as a load
+    check: duplicate keys fail the primary key, orphaned codes fail the foreign keys.
+
+    :param sql_user: SQL user (credential file name) to connect as; must own the
+        observation table and hold REFERENCES on the country and variable tables.
+    """
+    engine = get_lens_engine(sql_user)
+    with Session(engine) as session:
+        # A larger maintenance_work_mem and parallel workers speed up the one-time
+        # index builds (the primary key and secondary index dominate this step).
+        session.execute(text("SET LOCAL maintenance_work_mem = '1GB'"))
+        session.execute(text("SET LOCAL max_parallel_maintenance_workers = 4"))
+        for name, definition in _OBSERVATION_CONSTRAINTS.items():
+            session.execute(
+                text(f"ALTER TABLE wid.observation ADD CONSTRAINT {name} {definition}")
+            )
+        session.execute(text(_OBSERVATION_INDEX_DDL))
+        session.commit()
+    LOGGER.info("Rebuilt observation primary key, foreign keys, and index.")

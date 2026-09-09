@@ -130,14 +130,21 @@ COMMENT ON COLUMN wid.provenance.data_quality_score IS
 -- Observation fact table (~141M rows). Plain PostgreSQL table (no hypertable): WID is
 -- replaced in full on each annual release, which does not fit the append-only model
 -- TimescaleDB compression optimizes for.
+-- The primary key and foreign keys are named explicitly so the pipeline can drop
+-- them before a bulk load and rebuild them afterwards (see process.py
+-- prepare_observation_table / finalize_observation_table).
 CREATE TABLE IF NOT EXISTS wid.observation (
-    country_code TEXT NOT NULL REFERENCES wid.country (country_code)
-    , variable_code TEXT NOT NULL REFERENCES wid.variable (fully_qualified_code)
+    country_code TEXT NOT NULL
+    , variable_code TEXT NOT NULL
     , year SMALLINT NOT NULL
     , value NUMERIC
     , create_ts TIMESTAMPTZ NOT NULL DEFAULT NOW()
     , update_ts TIMESTAMPTZ NOT NULL DEFAULT NOW()
-    , PRIMARY KEY (country_code, variable_code, year)
+    , CONSTRAINT observation_pkey PRIMARY KEY (country_code, variable_code, year)
+    , CONSTRAINT observation_country_code_fkey FOREIGN KEY (country_code)
+    REFERENCES wid.country (country_code)
+    , CONSTRAINT observation_variable_code_fkey FOREIGN KEY (variable_code)
+    REFERENCES wid.variable (fully_qualified_code)
 );
 
 CREATE INDEX IF NOT EXISTS wid_observation_variable_idx

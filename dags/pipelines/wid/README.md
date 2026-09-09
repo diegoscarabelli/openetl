@@ -41,27 +41,40 @@ Three kinds of files are read from the ZIP:
 
 ## DAG
 
-Tasks: `extract -> ingest -> batch -> process -> store`. Manual trigger only
-(`dag_schedule_interval=None`); WID releases roughly once a year.
+Tasks: `extract -> ingest -> batch -> prepare -> process -> finalize -> store`. Manual
+trigger only (`dag_schedule_interval=None`); WID releases roughly once a year.
 
 - `extract`: downloads the bulk ZIP and unpacks the per-country data and metadata CSVs
   (plus the countries CSV) into the ingest directory. Each country's two files share a
   timestamp so `batch` groups them into one FileSet; the countries CSV gets its own.
 - `ingest` / `batch`: standard framework tasks. One FileSet per country (data +
   metadata), plus a countries FileSet.
+- `prepare`: drops the observation primary key and foreign keys and truncates the table
+  so the load runs against an unindexed, constraint-free fact table.
 - `process` (parallel per country): in one transaction, upsert the country row, its
-  variables, and its provenance, then replace the country's observations
-  (`DELETE` by country, then `COPY`). The countries FileSet fills country names and
-  regions. Processing is order-independent and idempotent.
+  variables, and its provenance, then append the country's observations with `COPY`. The
+  countries FileSet fills country names and regions. Processing is order-independent.
+- `finalize`: rebuilds the observation primary key and foreign keys.
 - `store`: standard framework task.
+
+Each run is a full reload (`prepare` truncates before the load), so the pipeline is
+idempotent at the run level and there is no separate backfill mode.
 
 ## Load method
 
-Dimensions are loaded with `upsert_model_instances`. The observation fact table is loaded
-with PostgreSQL `COPY` via the `copy_records` helper in `dags/lib/sql_utils.py`, which is
-~19x faster than multi-row INSERT for this volume (measured end-to-end: ~2 minutes vs
-~1 hour for the full 141M rows). Each run fully replaces the dataset per country, so the
-pipeline is idempotent and there is no separate backfill mode.
+Each run rebuilds the observation fact table from scratch, and the primary key and
+foreign keys are dropped for the load and rebuilt afterwards. Maintaining the composite
+key and checking two foreign keys on every one of ~141M inserts dominates the runtime;
+loading into an unindexed table and building the key once (with the foreign keys
+validated in a single pass) is dramatically faster. Measured on ~143M rows: the indexed
+insert path takes ~20 minutes, versus ~30s to bulk-load plus ~3.5 minutes to build the
+key and ~20s to validate the foreign keys.
+
+The rebuild doubles as a load check: duplicate keys make the primary key build fail, and
+orphaned variable or country codes make the foreign-key validation fail. Dimensions
+(`country`, `variable`, `provenance`) keep their keys and are loaded with
+`upsert_model_instances`; observations are loaded with PostgreSQL `COPY` via the
+`copy_records` helper in `dags/lib/sql_utils.py`.
 
 ## Prerequisites
 
