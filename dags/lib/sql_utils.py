@@ -53,11 +53,6 @@ class QueryType:
     INSERT_IGNORE = "insert_ignore"
 
 
-# COPY reads this unquoted token as SQL NULL, which lets a legitimate empty
-# string round-trip as an empty string instead of collapsing to NULL.
-_COPY_NULL_MARKER = "\\N"
-
-
 class _StringIteratorIO(io.TextIOBase):
     """
     Adapt an iterator of text chunks into a readable stream for ``copy_expert``.
@@ -89,16 +84,21 @@ class _StringIteratorIO(io.TextIOBase):
         """
         if size == 0:
             return ""
-        while size is None or size < 0 or len(self._buffer) < size:
+        chunks = [self._buffer]
+        buffered = len(self._buffer)
+        self._buffer = ""
+        while size is None or size < 0 or buffered < size:
             try:
-                self._buffer += next(self._iterator)
+                chunk = next(self._iterator)
             except StopIteration:
                 break
+            chunks.append(chunk)
+            buffered += len(chunk)
+        data = "".join(chunks)
         if size is None or size < 0:
-            chunk, self._buffer = self._buffer, ""
-        else:
-            chunk, self._buffer = self._buffer[:size], self._buffer[size:]
-        return chunk
+            return data
+        result, self._buffer = data[:size], data[size:]
+        return result
 
 
 def copy_records(
@@ -117,12 +117,9 @@ def copy_records(
     ``upsert_model_instances``.
 
     Columns omitted from ``columns`` take their database defaults (e.g. ``create_ts`` /
-    ``update_ts``). A ``None`` value is written as SQL NULL and an empty string is
-    preserved as an empty string. The literal two-character string ``\\N`` (backslash-N)
-    cannot be represented, because COPY would read it as NULL; a value equal to it
-    aborts the load with an error rather than silently becoming NULL (the row rendering
-    raises ``ValueError``, which psycopg2 surfaces as a failed COPY). The sole caller
-    loads numeric observations, so this does not arise in practice.
+    ``update_ts``). A ``None`` value is written as SQL NULL; because empty CSV fields
+    map to NULL, do not use this helper for text columns whose legitimate value can be
+    the empty string.
 
     Rows are rendered and streamed to PostgreSQL on demand (one CSV line buffered at a
     time), so worker memory stays bounded regardless of row count and the COPY starts
@@ -133,7 +130,6 @@ def copy_records(
     :param columns: Ordered column names to populate.
     :param rows: Iterable of tuples aligned to ``columns``.
     :return: Number of rows written.
-    :raises psycopg2.Error: A failed COPY if a value equals the ``\\N`` NULL marker.
     """
     count = 0
 
@@ -147,18 +143,7 @@ def copy_records(
         line_buffer = io.StringIO()
         writer = csv.writer(line_buffer, lineterminator="\n")
         for row in rows:
-            encoded = []
-            for value in row:
-                if value is None:
-                    encoded.append(_COPY_NULL_MARKER)
-                elif value == _COPY_NULL_MARKER:
-                    raise ValueError(
-                        f"copy_records cannot load the literal value "
-                        f"{_COPY_NULL_MARKER!r}: COPY would read it as NULL."
-                    )
-                else:
-                    encoded.append(value)
-            writer.writerow(encoded)
+            writer.writerow(["" if value is None else value for value in row])
             line = line_buffer.getvalue()
             line_buffer.seek(0)
             line_buffer.truncate(0)
@@ -168,11 +153,10 @@ def copy_records(
     # Quote the schema-qualified table and each column as SQL identifiers so a
     # non-constant caller cannot inject SQL through the table or column names.
     copy_statement = sql.SQL(
-        "COPY {table} ({columns}) FROM STDIN WITH (FORMAT CSV, NULL {null})"
+        "COPY {table} ({columns}) FROM STDIN WITH (FORMAT CSV)"
     ).format(
         table=sql.SQL(".").join(sql.Identifier(part) for part in table.split(".")),
         columns=sql.SQL(", ").join(sql.Identifier(column) for column in columns),
-        null=sql.Literal(_COPY_NULL_MARKER),
     )
     raw_connection = session.connection().connection
     with raw_connection.cursor() as cursor:
