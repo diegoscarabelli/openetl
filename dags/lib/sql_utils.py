@@ -121,9 +121,10 @@ def copy_records(
     map to NULL, do not use this helper for text columns whose legitimate value can be
     the empty string.
 
-    Rows are rendered and streamed to PostgreSQL on demand (one CSV line buffered at a
-    time), so worker memory stays bounded regardless of row count and the COPY starts
-    without first writing a second full-size copy of the data.
+    Rows are rendered on demand as ``copy_expert`` pulls fixed-size chunks from the
+    stream, so only a small buffer is held at once and the COPY starts without first
+    writing a second full-size copy of the data. (An unbounded ``read()`` would
+    materialize the remaining rows, but ``copy_expert`` always reads in bounded chunks.)
 
     :param session: SQLAlchemy Session whose transaction the COPY joins.
     :param table: Schema-qualified target table (e.g. "wid.observation").

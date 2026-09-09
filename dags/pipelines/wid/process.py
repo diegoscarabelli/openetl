@@ -271,6 +271,15 @@ class WidProcessor(Processor):
             return
         LOGGER.info(f"Processing WID country {country} from {data_path.name}.")
 
+        # The WID bulk export pairs each country's data file with a metadata file, so
+        # meta is normally populated. Warn if it is missing: with first-writer-wins
+        # variable upserts, any new codes this country introduces would be stored with
+        # empty concept metadata.
+        if meta_path is None:
+            LOGGER.warning(
+                f"No metadata file for country {country}; new variable codes will "
+                "be stored with empty concept metadata."
+            )
         meta = parse_metadata(meta_path) if meta_path else {}
 
         # Ensure the country row exists (code only) so observation/provenance FKs hold,
