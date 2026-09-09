@@ -6,6 +6,7 @@ calls mocked, following the pipeline test convention of not hitting a real datab
 """
 
 from datetime import datetime
+from decimal import Decimal
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -16,7 +17,8 @@ from dags.lib.filesystem_utils import FileSet
 from dags.pipelines.wid.constants import WIDFileTypes
 from dags.pipelines.wid.process import (
     WidProcessor,
-    build_variable_code,
+    _populate_percentile_dimension,
+    build_percentile_rows,
     build_variable_rows,
     finalize_observation_table,
     first_country,
@@ -77,27 +79,70 @@ def _write_countries(tmp_path: Path) -> Path:
 # --------------------------------------------------------------------------------------
 
 
-def test_build_variable_code() -> None:
-    """
-    The fully qualified code is sixlet_percentile_age_pop.
-    """
-    assert build_variable_code("sptincj992", "p99p100", "992", "j") == (
-        "sptinc_p99p100_992_j"
-    )
-
-
 def test_variable_fields() -> None:
     """
-    variable_fields unpacks the code into its components.
+    variable_fields unpacks the native code into its components (no percentile).
     """
-    fields = variable_fields("sptincj992", "p99p100", "992", "j")
-    assert fields["fully_qualified_code"] == "sptinc_p99p100_992_j"
-    assert fields["sixlet"] == "sptinc"
+    fields = variable_fields("sptincj992", "992", "j")
+    assert fields["variable_code"] == "sptincj992"
     assert fields["series_type"] == "s"
     assert fields["concept"] == "ptinc"
-    assert fields["percentile"] == "p99p100"
     assert fields["age_code"] == "992"
     assert fields["pop_code"] == "j"
+    assert "percentile" not in fields
+    assert "sixlet" not in fields
+
+
+def test_build_percentile_rows_ranges_and_points() -> None:
+    """
+    Ranges parse to their bracket; g-percentile points run to the next point, top to
+    100.
+    """
+    rows = {
+        row["percentile_code"]: row
+        for row in build_percentile_rows(["p0p50", "p90p100", "p99", "p99.9", "p99.99"])
+    }
+    assert rows["p0p50"]["is_range"] is True
+    assert rows["p0p50"]["lower_bound"] == Decimal("0")
+    assert rows["p0p50"]["upper_bound"] == Decimal("50")
+    assert rows["p0p50"]["width"] == Decimal("50")
+    # Points are ordered so each runs up to the next; the top point runs to 100.
+    assert rows["p99"]["is_range"] is False
+    assert rows["p99"]["lower_bound"] == Decimal("99")
+    assert rows["p99"]["upper_bound"] == Decimal("99.9")
+    assert rows["p99.9"]["upper_bound"] == Decimal("99.99")
+    assert rows["p99.99"]["upper_bound"] == Decimal("100")
+    assert rows["p99.99"]["width"] == Decimal("100") - Decimal("99.99")
+
+
+def test_build_percentile_rows_single_point_runs_to_100() -> None:
+    """
+    A lone g-percentile point runs up to 100 with a positive width.
+    """
+    (row,) = build_percentile_rows(["p99"])
+    assert row["is_range"] is False
+    assert row["lower_bound"] == Decimal("99")
+    assert row["upper_bound"] == Decimal("100")
+    assert row["width"] == Decimal("1")
+
+
+def test_build_percentile_rows_rejects_unknown() -> None:
+    """
+    An unrecognized percentile code raises rather than loading a bad dimension row.
+    """
+    with pytest.raises(ValueError):
+        build_percentile_rows(["not_a_percentile"])
+
+
+def test_build_percentile_rows_rejects_non_increasing_bounds() -> None:
+    """
+    Codes that would yield a non-positive width raise (they would violate the percentile
+    CHECK constraints mid-finalize otherwise): a point at 100, and an inverted range.
+    """
+    with pytest.raises(ValueError):
+        build_percentile_rows(["p100"])
+    with pytest.raises(ValueError):
+        build_percentile_rows(["p50p10"])
 
 
 def test_parse_metadata(tmp_path: Path) -> None:
@@ -131,24 +176,25 @@ def test_first_country(tmp_path: Path) -> None:
 
 def test_iter_observations(tmp_path: Path) -> None:
     """
-    iter_observations yields (country, code, year, value); empty value is None.
+    iter_observations yields (country, variable, percentile, year, value); empty is
+    None.
     """
     rows = list(iter_observations(_write_data(tmp_path)))
-    assert rows[0] == ("AA", "sptinc_p99p100_992_j", "2019", "0.18")
-    assert rows[2] == ("AA", "shweal_p90p100_992_j", "2020", None)
+    assert rows[0] == ("AA", "sptincj992", "p99p100", "2019", "0.18")
+    assert rows[2] == ("AA", "shwealj992", "p90p100", "2020", None)
 
 
 def test_build_variable_rows(tmp_path: Path) -> None:
     """
-    build_variable_rows returns distinct codes with metadata attached.
+    build_variable_rows returns distinct native codes with metadata attached.
     """
     meta = parse_metadata(_write_meta(tmp_path))
     rows = build_variable_rows(_write_data(tmp_path), meta)
-    codes = {row["fully_qualified_code"] for row in rows}
-    assert codes == {"sptinc_p99p100_992_j", "shweal_p90p100_992_j"}
-    by_code = {row["fully_qualified_code"]: row for row in rows}
-    assert by_code["sptinc_p99p100_992_j"]["short_name"] == "Pre-tax"
-    assert by_code["shweal_p90p100_992_j"]["unit"] == "share"
+    codes = {row["variable_code"] for row in rows}
+    assert codes == {"sptincj992", "shwealj992"}
+    by_code = {row["variable_code"]: row for row in rows}
+    assert by_code["sptincj992"]["short_name"] == "Pre-tax"
+    assert by_code["shwealj992"]["unit"] == "share"
 
 
 # --------------------------------------------------------------------------------------
@@ -202,6 +248,85 @@ def test_country_fileset_upserts_and_copies(
 
     mock_copy.assert_called_once()
     assert mock_copy.call_args.args[1] == "wid.observation"
+    assert mock_copy.call_args.args[2] == [
+        "country_code",
+        "variable_code",
+        "percentile_code",
+        "year",
+        "value",
+    ]
+
+
+def test_provenance_uses_country_variable_key(
+    processor: WidProcessor, tmp_path: Path
+) -> None:
+    """
+    Provenance is upserted on the (country_code, variable_code) key with native codes.
+    """
+    file_set = FileSet(
+        files={
+            WIDFileTypes.OBSERVATIONS: [_write_data(tmp_path)],
+            WIDFileTypes.VARIABLE_METADATA: [_write_meta(tmp_path)],
+        }
+    )
+    session = MagicMock()
+    with patch(
+        "dags.pipelines.wid.process.upsert_model_instances"
+    ) as mock_upsert, patch("dags.pipelines.wid.process.copy_records"):
+        processor.process_file_set(file_set, session)
+
+    provenance_call = next(
+        call
+        for call in mock_upsert.call_args_list
+        if type(call.kwargs["model_instances"][0]).__name__ == "Provenance"
+    )
+    assert provenance_call.kwargs["conflict_columns"] == [
+        "country_code",
+        "variable_code",
+    ]
+    codes = {inst.variable_code for inst in provenance_call.kwargs["model_instances"]}
+    assert codes == {"sptincj992", "shwealj992"}
+
+
+def test_provenance_skips_variables_absent_from_data(
+    processor: WidProcessor, tmp_path: Path
+) -> None:
+    """
+    A metadata variable with no data row is skipped, so the provenance -> variable FK
+    holds.
+
+    The metadata below lists an extra code (absent from the data file).
+    """
+    meta_path = tmp_path / "WID_metadata_AA_2026-01-01T00:00:00.000001Z.csv"
+    meta_path.write_text(
+        META_HEADER
+        + "\n"
+        + "AA;sptincj992;992;j;Aaland;Pre-tax;simple;tech;Share;Income shares;"
+        + "esa;esa desc;Adults;20+;share;srcA;methodA;0.0\n"
+        # Metadata for a variable that never appears in the data file.
+        + "AA;absentj992;992;j;Aaland;Absent;d;t;X;X;esa;esa;Adults;20+;u;srcX;methX;0.1\n",
+        encoding="utf-8",
+    )
+    file_set = FileSet(
+        files={
+            WIDFileTypes.OBSERVATIONS: [_write_data(tmp_path)],
+            WIDFileTypes.VARIABLE_METADATA: [meta_path],
+        }
+    )
+    session = MagicMock()
+    with patch(
+        "dags.pipelines.wid.process.upsert_model_instances"
+    ) as mock_upsert, patch("dags.pipelines.wid.process.copy_records"):
+        processor.process_file_set(file_set, session)
+
+    provenance_call = next(
+        call
+        for call in mock_upsert.call_args_list
+        if type(call.kwargs["model_instances"][0]).__name__ == "Provenance"
+    )
+    codes = {inst.variable_code for inst in provenance_call.kwargs["model_instances"]}
+    assert "absentj992" not in codes
+    assert codes == {"sptincj992"}
 
 
 def test_countries_fileset_upserts_names(
@@ -225,6 +350,25 @@ def test_countries_fileset_upserts_names(
     mock_copy.assert_not_called()
 
 
+def test_populate_percentile_dimension() -> None:
+    """
+    _populate_percentile_dimension reads the distinct codes and upserts parsed rows.
+    """
+    session = MagicMock()
+    session.execute.return_value = [("p0p100",), ("p99",), ("p99.9",)]
+    with patch("dags.pipelines.wid.process.upsert_model_instances") as mock_upsert:
+        _populate_percentile_dimension(session)
+
+    instances = mock_upsert.call_args.kwargs["model_instances"]
+    by_code = {inst.percentile_code: inst for inst in instances}
+    assert by_code["p0p100"].is_range is True
+    assert by_code["p0p100"].upper_bound == Decimal("100")
+    assert by_code["p99"].is_range is False
+    assert by_code["p99"].upper_bound == Decimal("99.9")
+    assert by_code["p99.9"].upper_bound == Decimal("100")
+    assert mock_upsert.call_args.kwargs["conflict_columns"] == ["percentile_code"]
+
+
 def test_prepare_observation_table_drops_and_truncates() -> None:
     """
     prepare_observation_table drops the observation constraints and truncates it.
@@ -239,25 +383,37 @@ def test_prepare_observation_table_drops_and_truncates() -> None:
     executed = [str(call.args[0]) for call in session.execute.call_args_list]
     assert any("DROP CONSTRAINT IF EXISTS observation_pkey" in sql for sql in executed)
     assert any(
-        "DROP INDEX IF EXISTS wid.wid_observation_variable_idx" in s for s in executed
+        "DROP CONSTRAINT IF EXISTS observation_percentile_code_fkey" in sql
+        for sql in executed
+    )
+    assert any(
+        "DROP INDEX IF EXISTS wid.wid_observation_series_idx" in s for s in executed
     )
     assert any("TRUNCATE wid.observation" in sql for sql in executed)
+    assert any("DELETE FROM wid.percentile" in sql for sql in executed)
     session.commit.assert_called_once()
 
 
 def test_finalize_observation_table_rebuilds_constraints() -> None:
     """
-    finalize_observation_table rebuilds the observation primary key and foreign keys.
+    finalize_observation_table rebuilds the observation primary key, foreign keys, and
+    index (after populating the percentile dimension).
     """
     session = MagicMock()
+    session.execute.return_value = []
     with patch("dags.pipelines.wid.process.get_lens_engine"), patch(
-        "dags.pipelines.wid.process.Session"
-    ) as mock_session_cls:
+        "dags.pipelines.wid.process.upsert_model_instances"
+    ), patch("dags.pipelines.wid.process.Session") as mock_session_cls:
         mock_session_cls.return_value.__enter__.return_value = session
         finalize_observation_table("airflow_wid")
 
     executed = [str(call.args[0]) for call in session.execute.call_args_list]
     assert any("ADD CONSTRAINT observation_pkey PRIMARY KEY" in sql for sql in executed)
     assert any("observation_variable_code_fkey" in sql for sql in executed)
-    assert any("CREATE INDEX wid_observation_variable_idx" in sql for sql in executed)
+    assert any("observation_percentile_code_fkey" in sql for sql in executed)
+    assert any(
+        "SELECT DISTINCT percentile_code FROM wid.observation" in sql
+        for sql in executed
+    )
+    assert any("CREATE INDEX wid_observation_series_idx" in sql for sql in executed)
     session.commit.assert_called_once()

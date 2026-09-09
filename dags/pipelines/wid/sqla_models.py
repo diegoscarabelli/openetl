@@ -4,7 +4,16 @@ SQLAlchemy models for WID data processing and database interaction.
 These models reflect the database tables defined in dags/pipelines/wid/tables.ddl.
 """
 
-from sqlalchemy import Column, Float, MetaData, Numeric, SmallInteger, Text
+from sqlalchemy import (
+    Boolean,
+    Column,
+    Computed,
+    Float,
+    MetaData,
+    Numeric,
+    SmallInteger,
+    Text,
+)
 
 from dags.lib.sql_utils import fkey, make_base
 
@@ -28,18 +37,18 @@ class Country(UpsertBase):
 
 class Variable(UpsertBase):
     """
-    WID variable dimension: one row per fully qualified code, code unpacked.
+    WID variable dimension: one row per native variable code, code unpacked.
     """
 
     __tablename__ = "variable"
 
-    fully_qualified_code = Column(Text, primary_key=True)
-    sixlet = Column(Text, nullable=False)
+    variable_code = Column(Text, primary_key=True)
     series_type = Column(Text, nullable=False)
     concept = Column(Text, nullable=False)
+    # Generated in the database from series_type and concept; never inserted.
+    sixlet = Column(Text, Computed("series_type || concept", persisted=True))
     age_code = Column(Text, nullable=False)
     pop_code = Column(Text, nullable=False)
-    percentile = Column(Text, nullable=False)
     short_name = Column(Text)
     description = Column(Text)
     technical_description = Column(Text)
@@ -49,9 +58,23 @@ class Variable(UpsertBase):
     long_age = Column(Text)
 
 
+class Percentile(UpsertBase):
+    """
+    WID percentile dimension: numeric bounds and width per percentile code.
+    """
+
+    __tablename__ = "percentile"
+
+    percentile_code = Column(Text, primary_key=True)
+    is_range = Column(Boolean, nullable=False)
+    lower_bound = Column(Numeric, nullable=False)
+    upper_bound = Column(Numeric, nullable=False)
+    width = Column(Numeric, nullable=False)
+
+
 class Provenance(UpsertBase):
     """
-    Country-specific WID provenance (grain: country, sixlet, age, pop).
+    Country-specific WID provenance (grain: country, variable).
     """
 
     __tablename__ = "provenance"
@@ -59,9 +82,9 @@ class Provenance(UpsertBase):
     country_code = Column(
         Text, fkey("wid", "country", "country_code"), primary_key=True
     )
-    sixlet = Column(Text, primary_key=True)
-    age_code = Column(Text, primary_key=True)
-    pop_code = Column(Text, primary_key=True)
+    variable_code = Column(
+        Text, fkey("wid", "variable", "variable_code"), primary_key=True
+    )
     source = Column(Text)
     method = Column(Text)
     data_quality_score = Column(Float)
@@ -69,7 +92,7 @@ class Provenance(UpsertBase):
 
 class Observation(UpsertBase):
     """
-    WID observation fact table (one value per country, variable, and year).
+    WID observation fact table (one value per country, variable, percentile, and year).
     """
 
     __tablename__ = "observation"
@@ -78,7 +101,10 @@ class Observation(UpsertBase):
         Text, fkey("wid", "country", "country_code"), primary_key=True
     )
     variable_code = Column(
-        Text, fkey("wid", "variable", "fully_qualified_code"), primary_key=True
+        Text, fkey("wid", "variable", "variable_code"), primary_key=True
+    )
+    percentile_code = Column(
+        Text, fkey("wid", "percentile", "percentile_code"), primary_key=True
     )
     year = Column(SmallInteger, primary_key=True)
     value = Column(Numeric)

@@ -6,15 +6,22 @@ steps that bracket the load. Each run is a full reload: prepare_observation_tabl
 the observation primary key, foreign keys, and secondary index and truncates the table;
 the parallel process tasks then append each country's observations into that unindexed
 table (alongside upserting the country, variable, and provenance dimensions); and
-finalize_observation_table rebuilds the constraints and index, which also validates the
-load. Building the indexes once is far cheaper than maintaining them across ~141M
-inserts. The global countries FileSet upserts country names and regions.
+finalize_observation_table completes the percentile dimension from the loaded facts and
+rebuilds the constraints and index, which also validates the load. Building the indexes
+once is far cheaper than maintaining them across ~141M inserts. The global countries
+FileSet upserts country names and regions.
+
+A time series is identified by (variable_code, percentile_code) and a single observation
+by (country_code, variable_code, percentile_code, year): variable_code is WID's native
+code (sixlet + pop + age, e.g. sptincj992) and percentile is its own dimension.
 """
 
 import csv
+import re
 
+from decimal import Decimal
 from pathlib import Path
-from typing import Dict, Iterator, List, Optional, Tuple
+from typing import Dict, Iterable, Iterator, List, Optional, Tuple
 
 from sqlalchemy import text
 from sqlalchemy.orm import Session
@@ -24,7 +31,7 @@ from dags.lib.filesystem_utils import FileSet
 from dags.lib.logging_utils import LOGGER
 from dags.lib.sql_utils import copy_records, get_lens_engine, upsert_model_instances
 from dags.pipelines.wid.constants import WIDFileTypes
-from dags.pipelines.wid.sqla_models import Country, Provenance, Variable
+from dags.pipelines.wid.sqla_models import Country, Percentile, Provenance, Variable
 
 # Observation primary key and foreign keys, dropped before the load and rebuilt after
 # it (see prepare_observation_table / finalize_observation_table). Loading into an
@@ -33,22 +40,28 @@ from dags.pipelines.wid.sqla_models import Country, Provenance, Variable
 # also validates the load (duplicates fail the PK, orphans fail the FKs). Names match
 # the constraints declared in tables.ddl.
 _OBSERVATION_CONSTRAINTS = {
-    "observation_pkey": "PRIMARY KEY (country_code, variable_code, year)",
+    "observation_pkey": (
+        "PRIMARY KEY (country_code, variable_code, percentile_code, year)"
+    ),
     "observation_country_code_fkey": (
         "FOREIGN KEY (country_code) REFERENCES wid.country (country_code)"
     ),
     "observation_variable_code_fkey": (
-        "FOREIGN KEY (variable_code) REFERENCES wid.variable (fully_qualified_code)"
+        "FOREIGN KEY (variable_code) REFERENCES wid.variable (variable_code)"
+    ),
+    "observation_percentile_code_fkey": (
+        "FOREIGN KEY (percentile_code) REFERENCES wid.percentile (percentile_code)"
     ),
 }
 
 # Secondary index on observation, likewise dropped for the load and rebuilt after, so
-# nothing is maintained per row during the bulk load. Name and definition match
+# nothing is maintained per row during the bulk load. It serves whole-series lookups
+# (a series is variable_code + percentile_code over years). Name and definition match
 # tables.ddl.
-_OBSERVATION_INDEX_NAME = "wid_observation_variable_idx"
+_OBSERVATION_INDEX_NAME = "wid_observation_series_idx"
 _OBSERVATION_INDEX_DDL = (
     f"CREATE INDEX {_OBSERVATION_INDEX_NAME} ON wid.observation "
-    "(variable_code, year, country_code)"
+    "(variable_code, percentile_code, year, country_code)"
 )
 
 # Concept-level variable fields sourced from the metadata CSV (same across countries).
@@ -62,46 +75,101 @@ _VARIABLE_META_FIELDS = [
     "long_age",
 ]
 
+# WID percentile codes: an explicit range (pXpY) or a single g-percentile point (pX),
+# where X and Y may carry decimals (e.g. p99.9).
+_PERCENTILE_RANGE_RE = re.compile(r"^p(\d+(?:\.\d+)?)p(\d+(?:\.\d+)?)$")
+_PERCENTILE_POINT_RE = re.compile(r"^p(\d+(?:\.\d+)?)$")
 
-def build_variable_code(variable: str, percentile: str, age: str, pop: str) -> str:
+# Upper bound of the top g-percentile point (the distribution runs to 100).
+_PERCENTILE_MAX = Decimal(100)
+
+
+def variable_fields(variable: str, age: str, pop: str) -> Dict[str, str]:
     """
-    Build the fully qualified variable code from the WID data-CSV columns.
+    Build the unpacked variable-dimension fields for one native code.
 
-    The data CSV ``variable`` column is the packed ``sixlet + pop + age`` string; the
-    fully qualified code is ``sixlet_percentile_age_pop``.
-
-    :param variable: Packed variable string (e.g. "sptincj992").
-    :param percentile: Percentile range code (e.g. "p99p100").
-    :param age: Age-group code (e.g. "992").
-    :param pop: Population-unit code (e.g. "j").
-    :return: Fully qualified code (e.g. "sptinc_p99p100_992_j").
-    """
-    return f"{variable[:6]}_{percentile}_{age}_{pop}"
-
-
-def variable_fields(
-    variable: str, percentile: str, age: str, pop: str
-) -> Dict[str, str]:
-    """
-    Build the unpacked variable-dimension fields for one code.
-
-    :param variable: Packed variable string (sixlet + pop + age).
-    :param percentile: Percentile range code.
+    :param variable: Native variable code (sixlet + pop + age, e.g. "sptincj992").
     :param age: Age-group code.
     :param pop: Population-unit code.
-    :return: Dict with fully_qualified_code, sixlet, series_type, concept, percentile,
-        age_code, and pop_code.
+    :return: Dict with variable_code, series_type, concept, age_code, and pop_code. The
+        sixlet is generated in the database from series_type and concept.
     """
     sixlet = variable[:6]
     return {
-        "fully_qualified_code": build_variable_code(variable, percentile, age, pop),
-        "sixlet": sixlet,
+        "variable_code": variable,
         "series_type": sixlet[0],
         "concept": sixlet[1:],
-        "percentile": percentile,
         "age_code": age,
         "pop_code": pop,
     }
+
+
+def build_percentile_rows(codes: Iterable[str]) -> List[Dict[str, object]]:
+    """
+    Build percentile-dimension rows from a set of WID percentile codes.
+
+    Two kinds of code occur. An explicit range ``pXpY`` maps to the bracket [X, Y]. A
+    g-percentile point ``pX`` (used by average series) maps to the group [X, next),
+    whose upper bound is the next percentile point present in the data (the next
+    g-percentile in a full load); the top point runs to 100.
+
+    :param codes: Iterable of distinct WID percentile codes.
+    :return: List of percentile-dimension row dicts (percentile_code, is_range,
+        lower_bound, upper_bound, width).
+    :raises ValueError: If a code matches neither the range nor the point pattern, or
+        yields a non-increasing bound (which would violate the percentile CHECKs).
+    """
+    ranges: List[Tuple[str, Decimal, Decimal]] = []
+    points: List[Tuple[str, Decimal]] = []
+    for code in set(codes):
+        range_match = _PERCENTILE_RANGE_RE.match(code)
+        if range_match:
+            lower = Decimal(range_match.group(1))
+            upper = Decimal(range_match.group(2))
+            if lower >= upper:
+                raise ValueError(
+                    f"WID percentile range {code!r} is not increasing "
+                    f"(lower={lower}, upper={upper})."
+                )
+            ranges.append((code, lower, upper))
+            continue
+        point_match = _PERCENTILE_POINT_RE.match(code)
+        if point_match:
+            points.append((code, Decimal(point_match.group(1))))
+            continue
+        raise ValueError(f"Unrecognized WID percentile code: {code!r}.")
+
+    rows: List[Dict[str, object]] = [
+        {
+            "percentile_code": code,
+            "is_range": True,
+            "lower_bound": lower,
+            "upper_bound": upper,
+            "width": upper - lower,
+        }
+        for code, lower, upper in ranges
+    ]
+
+    # Order the points so each one's upper bound is the next point's lower bound; the
+    # top point runs to 100.
+    points.sort(key=lambda item: item[1])
+    for index, (code, lower) in enumerate(points):
+        upper = points[index + 1][1] if index + 1 < len(points) else _PERCENTILE_MAX
+        if upper <= lower:
+            raise ValueError(
+                f"WID percentile point {code!r} has non-positive width "
+                f"(lower={lower}, upper={upper})."
+            )
+        rows.append(
+            {
+                "percentile_code": code,
+                "is_range": False,
+                "lower_bound": lower,
+                "upper_bound": upper,
+                "width": upper - lower,
+            }
+        )
+    return rows
 
 
 def _to_float(value: Optional[str]) -> Optional[float]:
@@ -124,9 +192,9 @@ def parse_metadata(path: Path) -> Dict[Tuple[str, str, str], Dict[str, object]]:
     Parse a WID_metadata CSV into a lookup keyed by (sixlet, age, pop).
 
     :param path: Path to the semicolon-delimited metadata CSV.
-    :return: Dict mapping (sixlet, age_code, pop_code) to a dict of concept-level fields
-        plus country-specific provenance fields (source, method, data_quality_score,
-        country).
+    :return: Dict mapping (sixlet, age_code, pop_code) to a dict of the native
+        variable_code, concept-level fields, and country-specific provenance fields
+        (source, method, data_quality_score, country).
     """
     result: Dict[Tuple[str, str, str], Dict[str, object]] = {}
     with open(path, newline="", encoding="utf-8") as handle:
@@ -135,6 +203,9 @@ def parse_metadata(path: Path) -> Dict[Tuple[str, str, str], Dict[str, object]]:
             sixlet = row["variable"][:6]
             key = (sixlet, row["age"], row["pop"])
             result[key] = {
+                # The metadata carries WID's native variable code verbatim; use it
+                # directly rather than re-packing the split columns.
+                "variable_code": row["variable"],
                 "short_name": row.get("shortname") or None,
                 "description": row.get("simpledes") or None,
                 "technical_description": row.get("technicaldes") or None,
@@ -185,22 +256,28 @@ def first_country(path: Path) -> Optional[str]:
     return None
 
 
-def iter_observations(path: Path) -> Iterator[Tuple[str, str, str, Optional[str]]]:
+def iter_observations(
+    path: Path,
+) -> Iterator[Tuple[str, str, str, str, Optional[str]]]:
     """
-    Stream observation rows as (country_code, variable_code, year, value) tuples.
+    Stream observation rows as (country, variable, percentile, year, value) tuples.
 
     :param path: Path to the semicolon-delimited observation CSV.
-    :return: Iterator of (country_code, variable_code, year, value) tuples aligned to
-        the observation COPY columns; value is None when the source cell is empty.
+    :return: Iterator of (country_code, variable_code, percentile_code, year, value)
+        tuples aligned to the observation COPY columns; value is None when the source
+        cell is empty.
     """
     with open(path, newline="", encoding="utf-8") as handle:
         reader = csv.DictReader(handle, delimiter=";")
         for row in reader:
-            code = build_variable_code(
-                row["variable"], row["percentile"], row["age"], row["pop"]
-            )
             value = row["value"] if row["value"] != "" else None
-            yield (row["country"], code, row["year"], value)
+            yield (
+                row["country"],
+                row["variable"],
+                row["percentile"],
+                row["year"],
+                value,
+            )
 
 
 def build_variable_rows(
@@ -209,7 +286,7 @@ def build_variable_rows(
     """
     Build distinct variable-dimension rows from an observation CSV plus metadata.
 
-    The set of fully qualified codes comes from the observation CSV; the concept-level
+    The set of native variable codes comes from the observation CSV; the concept-level
     text fields are attached from the metadata by (sixlet, age, pop).
 
     :param path: Path to the semicolon-delimited observation CSV.
@@ -221,15 +298,13 @@ def build_variable_rows(
     with open(path, newline="", encoding="utf-8") as handle:
         reader = csv.DictReader(handle, delimiter=";")
         for row in reader:
-            fields = variable_fields(
-                row["variable"], row["percentile"], row["age"], row["pop"]
-            )
-            code = fields["fully_qualified_code"]
+            fields = variable_fields(row["variable"], row["age"], row["pop"])
+            code = fields["variable_code"]
             if code in seen:
                 continue
             seen.add(code)
             concept = meta.get(
-                (fields["sixlet"], fields["age_code"], fields["pop_code"]), {}
+                (row["variable"][:6], fields["age_code"], fields["pop_code"]), {}
             )
             for field_name in _VARIABLE_META_FIELDS:
                 fields[field_name] = concept.get(field_name)
@@ -322,45 +397,50 @@ class WidProcessor(Processor):
         )
 
         variable_rows = build_variable_rows(data_path, meta)
+        present_codes = {row["variable_code"] for row in variable_rows}
         if variable_rows:
-            # The variable dimension is global (keyed by fully_qualified_code, no
-            # country) and its concept-level metadata is country-invariant, so the
-            # first country to introduce a code sets its definition. Insert missing
-            # codes and leave existing rows untouched (DO NOTHING): this avoids
-            # re-updating shared codes once per country (~200 redundant writes and
-            # update_ts bumps for common codes) and never overwrites a populated
-            # row with a later country's NULLs.
+            # The variable dimension is global (keyed by variable_code, no country) and
+            # its concept-level metadata is country-invariant, so the first country to
+            # introduce a code sets its definition. Insert missing codes and leave
+            # existing rows untouched (DO NOTHING): this avoids re-updating shared codes
+            # once per country (~200 redundant writes and update_ts bumps for common
+            # codes) and never overwrites a populated row with a later country's NULLs.
             #
             # Insert in a deterministic order (by conflict key) so concurrent process
-            # workers acquire the shared variable-index locks in the same order.
-            # Without this, parallel per-country loads insert overlapping new codes in
-            # different orders and PostgreSQL aborts one transaction with a deadlock,
-            # quarantining that country.
-            variable_rows.sort(key=lambda row: row["fully_qualified_code"])
+            # workers acquire the shared variable-index locks in the same order. Without
+            # this, parallel per-country loads insert overlapping new codes in different
+            # orders and PostgreSQL aborts one transaction with a deadlock, quarantining
+            # that country.
+            variable_rows.sort(key=lambda row: row["variable_code"])
             upsert_model_instances(
                 session=session,
                 model_instances=[Variable(**row) for row in variable_rows],
-                conflict_columns=["fully_qualified_code"],
+                conflict_columns=["variable_code"],
                 on_conflict_update=False,
             )
 
-        provenance = [
-            Provenance(
-                country_code=fields["country"] or country,
-                sixlet=key[0],
-                age_code=key[1],
-                pop_code=key[2],
-                source=fields["source"],
-                method=fields["method"],
-                data_quality_score=fields["data_quality_score"],
+        # Provenance is keyed by (country, variable). Emit a row only for variables this
+        # country actually has data for, so the provenance -> variable foreign key holds
+        # even when the metadata file lists variables absent from the data file.
+        provenance = []
+        for fields in meta.values():
+            variable_code = fields["variable_code"]
+            if variable_code not in present_codes:
+                continue
+            provenance.append(
+                Provenance(
+                    country_code=fields["country"] or country,
+                    variable_code=variable_code,
+                    source=fields["source"],
+                    method=fields["method"],
+                    data_quality_score=fields["data_quality_score"],
+                )
             )
-            for key, fields in meta.items()
-        ]
         if provenance:
             upsert_model_instances(
                 session=session,
                 model_instances=provenance,
-                conflict_columns=["country_code", "sixlet", "age_code", "pop_code"],
+                conflict_columns=["country_code", "variable_code"],
                 on_conflict_update=True,
                 update_columns=["source", "method", "data_quality_score"],
             )
@@ -370,7 +450,7 @@ class WidProcessor(Processor):
         written = copy_records(
             session,
             "wid.observation",
-            ["country_code", "variable_code", "year", "value"],
+            ["country_code", "variable_code", "percentile_code", "year", "value"],
             iter_observations(data_path),
         )
         LOGGER.info(f"Loaded {written} observations for {country}.")
@@ -378,14 +458,18 @@ class WidProcessor(Processor):
 
 def prepare_observation_table(sql_user: str, **context) -> None:
     """
-    Drop the observation primary key and foreign keys and truncate it for a full reload.
+    Reset the observation and percentile tables for a full reload.
 
-    Runs once before the parallel process tasks so they append into an unindexed,
-    constraint-free table (fast bulk load); finalize_observation_table rebuilds the
-    constraints afterwards.
+    Drops the observation primary key, foreign keys, and index and truncates it, so the
+    parallel process tasks append into an unindexed, constraint-free table (fast bulk
+    load); finalize_observation_table rebuilds the constraints afterwards. Also clears
+    the percentile dimension so its data-derived bounds reflect only the current load
+    (finalize repopulates it). Percentile is emptied with DELETE, not TRUNCATE, because
+    airflow_wid holds DELETE but not ownership of that table.
 
     :param sql_user: SQL user (credential file name) to connect as; must own the
-        observation table so it can ALTER and TRUNCATE it.
+        observation table so it can ALTER and TRUNCATE it, and hold DELETE on
+        percentile.
     """
     engine = get_lens_engine(sql_user)
     with Session(engine) as session:
@@ -395,20 +479,56 @@ def prepare_observation_table(sql_user: str, **context) -> None:
                 text(f"ALTER TABLE wid.observation DROP CONSTRAINT IF EXISTS {name}")
             )
         session.execute(text("TRUNCATE wid.observation"))
+        # The observation -> percentile foreign key is dropped above and observation is
+        # truncated, so no rows reference percentile when it is cleared.
+        session.execute(text("DELETE FROM wid.percentile"))
         session.commit()
-    LOGGER.info("Dropped observation constraints and index and truncated the table.")
+    LOGGER.info(
+        "Dropped observation constraints and index, truncated observations, and "
+        "cleared the percentile dimension."
+    )
+
+
+def _populate_percentile_dimension(session: Session) -> None:
+    """
+    Upsert the percentile dimension from the percentile codes present in observations.
+
+    Runs after the load (percentile codes are read from the loaded fact table) and
+    before the observation foreign keys are rebuilt, so every referenced code exists.
+    The point-code upper bounds need the full set of codes, which the loaded table
+    provides in one place.
+
+    :param session: SQLAlchemy Session whose transaction the upsert joins.
+    """
+    result = session.execute(
+        text("SELECT DISTINCT percentile_code FROM wid.observation")
+    )
+    rows = build_percentile_rows([row[0] for row in result])
+    if not rows:
+        return
+    upsert_model_instances(
+        session=session,
+        model_instances=[Percentile(**row) for row in rows],
+        conflict_columns=["percentile_code"],
+        on_conflict_update=True,
+        update_columns=["is_range", "lower_bound", "upper_bound", "width"],
+    )
+    LOGGER.info(f"Populated the percentile dimension with {len(rows)} codes.")
 
 
 def finalize_observation_table(sql_user: str, **context) -> None:
     """
-    Rebuild the observation primary key and foreign keys after the load.
+    Complete the percentile dimension and rebuild the observation constraints.
 
-    Building the composite key once and validating the foreign keys in a single pass is
-    far cheaper than maintaining them per row during the load, and it doubles as a load
-    check: duplicate keys fail the primary key, orphaned codes fail the foreign keys.
+    First populates the percentile dimension from the loaded observations, then rebuilds
+    the observation primary key, foreign keys, and index. Building the composite key
+    once and validating the foreign keys in a single pass is far cheaper than
+    maintaining them per row during the load, and it doubles as a load check: duplicate
+    keys fail the primary key, orphaned codes fail the foreign keys.
 
     :param sql_user: SQL user (credential file name) to connect as; must own the
-        observation table and hold REFERENCES on the country and variable tables.
+        observation table and hold REFERENCES on the country, variable, and percentile
+        tables.
     """
     engine = get_lens_engine(sql_user)
     with Session(engine) as session:
@@ -416,6 +536,7 @@ def finalize_observation_table(sql_user: str, **context) -> None:
         # index builds (the primary key and secondary index dominate this step).
         session.execute(text("SET LOCAL maintenance_work_mem = '1GB'"))
         session.execute(text("SET LOCAL max_parallel_maintenance_workers = 4"))
+        _populate_percentile_dimension(session)
         for name, definition in _OBSERVATION_CONSTRAINTS.items():
             session.execute(
                 text(f"ALTER TABLE wid.observation ADD CONSTRAINT {name} {definition}")
