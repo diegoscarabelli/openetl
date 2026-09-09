@@ -87,6 +87,8 @@ class _StringIteratorIO(io.TextIOBase):
         :param size: Maximum characters to return (None or negative for all).
         :return: The characters read; empty string at end of stream.
         """
+        if size == 0:
+            return ""
         while size is None or size < 0 or len(self._buffer) < size:
             try:
                 self._buffer += next(self._iterator)
@@ -116,9 +118,11 @@ def copy_records(
 
     Columns omitted from ``columns`` take their database defaults (e.g. ``create_ts`` /
     ``update_ts``). A ``None`` value is written as SQL NULL and an empty string is
-    preserved as an empty string. The one unsupported value is the literal two-character
-    string ``\\N`` (backslash-N), which COPY would read as NULL; the sole caller loads
-    numeric observations, so this does not arise in practice.
+    preserved as an empty string. The literal two-character string ``\\N`` (backslash-N)
+    cannot be represented, because COPY would read it as NULL; a value equal to it
+    aborts the load with an error rather than silently becoming NULL (the row rendering
+    raises ``ValueError``, which psycopg2 surfaces as a failed COPY). The sole caller
+    loads numeric observations, so this does not arise in practice.
 
     Rows are rendered and streamed to PostgreSQL on demand (one CSV line buffered at a
     time), so worker memory stays bounded regardless of row count and the COPY starts
@@ -129,6 +133,7 @@ def copy_records(
     :param columns: Ordered column names to populate.
     :param rows: Iterable of tuples aligned to ``columns``.
     :return: Number of rows written.
+    :raises psycopg2.Error: A failed COPY if a value equals the ``\\N`` NULL marker.
     """
     count = 0
 
@@ -142,9 +147,18 @@ def copy_records(
         line_buffer = io.StringIO()
         writer = csv.writer(line_buffer, lineterminator="\n")
         for row in rows:
-            writer.writerow(
-                [_COPY_NULL_MARKER if value is None else value for value in row]
-            )
+            encoded = []
+            for value in row:
+                if value is None:
+                    encoded.append(_COPY_NULL_MARKER)
+                elif value == _COPY_NULL_MARKER:
+                    raise ValueError(
+                        f"copy_records cannot load the literal value "
+                        f"{_COPY_NULL_MARKER!r}: COPY would read it as NULL."
+                    )
+                else:
+                    encoded.append(value)
+            writer.writerow(encoded)
             line = line_buffer.getvalue()
             line_buffer.seek(0)
             line_buffer.truncate(0)
