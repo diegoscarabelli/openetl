@@ -301,6 +301,13 @@ class WidProcessor(Processor):
             # re-updating shared codes once per country (~200 redundant writes and
             # update_ts bumps for common codes) and never overwrites a populated
             # row with a later country's NULLs.
+            #
+            # Insert in a deterministic order (by conflict key) so concurrent process
+            # workers acquire the shared variable-index locks in the same order.
+            # Without this, parallel per-country loads insert overlapping new codes in
+            # different orders and PostgreSQL aborts one transaction with a deadlock,
+            # quarantining that country.
+            variable_rows.sort(key=lambda row: row["fully_qualified_code"])
             upsert_model_instances(
                 session=session,
                 model_instances=[Variable(**row) for row in variable_rows],
