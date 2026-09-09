@@ -160,3 +160,11 @@ COMMENT ON COLUMN wid.observation.year IS 'Calendar year. Part of the primary ke
 COMMENT ON COLUMN wid.observation.value IS 'Numeric value (share, threshold, etc).';
 
 ----------------------------------------------------------------------------------------
+-- OWNERSHIP
+----------------------------------------------------------------------------------------
+
+-- airflow_wid must own the observation fact table so the pipeline can drop and rebuild
+-- its primary key, foreign keys, and index and truncate it for a full reload
+-- (process.py prepare_observation_table / finalize_observation_table). The airflow_wid
+-- role is created earlier by iam.sql per the documented database-init order.
+ALTER TABLE wid.observation OWNER TO airflow_wid;

@@ -247,7 +247,8 @@ class WidProcessor(Processor):
         Process one WID FileSet.
 
         A countries FileSet fills country names and regions. A country FileSet upserts
-        the country, its variables, and its provenance, then replaces its observations.
+        the country, its variables, and its provenance, then appends its observations to
+        the table truncated by prepare_observation_table.
 
         :param file_set: FileSet to process.
         :param session: SQLAlchemy Session object.

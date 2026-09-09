@@ -203,12 +203,11 @@ ALTER DEFAULT PRIVILEGES IN SCHEMA wid
 ALTER DEFAULT PRIVILEGES IN SCHEMA wid
     GRANT USAGE, SELECT, UPDATE ON SEQUENCES TO airflow_wid;
 
--- The pipeline reloads observation in full each run: it drops the primary key and
--- foreign keys, truncates, bulk-loads unindexed, then rebuilds the constraints
--- (process.py prepare_observation_table / finalize_observation_table). ALTER and
--- TRUNCATE require ownership, so airflow_wid owns the observation fact table. (This
--- runs after tables.ddl has created the table.)
-ALTER TABLE wid.observation OWNER TO airflow_wid;
+-- Note: airflow_wid must OWN the observation fact table so the pipeline can drop and
+-- rebuild its primary key, foreign keys, and index and truncate it for a full reload
+-- (process.py prepare_observation_table / finalize_observation_table). Ownership is
+-- assigned in dags/pipelines/wid/tables.ddl because iam.sql runs before the pipeline
+-- tables exist.
 
 ----------------------------------------------------------------------------------------
 -- SUPERSET ROLES AND PERMISSIONS (OPTIONAL)
