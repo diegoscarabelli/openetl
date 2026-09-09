@@ -94,7 +94,9 @@ def _download_zip() -> Path:
             with urllib.request.urlopen(request, timeout=DOWNLOAD_TIMEOUT) as response:
                 expected = response.headers.get("Content-Length")
                 with open(tmp_path, "wb") as handle:
-                    shutil.copyfileobj(response, handle)
+                    # Use a large copy buffer: the payload is ~850 MB, and the
+                    # 16 KB default would add avoidable syscalls and download time.
+                    shutil.copyfileobj(response, handle, length=shutil.COPY_BUFSIZE)
             size = tmp_path.stat().st_size
             if expected is not None and expected.isdigit() and size != int(expected):
                 raise _CorruptDownloadError(
