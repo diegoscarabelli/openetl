@@ -14,7 +14,7 @@ import time
 import urllib.request
 import zipfile
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import List
 from urllib.error import HTTPError, URLError
@@ -136,13 +136,15 @@ def _timestamp(base_ts: datetime, index: int) -> str:
     """
     Build an ISO 8601 timestamp token unique to a group index.
 
+    The index is added as microseconds to the base timestamp, rolling into seconds as
+    needed, so distinct indices always yield distinct tokens (no reliance on microsecond
+    wraparound).
+
     :param base_ts: Base timestamp for the extraction run.
     :param index: Group index (shared by a country's data and metadata files).
     :return: ISO 8601 string parseable by the batch() timestamp regex.
     """
-    return base_ts.replace(microsecond=index % 1_000_000).strftime(
-        "%Y-%m-%dT%H:%M:%S.%fZ"
-    )
+    return (base_ts + timedelta(microseconds=index)).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
 
 
 def _copy_member(archive: zipfile.ZipFile, member: str, dest: Path) -> Path:
