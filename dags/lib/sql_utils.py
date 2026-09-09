@@ -130,7 +130,8 @@ def copy_records(
     :param table: Schema-qualified target table (e.g. "wid.observation").
     :param columns: Ordered column names to populate.
     :param rows: Iterable of tuples aligned to ``columns``.
-    :return: Number of rows written.
+    :return: Number of rows streamed into the COPY. This equals the number of committed
+        rows only if the surrounding transaction commits; an error rolls the COPY back.
     """
     count = 0
 
