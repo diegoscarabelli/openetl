@@ -12,14 +12,17 @@ credential management. It includes:
     - Connection utilities for local and production environments.
 """
 
+import csv
+import io
 import json
 import os
 import socket
 import urllib.parse
 
 from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional, Type
+from typing import Any, Dict, Iterable, Iterator, List, Optional, Tuple, Type
 
+from psycopg2 import sql
 from sqlalchemy import create_engine, DateTime, ForeignKey, MetaData
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.engine import Engine
@@ -48,6 +51,121 @@ class QueryType:
     UPSERT = "upsert"
     INSERT = "insert"
     INSERT_IGNORE = "insert_ignore"
+
+
+class _StringIteratorIO(io.TextIOBase):
+    """
+    Adapt an iterator of text chunks into a readable stream for ``copy_expert``.
+
+    ``copy_expert`` pulls from the stream with ``read(size)``. This reads from the
+    underlying iterator only as needed, so rows are rendered and streamed to PostgreSQL
+    incrementally rather than materialized in full beforehand.
+    """
+
+    def __init__(self, iterator: Iterator[str]) -> None:
+        """
+        :param iterator: Iterator yielding text chunks (one CSV line each).
+        """
+        self._iterator = iterator
+        self._buffer = ""
+
+    def readable(self) -> bool:
+        """
+        :return: Always True; the stream is read-only.
+        """
+        return True
+
+    def read(self, size: Optional[int] = -1) -> str:
+        """
+        Read up to ``size`` characters, rendering more rows on demand.
+
+        :param size: Maximum characters to return (None or negative for all).
+        :return: The characters read; empty string at end of stream.
+        """
+        if size == 0:
+            return ""
+        chunks = [self._buffer]
+        buffered = len(self._buffer)
+        self._buffer = ""
+        while size is None or size < 0 or buffered < size:
+            try:
+                chunk = next(self._iterator)
+            except StopIteration:
+                break
+            chunks.append(chunk)
+            buffered += len(chunk)
+        data = "".join(chunks)
+        if size is None or size < 0:
+            return data
+        result, self._buffer = data[:size], data[size:]
+        return result
+
+
+def copy_records(
+    session: Session,
+    table: str,
+    columns: List[str],
+    rows: Iterable[Tuple[Any, ...]],
+) -> int:
+    """
+    Bulk-load rows into a table using PostgreSQL COPY (psycopg2 ``copy_expert``).
+
+    Runs on the raw DBAPI connection underlying ``session`` so the COPY shares the
+    session's transaction; the caller is responsible for committing. This is far faster
+    than multi-row INSERT for large loads (measured ~19x end-to-end on a 1.6M-row WID
+    country file), which is why the WID observation fact table uses it instead of
+    ``upsert_model_instances``.
+
+    Columns omitted from ``columns`` take their database defaults (e.g. ``create_ts`` /
+    ``update_ts``). A ``None`` value is written as SQL NULL; because empty CSV fields
+    map to NULL, do not use this helper for text columns whose legitimate value can be
+    the empty string.
+
+    Rows are rendered on demand as ``copy_expert`` pulls fixed-size chunks from the
+    stream, so only a small buffer is held at once and the COPY starts without first
+    writing a second full-size copy of the data. (An unbounded ``read()`` would
+    materialize the remaining rows, but ``copy_expert`` always reads in bounded chunks.)
+
+    :param session: SQLAlchemy Session whose transaction the COPY joins.
+    :param table: Schema-qualified target table (e.g. "wid.observation").
+    :param columns: Ordered column names to populate.
+    :param rows: Iterable of tuples aligned to ``columns``.
+    :return: Number of rows streamed into the COPY. This equals the number of committed
+        rows only if the surrounding transaction commits; an error rolls the COPY back.
+    """
+    count = 0
+
+    def _lines() -> Iterator[str]:
+        """
+        Render each row as one CSV line, counting rows as they are consumed.
+
+        :return: Iterator of CSV-encoded lines.
+        """
+        nonlocal count
+        line_buffer = io.StringIO()
+        writer = csv.writer(line_buffer, lineterminator="\n")
+        for row in rows:
+            writer.writerow(["" if value is None else value for value in row])
+            line = line_buffer.getvalue()
+            line_buffer.seek(0)
+            line_buffer.truncate(0)
+            count += 1
+            yield line
+
+    # Quote the schema-qualified table and each column as SQL identifiers so a
+    # non-constant caller cannot inject SQL through the table or column names.
+    copy_statement = sql.SQL(
+        "COPY {table} ({columns}) FROM STDIN WITH (FORMAT CSV)"
+    ).format(
+        table=sql.SQL(".").join(sql.Identifier(part) for part in table.split(".")),
+        columns=sql.SQL(", ").join(sql.Identifier(column) for column in columns),
+    )
+    raw_connection = session.connection().connection
+    with raw_connection.cursor() as cursor:
+        cursor.copy_expert(
+            copy_statement.as_string(cursor), _StringIteratorIO(_lines())
+        )
+    return count
 
 
 def make_base(
@@ -200,6 +318,8 @@ def get_lens_engine(user: str, echo: bool = False) -> Engine:
       "host.docker.internal", which works on Docker Desktop (Mac/Windows).
       Falls back to "172.17.0.1" (Docker bridge gateway on Linux)
       if host.docker.internal is not resolvable.
+    - Database name set via SQL_DB_NAME (defaults to "lens"); set it to a copy such
+      as "lens_dev" for local testing without touching the production database.
     - Uses PostgreSQL protocol.
 
     :param user: SQL database user corresponding to a credential file.
@@ -232,14 +352,15 @@ def get_lens_engine(user: str, echo: bool = False) -> Engine:
         )
         credentials["user"] = user
 
-    # Get the lens database host.
+    # Get the lens database host and name.
     db_host = os.getenv("SQL_DB_HOST") or _get_default_docker_host()
+    db_name = os.getenv("SQL_DB_NAME", "lens")
 
     return get_engine(
         host=db_host,
         username=credentials["user"],
         password=credentials["password"],
-        db_name="lens",
+        db_name=db_name,
         protocol="postgresql",
         echo=echo,
     )

@@ -78,6 +78,11 @@ CREATE SCHEMA IF NOT EXISTS linkedin;
 COMMENT ON SCHEMA linkedin IS
     'Professional network connection data from LinkedIn platform.';
 
+-- World Inequality Database schema.
+CREATE SCHEMA IF NOT EXISTS wid;
+COMMENT ON SCHEMA wid IS
+    'World Inequality Database: income and wealth distribution statistics.';
+
 -- System monitoring schema.
 CREATE SCHEMA IF NOT EXISTS infra_monitor;
 COMMENT ON SCHEMA infra_monitor IS 
@@ -95,6 +100,7 @@ SET search_path TO
     public
     , garmin
     , linkedin
+    , wid
     , infra_monitor
     , superset_uploads;
 
