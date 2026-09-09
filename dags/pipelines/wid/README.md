@@ -57,18 +57,25 @@ trigger only (`dag_schedule_interval=None`); WID releases roughly once a year.
 - `finalize`: rebuilds the observation primary key and foreign keys.
 - `store`: standard framework task.
 
-Each run is a full reload (`prepare` truncates before the load), so the pipeline is
-idempotent at the run level and there is no separate backfill mode.
+Each run is a full reload: `prepare` truncates the observation table before the load, so
+a run is idempotent at the run level and there is no separate backfill mode. Because the
+load appends (it does not replace per country), it is not idempotent to stale working
+files: if a prior run failed and left files in the `process` directory, re-running
+without clearing them re-appends those rows. This does not corrupt data silently, the
+`finalize` primary-key build fails on the resulting duplicates, but after a failed run
+clear the pipeline's working directories (ingest/process) before re-triggering.
 
 ## Load method
 
-Each run rebuilds the observation fact table from scratch, and the primary key and
-foreign keys are dropped for the load and rebuilt afterwards. Maintaining the composite
-key and checking two foreign keys on every one of ~141M inserts dominates the runtime;
-loading into an unindexed table and building the key once (with the foreign keys
-validated in a single pass) is dramatically faster. Measured on ~143M rows: the indexed
-insert path takes ~20 minutes, versus ~30s to bulk-load plus ~3.5 minutes to build the
-key and ~20s to validate the foreign keys.
+Each run rebuilds the observation fact table from scratch: the primary key, foreign
+keys, and secondary index are dropped for the load and rebuilt afterwards. Maintaining
+those indexes and checking two foreign keys on every one of ~141M inserts dominates the
+runtime; loading into an unindexed table and building the indexes once (with the foreign
+keys validated in a single pass) is dramatically faster. Measured end to end on the full
+~143M-row dataset, the observation DB work dropped from ~23 minutes (indexed inserts) to
+~7.4 minutes: ~2.9 minutes to bulk-load the unindexed table, then ~4.6 minutes for
+`finalize` to rebuild the primary key, foreign keys, and index (with a larger
+`maintenance_work_mem` and parallel maintenance workers).
 
 The rebuild doubles as a load check: duplicate keys make the primary key build fail, and
 orphaned variable or country codes make the foreign-key validation fail. Dimensions
