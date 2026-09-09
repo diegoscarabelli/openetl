@@ -134,13 +134,22 @@ def test_build_percentile_rows_rejects_unknown() -> None:
         build_percentile_rows(["not_a_percentile"])
 
 
-def test_build_percentile_rows_rejects_non_increasing_bounds() -> None:
+def test_build_percentile_rows_zero_width_range() -> None:
     """
-    Codes that would yield a non-positive width raise (they would violate the percentile
-    CHECK constraints mid-finalize otherwise): a point at 100, and an inverted range.
+    A zero-width range (pXpX) is valid: it denotes a single percentile position.
     """
-    with pytest.raises(ValueError):
-        build_percentile_rows(["p100"])
+    (row,) = build_percentile_rows(["p31p31"])
+    assert row["is_range"] is True
+    assert row["lower_bound"] == Decimal("31")
+    assert row["upper_bound"] == Decimal("31")
+    assert row["width"] == Decimal("0")
+
+
+def test_build_percentile_rows_rejects_inverted_range() -> None:
+    """
+    An inverted range (upper < lower) raises rather than violating the percentile CHECKs
+    mid-finalize.
+    """
     with pytest.raises(ValueError):
         build_percentile_rows(["p50p10"])
 

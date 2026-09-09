@@ -101,10 +101,11 @@ COMMENT ON COLUMN wid.variable.long_age IS 'Long description of the age group.';
 
 -- Percentile dimension: one row per distinct percentile code, parsed into numeric
 -- bounds. Two kinds of code occur: explicit ranges (e.g. p99p100 -> [99, 100], a
--- bracket) and WID g-percentile points used by average series (e.g. p99 -> the
--- g-percentile group [99, 99.1), whose upper bound is the next percentile point present
--- in the data, which is the next g-percentile in a full load). Populated by
--- finalize_observation_table from the distinct codes present in the loaded observations.
+-- bracket; zero-width p31p31 -> a single position) and WID g-percentile points used by
+-- average series (e.g. p99 -> the g-percentile group [99, 99.1), whose upper bound is
+-- the next percentile point present in the data, which is the next g-percentile in a
+-- full load). Populated by finalize_observation_table from the distinct codes present
+-- in the loaded observations.
 CREATE TABLE IF NOT EXISTS wid.percentile (
     percentile_code TEXT PRIMARY KEY
     , is_range BOOLEAN NOT NULL
@@ -113,8 +114,8 @@ CREATE TABLE IF NOT EXISTS wid.percentile (
     , width NUMERIC NOT NULL
     , create_ts TIMESTAMPTZ NOT NULL DEFAULT NOW()
     , update_ts TIMESTAMPTZ NOT NULL DEFAULT NOW()
-    , CONSTRAINT percentile_bounds_check CHECK (upper_bound > lower_bound)
-    , CONSTRAINT percentile_width_check CHECK (width > 0)
+    , CONSTRAINT percentile_bounds_check CHECK (upper_bound >= lower_bound)
+    , CONSTRAINT percentile_width_check CHECK (width >= 0)
 );
 
 COMMENT ON TABLE wid.percentile IS
@@ -126,7 +127,8 @@ COMMENT ON COLUMN wid.percentile.is_range IS
 COMMENT ON COLUMN wid.percentile.lower_bound IS 'Inclusive lower percentile bound.';
 COMMENT ON COLUMN wid.percentile.upper_bound IS
 'Upper percentile bound (range upper edge, or next present point for a point code).';
-COMMENT ON COLUMN wid.percentile.width IS 'Bound width (upper_bound - lower_bound).';
+COMMENT ON COLUMN wid.percentile.width IS
+'Bound width (upper_bound - lower_bound; 0 for a single-position code).';
 
 ----------------------------------------------------------------------------------------
 -- PROVENANCE DIMENSION

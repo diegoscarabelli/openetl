@@ -108,16 +108,17 @@ def build_percentile_rows(codes: Iterable[str]) -> List[Dict[str, object]]:
     """
     Build percentile-dimension rows from a set of WID percentile codes.
 
-    Two kinds of code occur. An explicit range ``pXpY`` maps to the bracket [X, Y]. A
-    g-percentile point ``pX`` (used by average series) maps to the group [X, next),
-    whose upper bound is the next percentile point present in the data (the next
-    g-percentile in a full load); the top point runs to 100.
+    Two kinds of code occur. An explicit range ``pXpY`` maps to the bracket [X, Y];
+    zero-width ranges (``pXpX``, e.g. ``p31p31``) are valid and denote a single
+    percentile position (width 0). A g-percentile point ``pX`` (used by average series)
+    maps to the group [X, next), whose upper bound is the next percentile point present
+    in the data (the next g-percentile in a full load); the top point runs to 100.
 
     :param codes: Iterable of distinct WID percentile codes.
     :return: List of percentile-dimension row dicts (percentile_code, is_range,
         lower_bound, upper_bound, width).
-    :raises ValueError: If a code matches neither the range nor the point pattern, or
-        yields a non-increasing bound (which would violate the percentile CHECKs).
+    :raises ValueError: If a code matches neither the range nor the point pattern, or is
+        inverted (upper < lower, which would violate the percentile CHECKs).
     """
     ranges: List[Tuple[str, Decimal, Decimal]] = []
     points: List[Tuple[str, Decimal]] = []
@@ -126,9 +127,9 @@ def build_percentile_rows(codes: Iterable[str]) -> List[Dict[str, object]]:
         if range_match:
             lower = Decimal(range_match.group(1))
             upper = Decimal(range_match.group(2))
-            if lower >= upper:
+            if lower > upper:
                 raise ValueError(
-                    f"WID percentile range {code!r} is not increasing "
+                    f"WID percentile range {code!r} is inverted "
                     f"(lower={lower}, upper={upper})."
                 )
             ranges.append((code, lower, upper))
@@ -155,9 +156,9 @@ def build_percentile_rows(codes: Iterable[str]) -> List[Dict[str, object]]:
     points.sort(key=lambda item: item[1])
     for index, (code, lower) in enumerate(points):
         upper = points[index + 1][1] if index + 1 < len(points) else _PERCENTILE_MAX
-        if upper <= lower:
+        if upper < lower:
             raise ValueError(
-                f"WID percentile point {code!r} has non-positive width "
+                f"WID percentile point {code!r} is inverted "
                 f"(lower={lower}, upper={upper})."
             )
         rows.append(
